@@ -11,21 +11,31 @@ import (
 )
 
 type Quote struct {
-	PriceUSD      float64
-	Change24h     float64
-	QuoteSource   string
+	PriceUSD       float64
+	Change24h      float64
+	QuoteSource    string
 	QuoteUpdatedAt string
 }
 
+type Config struct {
+	GoldAPIURL     string
+	SinaURL        string
+	SinaReferer    string
+	UserAgent      string
+	RequestTimeout time.Duration
+}
+
 type GoldOracle struct {
-	httpClient     *http.Client
-	sinaPrevClose  float64
+	config          Config
+	httpClient      *http.Client
+	sinaPrevClose   float64
 	sinaPrevFetched bool
 }
 
-func NewGoldOracle() *GoldOracle {
+func NewGoldOracle(config Config) *GoldOracle {
 	return &GoldOracle{
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		config:     config,
+		httpClient: &http.Client{Timeout: config.RequestTimeout},
 	}
 }
 
@@ -40,7 +50,7 @@ func (o *GoldOracle) FetchQuote() (*Quote, error) {
 }
 
 func (o *GoldOracle) fetchGoldAPI() (*Quote, error) {
-	req, err := http.NewRequest(http.MethodGet, "https://api.gold-api.com/price/XAU", nil)
+	req, err := http.NewRequest(http.MethodGet, o.config.GoldAPIURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -89,12 +99,12 @@ func (o *GoldOracle) getSinaPrevClose() float64 {
 		return o.sinaPrevClose
 	}
 	o.sinaPrevFetched = true
-	req, err := http.NewRequest(http.MethodGet, "https://hq.sinajs.cn/list=hf_XAU", nil)
+	req, err := http.NewRequest(http.MethodGet, o.config.SinaURL, nil)
 	if err != nil {
 		return 0
 	}
-	req.Header.Set("Referer", "https://finance.sina.com.cn")
-	req.Header.Set("User-Agent", "PredictionMarket/1.0")
+	req.Header.Set("Referer", o.config.SinaReferer)
+	req.Header.Set("User-Agent", o.config.UserAgent)
 	resp, err := o.httpClient.Do(req)
 	if err != nil {
 		return 0
@@ -114,12 +124,12 @@ func (o *GoldOracle) getSinaPrevClose() float64 {
 }
 
 func (o *GoldOracle) fetchGoldSina() (*Quote, error) {
-	req, err := http.NewRequest(http.MethodGet, "https://hq.sinajs.cn/list=hf_XAU", nil)
+	req, err := http.NewRequest(http.MethodGet, o.config.SinaURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Referer", "https://finance.sina.com.cn")
-	req.Header.Set("User-Agent", "PredictionMarket/1.0")
+	req.Header.Set("Referer", o.config.SinaReferer)
+	req.Header.Set("User-Agent", o.config.UserAgent)
 	resp, err := o.httpClient.Do(req)
 	if err != nil {
 		return nil, err

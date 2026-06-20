@@ -40,7 +40,13 @@ func main() {
 	defer chainClient.Close()
 
 	ipfsClient := ipfs.NewClient(cfg.IPFSGateway)
-	goldOracle := oracle.NewGoldOracle()
+	goldOracle := oracle.NewGoldOracle(oracle.Config{
+		GoldAPIURL:     cfg.GoldAPIURL,
+		SinaURL:        cfg.SinaURL,
+		SinaReferer:    cfg.SinaReferer,
+		UserAgent:      cfg.OracleUserAgent,
+		RequestTimeout: cfg.OracleRequestTimeout,
+	})
 	watcher := sentinel.NewWatcher(cfg, chainClient, ipfsClient, goldOracle)
 	managedStore, err := aimanaged.NewStore()
 	if err != nil {

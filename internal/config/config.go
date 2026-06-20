@@ -32,6 +32,13 @@ type fileConfig struct {
 	IPFS struct {
 		Gateway string `yaml:"gateway"`
 	} `yaml:"ipfs"`
+	Oracle struct {
+		GoldAPIURL            string `yaml:"gold_api_url"`
+		SinaURL               string `yaml:"sina_url"`
+		SinaReferer           string `yaml:"sina_referer"`
+		UserAgent             string `yaml:"user_agent"`
+		RequestTimeoutSeconds int    `yaml:"request_timeout_seconds"`
+	} `yaml:"oracle"`
 	Sentinel struct {
 		PollIntervalSeconds int `yaml:"poll_interval_seconds"`
 		ResolveDelaySeconds int `yaml:"resolve_delay_seconds"`
@@ -47,21 +54,26 @@ type fileConfig struct {
 }
 
 type Config struct {
-	PrivateKey      string
-	ContractAddress string
-	RPCURL          string
-	BrokerChainURL  string
-	IPFSGateway     string
-	PollInterval    time.Duration
-	ResolveDelay    time.Duration
-	UseBrokerChain  bool
-	HTTPListen      string
-	AIAPIKey        string
-	AIBaseURL       string
-	AIModel         string
-	AIPollInterval  time.Duration
-	AIBuyAmountBKC  string
-	AIConfidenceMin float64
+	PrivateKey           string
+	ContractAddress      string
+	RPCURL               string
+	BrokerChainURL       string
+	IPFSGateway          string
+	GoldAPIURL           string
+	SinaURL              string
+	SinaReferer          string
+	OracleUserAgent      string
+	OracleRequestTimeout time.Duration
+	PollInterval         time.Duration
+	ResolveDelay         time.Duration
+	UseBrokerChain       bool
+	HTTPListen           string
+	AIAPIKey             string
+	AIBaseURL            string
+	AIModel              string
+	AIPollInterval       time.Duration
+	AIBuyAmountBKC       string
+	AIConfidenceMin      float64
 }
 
 func Load() (*Config, error) {
@@ -112,6 +124,12 @@ func LoadFile(path string) (*Config, error) {
 	if raw.AI.PollIntervalSeconds <= 0 {
 		return nil, errors.New("ai.poll_interval_seconds must be positive")
 	}
+	if raw.Oracle.RequestTimeoutSeconds <= 0 {
+		return nil, errors.New("oracle.request_timeout_seconds must be positive")
+	}
+	if strings.TrimSpace(raw.Oracle.UserAgent) == "" {
+		return nil, errors.New("oracle.user_agent is required")
+	}
 	if raw.AI.ConfidenceMin < 0 || raw.AI.ConfidenceMin > 1 {
 		return nil, errors.New("ai.confidence_min must be between 0 and 1")
 	}
@@ -142,26 +160,43 @@ func LoadFile(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	goldAPIURL, err := requireHTTPURL("oracle.gold_api_url", raw.Oracle.GoldAPIURL)
+	if err != nil {
+		return nil, err
+	}
+	sinaURL, err := requireHTTPURL("oracle.sina_url", raw.Oracle.SinaURL)
+	if err != nil {
+		return nil, err
+	}
+	sinaReferer, err := requireHTTPURL("oracle.sina_referer", raw.Oracle.SinaReferer)
+	if err != nil {
+		return nil, err
+	}
 	if !strings.HasSuffix(ipfsGateway, "/") {
 		ipfsGateway += "/"
 	}
 
 	return &Config{
-		PrivateKey:      privateKey,
-		ContractAddress: common.HexToAddress(raw.Chain.ContractAddress).Hex(),
-		RPCURL:          rpcURL,
-		BrokerChainURL:  brokerURL,
-		IPFSGateway:     ipfsGateway,
-		PollInterval:    time.Duration(raw.Sentinel.PollIntervalSeconds) * time.Second,
-		ResolveDelay:    time.Duration(raw.Sentinel.ResolveDelaySeconds) * time.Second,
-		UseBrokerChain:  raw.Chain.UseBrokerChain,
-		HTTPListen:      strings.TrimSpace(raw.Server.HTTPListen),
-		AIAPIKey:        apiKey,
-		AIBaseURL:       aiBaseURL,
-		AIModel:         strings.TrimSpace(raw.AI.Model),
-		AIPollInterval:  time.Duration(raw.AI.PollIntervalSeconds) * time.Second,
-		AIBuyAmountBKC:  strings.TrimSpace(raw.AI.BuyAmountBKC),
-		AIConfidenceMin: raw.AI.ConfidenceMin,
+		PrivateKey:           privateKey,
+		ContractAddress:      common.HexToAddress(raw.Chain.ContractAddress).Hex(),
+		RPCURL:               rpcURL,
+		BrokerChainURL:       brokerURL,
+		IPFSGateway:          ipfsGateway,
+		GoldAPIURL:           goldAPIURL,
+		SinaURL:              sinaURL,
+		SinaReferer:          sinaReferer,
+		OracleUserAgent:      strings.TrimSpace(raw.Oracle.UserAgent),
+		OracleRequestTimeout: time.Duration(raw.Oracle.RequestTimeoutSeconds) * time.Second,
+		PollInterval:         time.Duration(raw.Sentinel.PollIntervalSeconds) * time.Second,
+		ResolveDelay:         time.Duration(raw.Sentinel.ResolveDelaySeconds) * time.Second,
+		UseBrokerChain:       raw.Chain.UseBrokerChain,
+		HTTPListen:           strings.TrimSpace(raw.Server.HTTPListen),
+		AIAPIKey:             apiKey,
+		AIBaseURL:            aiBaseURL,
+		AIModel:              strings.TrimSpace(raw.AI.Model),
+		AIPollInterval:       time.Duration(raw.AI.PollIntervalSeconds) * time.Second,
+		AIBuyAmountBKC:       strings.TrimSpace(raw.AI.BuyAmountBKC),
+		AIConfidenceMin:      raw.AI.ConfidenceMin,
 	}, nil
 }
 

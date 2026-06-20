@@ -24,6 +24,11 @@
 - Create `internal/aimanaged/manager_test.go`: endpoint, AI HTTP, hold/low-confidence, and simulated trade tests.
 - Modify `internal/judge/game.go`: correctly parse bilingual comparison thresholds.
 - Modify `internal/judge/game_test.go`: isolate comparison parsing and preserve the two failing template regressions.
+- Modify `internal/oracle/gold.go` and create `internal/oracle/gold_test.go`: inject all行情 endpoints and request metadata from YAML and verify them with a local HTTP server.
+
+### Oracle URL completion addendum
+
+The final hardcoded-URL audit must find no production Go URL literals. Add `oracle.gold_api_url`, `oracle.sina_url`, `oracle.sina_referer`, `oracle.user_agent`, and `oracle.request_timeout_seconds` to both YAML files and the strict loader. Change `oracle.NewGoldOracle` to accept these values and add `TestGoldOracleUsesConfiguredEndpointsAndHeaders` using `httptest.Server`; verify both configured paths and request headers before updating `main.go`.
 
 ### Task 0: Repair baseline comparison-threshold parsing
 

@@ -18,6 +18,12 @@ server:
   http_listen: ":8081"
 ipfs:
   gateway: "http://127.0.0.1:8080/ipfs"
+oracle:
+  gold_api_url: "https://api.gold-api.com/price/XAU"
+  sina_url: "https://hq.sinajs.cn/list=hf_XAU"
+  sina_referer: "https://finance.sina.com.cn"
+  user_agent: "PredictionMarket/1.0"
+  request_timeout_seconds: 10
 sentinel:
   poll_interval_seconds: 30
   resolve_delay_seconds: 5
@@ -50,6 +56,11 @@ func TestLoadFileReadsCompleteYAML(t *testing.T) {
 	if cfg.IPFSGateway != "http://127.0.0.1:8080/ipfs/" {
 		t.Fatalf("IPFS gateway was not normalized: %q", cfg.IPFSGateway)
 	}
+	if cfg.GoldAPIURL != "https://api.gold-api.com/price/XAU" ||
+		cfg.SinaURL != "https://hq.sinajs.cn/list=hf_XAU" ||
+		cfg.OracleRequestTimeout != 10*time.Second {
+		t.Fatalf("unexpected oracle config: %+v", cfg)
+	}
 	if cfg.PollInterval != 30*time.Second || cfg.AIPollInterval != 120*time.Second {
 		t.Fatalf("unexpected intervals: poll=%s ai=%s", cfg.PollInterval, cfg.AIPollInterval)
 	}
@@ -67,6 +78,8 @@ func TestLoadFileRejectsInvalidConfiguration(t *testing.T) {
 			"use_broker_chain: true", "use_broker_chain: false", 1),
 		"AI URL": strings.Replace(validYAML,
 			"https://api.deepseek.com/chat/completions", "ftp://invalid", 1),
+		"oracle URL": strings.Replace(validYAML,
+			"https://api.gold-api.com/price/XAU", "ftp://invalid", 1),
 		"poll interval": strings.Replace(validYAML,
 			"poll_interval_seconds: 30", "poll_interval_seconds: 0", 1),
 		"confidence": strings.Replace(validYAML,

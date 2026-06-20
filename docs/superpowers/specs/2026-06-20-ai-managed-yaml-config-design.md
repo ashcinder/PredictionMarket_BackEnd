@@ -24,6 +24,13 @@ server:
 ipfs:
   gateway: "http://127.0.0.1:8080/ipfs/"
 
+oracle:
+  gold_api_url: "https://api.gold-api.com/price/XAU"
+  sina_url: "https://hq.sinajs.cn/list=hf_XAU"
+  sina_referer: "https://finance.sina.com.cn"
+  user_agent: "PredictionMarket/1.0"
+  request_timeout_seconds: 10
+
 sentinel:
   poll_interval_seconds: 30
   resolve_delay_seconds: 5
@@ -37,7 +44,7 @@ ai:
   confidence_min: 0.70
 ```
 
-`config.example.yaml` 显式列出每个配置项，避免关键 URL 或交易参数继续藏在代码默认值和环境变量中。`config.yaml` 是唯一运行配置源，不再读取 XML 或 `DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`AI_BASE_URL` 等环境变量。
+`config.example.yaml` 显式列出每个配置项，避免关键 URL 或交易参数继续藏在代码默认值和环境变量中。黄金行情的 Gold API、Sina URL、Referer、User-Agent 与请求超时也属于 YAML 配置。`config.yaml` 是唯一运行配置源，不再读取 XML 或 `DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`AI_BASE_URL` 等环境变量。
 
 加载器把嵌套 YAML 转换为现有运行时 `Config`，以减少业务代码改动。钱包私钥、AI API Key、合约地址、AI Base URL 和模型名为必填项；RPC URL 在 `use_broker_chain: false` 时必填。加载时还验证 URL、正数轮询间隔、非负开奖延迟、`0..1` 置信度以及正数 BKC 买入金额。IPFS 网关统一补齐末尾 `/`。
 

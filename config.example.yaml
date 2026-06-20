@@ -11,6 +11,13 @@ server:
 ipfs:
   gateway: "http://127.0.0.1:8080/ipfs/"
 
+oracle:
+  gold_api_url: "https://api.gold-api.com/price/XAU"
+  sina_url: "https://hq.sinajs.cn/list=hf_XAU"
+  sina_referer: "https://finance.sina.com.cn"
+  user_agent: "PredictionMarket/1.0"
+  request_timeout_seconds: 10
+
 sentinel:
   poll_interval_seconds: 30
   resolve_delay_seconds: 5

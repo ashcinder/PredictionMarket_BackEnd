@@ -32,6 +32,11 @@ cp config.example.yaml config.yaml
 | `chain` | `use_broker_chain` | `true` 使用 BrokerChain，`false` 使用 RPC |
 | `server` | `http_listen` | AI 托管 HTTP 服务监听地址 |
 | `ipfs` | `gateway` | IPFS HTTP(S) 网关 |
+| `oracle` | `gold_api_url` | Gold API 行情 HTTP(S) 地址 |
+| `oracle` | `sina_url` | 新浪黄金行情 HTTP(S) 地址 |
+| `oracle` | `sina_referer` | 新浪接口要求的 Referer 地址 |
+| `oracle` | `user_agent` | 行情请求 User-Agent |
+| `oracle` | `request_timeout_seconds` | 行情请求超时，必须大于 0 |
 | `sentinel` | `poll_interval_seconds` | 开奖扫描间隔，必须大于 0 |
 | `sentinel` | `resolve_delay_seconds` | 开奖前延迟，不能为负数 |
 | `ai` | `api_key` | 必填，模型服务 API Key |
