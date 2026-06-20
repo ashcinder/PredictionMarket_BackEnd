@@ -1,35 +1,49 @@
 package config
 
 import (
-	"encoding/xml"
+	"bytes"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
+	"gopkg.in/yaml.v3"
 )
 
-const DefaultContractAddress = "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
-const ConfigFileName = "config.xml"
+const ConfigFileName = "config.yaml"
 
-// XMLConfig 对应 XML 文件结构
-type XMLConfig struct {
-	XMLName         xml.Name `xml:"config"`
-	PrivateKey      string   `xml:"private_key"`
-	ContractAddress string   `xml:"contract_address"`
-	RPCURL          string   `xml:"rpc_url"`
-	BrokerChainURL  string   `xml:"broker_chain_url"`
-	IPFSGateway     string   `xml:"ipfs_gateway"`
-	PollInterval    string   `xml:"poll_interval"`
-	ResolveDelay    string   `xml:"resolve_delay"`
-	UseBrokerChain  string   `xml:"use_broker_chain"`
-	HTTPListen      string   `xml:"http_listen"`
-	AIBaseURL       string   `xml:"ai_base_url"`
-	AIModel         string   `xml:"ai_model"`
-	AIPollInterval  string   `xml:"ai_poll_interval"`
-	AIBuyAmountBKC  string   `xml:"ai_buy_amount_bkc"`
-	AIConfidenceMin string   `xml:"ai_confidence_min"`
+type fileConfig struct {
+	Chain struct {
+		PrivateKey      string `yaml:"private_key"`
+		ContractAddress string `yaml:"contract_address"`
+		RPCURL          string `yaml:"rpc_url"`
+		BrokerChainURL  string `yaml:"broker_chain_url"`
+		UseBrokerChain  bool   `yaml:"use_broker_chain"`
+	} `yaml:"chain"`
+	Server struct {
+		HTTPListen string `yaml:"http_listen"`
+	} `yaml:"server"`
+	IPFS struct {
+		Gateway string `yaml:"gateway"`
+	} `yaml:"ipfs"`
+	Sentinel struct {
+		PollIntervalSeconds int `yaml:"poll_interval_seconds"`
+		ResolveDelaySeconds int `yaml:"resolve_delay_seconds"`
+	} `yaml:"sentinel"`
+	AI struct {
+		APIKey              string  `yaml:"api_key"`
+		BaseURL             string  `yaml:"base_url"`
+		Model               string  `yaml:"model"`
+		PollIntervalSeconds int     `yaml:"poll_interval_seconds"`
+		BuyAmountBKC        string  `yaml:"buy_amount_bkc"`
+		ConfidenceMin       float64 `yaml:"confidence_min"`
+	} `yaml:"ai"`
 }
 
 type Config struct {
@@ -42,6 +56,7 @@ type Config struct {
 	ResolveDelay    time.Duration
 	UseBrokerChain  bool
 	HTTPListen      string
+	AIAPIKey        string
 	AIBaseURL       string
 	AIModel         string
 	AIPollInterval  time.Duration
@@ -50,144 +65,111 @@ type Config struct {
 }
 
 func Load() (*Config, error) {
-	// 尝试加载 XML 配置文件
-	if _, err := os.Stat(ConfigFileName); err == nil {
-		slog.Info("loading config from XML file", "file", ConfigFileName)
-		return loadFromXML()
-	} else if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("error checking config file: %w", err)
-	}
-
-	slog.Info("XML config file not found", "file", ConfigFileName)
-	return nil, fmt.Errorf("config file %s not found: please copy config.example.xml to %s and configure it", ConfigFileName, ConfigFileName)
+	slog.Info("loading config from YAML file", "file", ConfigFileName)
+	return LoadFile(ConfigFileName)
 }
 
-func loadFromXML() (*Config, error) {
-	data, err := os.ReadFile(ConfigFileName)
+func LoadFile(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read config file: %w", err)
+		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}
 
-	var xmlCfg XMLConfig
-	if err := xml.Unmarshal(data, &xmlCfg); err != nil {
-		return nil, fmt.Errorf("failed to parse XML config: %w", err)
+	var raw fileConfig
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&raw); err != nil {
+		return nil, fmt.Errorf("parse YAML config %s: %w", path, err)
 	}
 
-	// 验证必需配置
-	privateKey := strings.TrimSpace(xmlCfg.PrivateKey)
-	if privateKey == "" || privateKey == "your_private_key_here" {
-		return nil, fmt.Errorf("private_key is required: please set it in %s", ConfigFileName)
+	privateKey := strings.TrimSpace(raw.Chain.PrivateKey)
+	if privateKey == "" || strings.HasPrefix(privateKey, "replace-with-") {
+		return nil, errors.New("chain.private_key is required")
+	}
+	if _, err := crypto.HexToECDSA(strings.TrimPrefix(privateKey, "0x")); err != nil {
+		return nil, errors.New("chain.private_key is invalid")
+	}
+	if !common.IsHexAddress(raw.Chain.ContractAddress) {
+		return nil, errors.New("chain.contract_address is invalid")
 	}
 
-	// 处理配置项
-	contract := strings.TrimSpace(xmlCfg.ContractAddress)
-	if contract == "" {
-		contract = DefaultContractAddress
+	apiKey := strings.TrimSpace(raw.AI.APIKey)
+	if apiKey == "" || strings.HasPrefix(apiKey, "replace-with-") {
+		return nil, errors.New("ai.api_key is required")
+	}
+	if strings.TrimSpace(raw.AI.Model) == "" {
+		return nil, errors.New("ai.model is required")
+	}
+	if strings.TrimSpace(raw.Server.HTTPListen) == "" {
+		return nil, errors.New("server.http_listen is required")
+	}
+	if raw.Sentinel.PollIntervalSeconds <= 0 {
+		return nil, errors.New("sentinel.poll_interval_seconds must be positive")
+	}
+	if raw.Sentinel.ResolveDelaySeconds < 0 {
+		return nil, errors.New("sentinel.resolve_delay_seconds must not be negative")
+	}
+	if raw.AI.PollIntervalSeconds <= 0 {
+		return nil, errors.New("ai.poll_interval_seconds must be positive")
+	}
+	if raw.AI.ConfidenceMin < 0 || raw.AI.ConfidenceMin > 1 {
+		return nil, errors.New("ai.confidence_min must be between 0 and 1")
+	}
+	amount, err := strconv.ParseFloat(strings.TrimSpace(raw.AI.BuyAmountBKC), 64)
+	if err != nil || amount <= 0 {
+		return nil, errors.New("ai.buy_amount_bkc must be positive")
 	}
 
-	rpcURL := strings.TrimSpace(xmlCfg.RPCURL)
-	brokerChainURL := strings.TrimSpace(xmlCfg.BrokerChainURL)
-	if brokerChainURL == "" {
-		brokerChainURL = "https://dash.broker-chain.com:443/"
+	brokerURL, err := requireHTTPURL("chain.broker_chain_url", raw.Chain.BrokerChainURL)
+	if err != nil {
+		return nil, err
 	}
-
-	ipfsGateway := strings.TrimSpace(xmlCfg.IPFSGateway)
-	if ipfsGateway == "" {
-		ipfsGateway = "http://127.0.0.1:8080/ipfs/"
+	rpcURL := strings.TrimSpace(raw.Chain.RPCURL)
+	if !raw.Chain.UseBrokerChain {
+		if rpcURL, err = requireHTTPURL("chain.rpc_url", rpcURL); err != nil {
+			return nil, err
+		}
+	} else if rpcURL != "" {
+		if rpcURL, err = requireHTTPURL("chain.rpc_url", rpcURL); err != nil {
+			return nil, err
+		}
+	}
+	ipfsGateway, err := requireHTTPURL("ipfs.gateway", raw.IPFS.Gateway)
+	if err != nil {
+		return nil, err
+	}
+	aiBaseURL, err := requireHTTPURL("ai.base_url", raw.AI.BaseURL)
+	if err != nil {
+		return nil, err
 	}
 	if !strings.HasSuffix(ipfsGateway, "/") {
 		ipfsGateway += "/"
 	}
 
-	// 解析 PollInterval
-	pollInterval := 30 * time.Second
-	if v := strings.TrimSpace(xmlCfg.PollInterval); v != "" {
-		sec, err := strconv.Atoi(v)
-		if err != nil || sec <= 0 {
-			return nil, fmt.Errorf("invalid poll_interval: %q", v)
-		}
-		pollInterval = time.Duration(sec) * time.Second
-	}
-
-	// 解析 ResolveDelay
-	resolveDelay := 5 * time.Second
-	if v := strings.TrimSpace(xmlCfg.ResolveDelay); v != "" {
-		sec, err := strconv.Atoi(v)
-		if err != nil || sec < 0 {
-			return nil, fmt.Errorf("invalid resolve_delay: %q", v)
-		}
-		resolveDelay = time.Duration(sec) * time.Second
-	}
-
-	// 解析 UseBrokerChain
-	useBrokerChain := rpcURL == ""
-	if v := strings.TrimSpace(xmlCfg.UseBrokerChain); v != "" {
-		useBrokerChain = strings.EqualFold(v, "true") || v == "1"
-	}
-
-	httpListen := firstNonEmpty(os.Getenv("HTTP_LISTEN"), strings.TrimSpace(xmlCfg.HTTPListen), ":8081")
-
-	aiBaseURL := firstNonEmpty(os.Getenv("AI_BASE_URL"), strings.TrimSpace(xmlCfg.AIBaseURL))
-	if aiBaseURL == "" {
-		if os.Getenv("DEEPSEEK_API_KEY") != "" {
-			aiBaseURL = "https://api.deepseek.com/chat/completions"
-		} else {
-			aiBaseURL = "https://api.openai.com/v1/chat/completions"
-		}
-	}
-
-	aiModel := firstNonEmpty(os.Getenv("AI_MODEL"), strings.TrimSpace(xmlCfg.AIModel))
-	if aiModel == "" {
-		if os.Getenv("DEEPSEEK_API_KEY") != "" {
-			aiModel = "deepseek-chat"
-		} else {
-			aiModel = "gpt-4o"
-		}
-	}
-
-	aiPollInterval := 2 * time.Minute
-	if v := firstNonEmpty(os.Getenv("AI_POLL_INTERVAL_SECONDS"), strings.TrimSpace(xmlCfg.AIPollInterval)); v != "" {
-		sec, err := strconv.Atoi(v)
-		if err != nil || sec <= 0 {
-			return nil, fmt.Errorf("invalid ai_poll_interval: %q", v)
-		}
-		aiPollInterval = time.Duration(sec) * time.Second
-	}
-
-	aiBuyAmountBKC := firstNonEmpty(os.Getenv("AI_BUY_AMOUNT_BKC"), strings.TrimSpace(xmlCfg.AIBuyAmountBKC), "10")
-
-	aiConfidenceMin := 0.70
-	if v := firstNonEmpty(os.Getenv("AI_CONFIDENCE_MIN"), strings.TrimSpace(xmlCfg.AIConfidenceMin)); v != "" {
-		parsed, err := strconv.ParseFloat(v, 64)
-		if err != nil || parsed < 0 || parsed > 1 {
-			return nil, fmt.Errorf("invalid ai_confidence_min: %q", v)
-		}
-		aiConfidenceMin = parsed
-	}
-
 	return &Config{
 		PrivateKey:      privateKey,
-		ContractAddress: contract,
+		ContractAddress: common.HexToAddress(raw.Chain.ContractAddress).Hex(),
 		RPCURL:          rpcURL,
-		BrokerChainURL:  brokerChainURL,
+		BrokerChainURL:  brokerURL,
 		IPFSGateway:     ipfsGateway,
-		PollInterval:    pollInterval,
-		ResolveDelay:    resolveDelay,
-		UseBrokerChain:  useBrokerChain,
-		HTTPListen:      httpListen,
+		PollInterval:    time.Duration(raw.Sentinel.PollIntervalSeconds) * time.Second,
+		ResolveDelay:    time.Duration(raw.Sentinel.ResolveDelaySeconds) * time.Second,
+		UseBrokerChain:  raw.Chain.UseBrokerChain,
+		HTTPListen:      strings.TrimSpace(raw.Server.HTTPListen),
+		AIAPIKey:        apiKey,
 		AIBaseURL:       aiBaseURL,
-		AIModel:         aiModel,
-		AIPollInterval:  aiPollInterval,
-		AIBuyAmountBKC:  aiBuyAmountBKC,
-		AIConfidenceMin: aiConfidenceMin,
+		AIModel:         strings.TrimSpace(raw.AI.Model),
+		AIPollInterval:  time.Duration(raw.AI.PollIntervalSeconds) * time.Second,
+		AIBuyAmountBKC:  strings.TrimSpace(raw.AI.BuyAmountBKC),
+		AIConfidenceMin: raw.AI.ConfidenceMin,
 	}, nil
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return trimmed
-		}
+func requireHTTPURL(field, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return "", fmt.Errorf("%s must be an HTTP(S) URL", field)
 	}
-	return ""
+	return value, nil
 }

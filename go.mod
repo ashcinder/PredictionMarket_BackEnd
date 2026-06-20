@@ -5,6 +5,7 @@ go 1.22
 require (
 	github.com/ethereum/go-ethereum v1.14.12
 	golang.org/x/crypto v0.31.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
