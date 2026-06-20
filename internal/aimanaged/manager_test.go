@@ -1,11 +1,13 @@
 package aimanaged
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -13,6 +15,9 @@ import (
 	"PredictionMarket/internal/config"
 	"PredictionMarket/internal/ipfs"
 	"PredictionMarket/internal/oracle"
+
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/crypto"
 )
 
 func TestAIClientUsesConfiguredKeyAndModel(t *testing.T) {
@@ -52,5 +57,61 @@ func TestAIClientUsesConfiguredKeyAndModel(t *testing.T) {
 	}
 	if decision.Action != "hold" {
 		t.Fatalf("unexpected decision: %+v", decision)
+	}
+}
+
+func TestAIManagedEndpointEnablesQueriesAndDisables(t *testing.T) {
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateKey := hexutil.Encode(crypto.FromECDSA(key))
+	user := crypto.PubkeyToAddress(key.PublicKey).Hex()
+	contract := "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
+
+	store, err := NewStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	NewServer(store).Register(mux)
+
+	post := func(enabled bool, key string) *httptest.ResponseRecorder {
+		t.Helper()
+		payload, err := json.Marshal(SetRequest{
+			GameID: 1, UserAddress: user, Enabled: enabled,
+			ContractAddress: contract, PrivateKey: key,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		recorder := httptest.NewRecorder()
+		mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost,
+			"/api/gold/ai-managed", bytes.NewReader(payload)))
+		return recorder
+	}
+	get := func() bool {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		target := "/api/gold/ai-managed?game_id=1&user_address=" + url.QueryEscape(user)
+		mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		var response map[string]bool
+		if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+			t.Fatal(err)
+		}
+		return response["enabled"]
+	}
+
+	if response := post(true, privateKey); response.Code != http.StatusOK {
+		t.Fatalf("enable failed: status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !get() {
+		t.Fatal("managed entry was not enabled")
+	}
+	if response := post(false, ""); response.Code != http.StatusOK {
+		t.Fatalf("disable failed: status=%d body=%s", response.Code, response.Body.String())
+	}
+	if get() {
+		t.Fatal("managed entry was not disabled")
 	}
 }
