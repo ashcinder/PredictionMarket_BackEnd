@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"math/big"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -451,21 +450,17 @@ type Decision struct {
 }
 
 func NewAIClient(cfg *config.Config) *AIClient {
-	apiKey := os.Getenv("DEEPSEEK_API_KEY")
-	if apiKey == "" {
-		apiKey = os.Getenv("OPENAI_API_KEY")
-	}
 	return &AIClient{
 		baseURL:    cfg.AIBaseURL,
 		model:      cfg.AIModel,
-		apiKey:     apiKey,
+		apiKey:     strings.TrimSpace(cfg.AIAPIKey),
 		httpClient: &http.Client{Timeout: 45 * time.Second},
 	}
 }
 
 func (c *AIClient) Decide(ctx context.Context, info *chain.GameInfo, extra *chain.GameExtraData, meta *ipfs.Metadata, quote *oracle.Quote) (*Decision, error) {
 	if c.apiKey == "" {
-		return nil, errors.New("DEEPSEEK_API_KEY or OPENAI_API_KEY is required")
+		return nil, errors.New("ai.api_key is required")
 	}
 
 	prompt := fmt.Sprintf(`你是 BrokerFi 黄金博弈自动下单风控代理。只能输出 JSON，不要输出 Markdown。
