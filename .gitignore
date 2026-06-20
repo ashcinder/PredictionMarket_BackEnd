@@ -1,0 +1,24 @@
+# 配置文件（包含私钥等敏感信息）
+config.xml
+
+# 编译的二进制文件
+bin/*
+!bin/.gitkeep
+
+# IDE 文件
+.idea/
+*.iml
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+
+# OS
+.DS_Store
+Thumbs.db
