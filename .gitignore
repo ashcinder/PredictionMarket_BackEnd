@@ -1,4 +1,5 @@
 # 配置文件（包含私钥等敏感信息）
+config.yaml
 config.xml
 
 # 编译的二进制文件

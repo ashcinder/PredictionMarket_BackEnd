@@ -91,3 +91,32 @@ func TestLoadFileReportsMissingFile(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestRepositoryConfigurationArtifactsUseYAML(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", ".."))
+	example, err := os.ReadFile(filepath.Join(root, "config.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	usable := strings.ReplaceAll(string(example),
+		"replace-with-wallet-private-key",
+		"0000000000000000000000000000000000000000000000000000000000000001")
+	usable = strings.ReplaceAll(usable, "replace-with-ai-api-key", "test-ai-key")
+	if _, err := LoadFile(writeTestConfig(t, usable)); err != nil {
+		t.Fatalf("example config is not valid after inserting secrets: %v", err)
+	}
+
+	for _, name := range []string{"start.sh", "SETUP.md"} {
+		body, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), "config.example.xml") ||
+			strings.Contains(string(body), "读取 config.xml") {
+			t.Fatalf("%s still instructs users to configure XML", name)
+		}
+		if !strings.Contains(string(body), "config.yaml") {
+			t.Fatalf("%s does not mention config.yaml", name)
+		}
+	}
+}
