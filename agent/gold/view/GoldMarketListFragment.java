@@ -23,10 +23,10 @@ import androidx.lifecycle.ViewModelProvider;
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
 import com.example.brokerfi.R;
+import com.example.brokerfi.xc.agent.ai.DeepSeekClient;
 import com.example.brokerfi.xc.agent.gold.model.data.GoldMarketRepository;
 import com.example.brokerfi.xc.agent.gold.model.logic.GoldAdvisoryManager;
 import com.example.brokerfi.xc.agent.gold.viewmodel.GoldMarketViewModel;
-import com.example.brokerfi.xc.agent.model.DeepSeekClient;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -40,7 +40,6 @@ public class GoldMarketListFragment extends Fragment {
     private GoldMarketViewModel viewModel;
     private final List<GoldMarketRepository.GameModel> availableGames = new ArrayList<>();
 
-    private TextView tvAiSignal, tvAiConfidence, tvAiSummary;
     private LinearLayout marketListContainer;
     private SwipeRefreshLayout swipeRefresh;
 
@@ -61,23 +60,9 @@ public class GoldMarketListFragment extends Fragment {
     }
 
     private void initViews(View v) {
-        tvAiSignal = v.findViewById(R.id.tv_ai_signal);
-        tvAiConfidence = v.findViewById(R.id.tv_ai_confidence);
-        tvAiSummary = v.findViewById(R.id.tv_ai_summary);
         marketListContainer = v.findViewById(R.id.market_list_container);
         swipeRefresh = v.findViewById(R.id.swipe_refresh);
         swipeRefresh.setOnRefreshListener(() -> viewModel.loadData());
-
-        v.findViewById(R.id.card_ai_advice).setOnClickListener(view -> {
-            if (!DeepSeekClient.isConfigured()) {
-                showApiKeyDialog();
-            } else {
-                Intent intent = new Intent(requireContext(), com.example.brokerfi.xc.AIAssistantActivity.class);
-                startActivity(intent);
-            }
-        });
-
-        v.findViewById(R.id.iv_ai_config).setOnClickListener(view -> showApiKeyDialog());
     }
 
     private void observeViewModel() {
@@ -89,8 +74,6 @@ public class GoldMarketListFragment extends Fragment {
             }
             renderMarketList();
         });
-
-        viewModel.getAiAdvisory().observe(getViewLifecycleOwner(), this::updateAiAdviceUI);
 
         viewModel.getIsLoading().observe(getViewLifecycleOwner(), loading -> swipeRefresh.setRefreshing(loading));
 
@@ -179,32 +162,5 @@ public class GoldMarketListFragment extends Fragment {
             }
         }
         return ssb;
-    }
-
-    private void updateAiAdviceUI(GoldAdvisoryManager.Advisory advisory) {
-        if (getActivity() == null || advisory == null) return;
-        tvAiSignal.setText(advisory.signal);
-        tvAiConfidence.setText("DeepSeek 置信度 " + advisory.confidence + "%");
-        tvAiSummary.setText(advisory.summary);
-        int color = advisory.signal.equals("BUY") ? Color.parseColor("#047857") : (advisory.signal.equals("SELL") ? Color.RED : Color.BLACK);
-        tvAiSignal.setTextColor(color);
-    }
-
-    private void showApiKeyDialog() {
-        android.app.AlertDialog.Builder builder = new android.app.AlertDialog.Builder(requireContext());
-        builder.setTitle("配置 DeepSeek API Key");
-        final android.widget.EditText input = new android.widget.EditText(requireContext());
-        input.setHint("输入你的 API Key");
-        input.setText(DeepSeekClient.getApiKey());
-        builder.setView(input);
-        builder.setPositiveButton("保存", (dialog, which) -> {
-            String key = input.getText().toString().trim();
-            if (!key.isEmpty()) {
-                DeepSeekClient.setApiKey(key);
-                viewModel.updateAiAdvice();
-            }
-        });
-        builder.setNegativeButton("取消", null);
-        builder.show();
     }
 }

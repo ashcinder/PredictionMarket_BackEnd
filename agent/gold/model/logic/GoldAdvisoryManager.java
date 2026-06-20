@@ -1,6 +1,6 @@
 package com.example.brokerfi.xc.agent.gold.model.logic;
 
-import com.example.brokerfi.xc.agent.model.DeepSeekClient;
+import com.example.brokerfi.xc.agent.ai.DeepSeekClient;
 import com.example.brokerfi.xc.agent.gold.model.data.AppExecutors;
 import com.example.brokerfi.xc.agent.gold.model.data.GoldMarketRepository;
 

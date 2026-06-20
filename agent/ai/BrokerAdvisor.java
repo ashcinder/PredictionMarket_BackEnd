@@ -1,14 +1,10 @@
-package com.example.brokerfi.xc.agent.model;
+package com.example.brokerfi.xc.agent.ai;
 
 import androidx.appcompat.app.AppCompatActivity;
 
 import com.example.brokerfi.xc.MyUtil;
 import com.example.brokerfi.xc.StorageUtil;
 
-/**
- * Broker 收益顾问 — 监控质押收益并提供调仓建议。
- * 可被 AIAssistantActivity 或后台 Service 调用。
- */
 public class BrokerAdvisor {
 
     public interface AdviceCallback {
@@ -16,10 +12,6 @@ public class BrokerAdvisor {
         void onDataError(String error);
     }
 
-    /**
-     * 快速收益巡检：不调 AI，直接返回数据摘要。
-     * 适合下拉刷新场景。
-     */
     public static void quickScan(AppCompatActivity activity, AdviceCallback callback) {
         String pk = StorageUtil.getCurrentPrivatekey(activity);
         if (pk == null || pk.isEmpty()) {
@@ -35,7 +27,6 @@ public class BrokerAdvisor {
                     return;
                 }
 
-                // 简单的本地分析（不调 AI，秒级返回）
                 AgentManager.ShardProfit[] shards =
                         AgentManager.getInstance().parseShardProfitsPublic(profitJson);
 
@@ -70,9 +61,6 @@ public class BrokerAdvisor {
         }).start();
     }
 
-    /**
-     * 深度 AI 分析：调 DeepSeek 做多维度研判。
-     */
     public static void deepAnalysis(AppCompatActivity activity, AdviceCallback callback) {
         String pk = StorageUtil.getCurrentPrivatekey(activity);
         if (pk == null || pk.isEmpty()) {

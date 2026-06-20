@@ -1,9 +1,5 @@
-package com.example.brokerfi.xc.agent.model;
+package com.example.brokerfi.xc.agent.ai;
 
-/**
- * 交易安全守护 — 在用户发起交易前做 AI 辅助安全检查。
- * 纯叠加：拦截参数 → 分析 → 告警，不修改 SendTX 逻辑。
- */
 public class MarketSentinel {
 
     public enum RiskLevel { LOW, MEDIUM, HIGH }
@@ -14,10 +10,6 @@ public class MarketSentinel {
         public boolean shouldWarn;
     }
 
-    /**
-     * 本地规则快速检查（不调 AI，毫秒级）。
-     * 建议在 SendActivity 发起交易前调用。
-     */
     public static RiskReport quickCheck(String toAddress, String value, String fee) {
         RiskReport report = new RiskReport();
         report.level = RiskLevel.LOW;
@@ -25,7 +17,6 @@ public class MarketSentinel {
 
         StringBuilder warnings = new StringBuilder();
 
-        // 1. 空地址检查
         if (toAddress == null || toAddress.length() < 40) {
             report.level = RiskLevel.HIGH;
             report.message = "Invalid recipient address.";
@@ -33,7 +24,6 @@ public class MarketSentinel {
             return report;
         }
 
-        // 2. 大额交易提醒
         try {
             double val = Double.parseDouble(value);
             if (val > 10000) {
@@ -43,7 +33,6 @@ public class MarketSentinel {
             }
         } catch (NumberFormatException ignored) {}
 
-        // 3. 高手续费提醒
         try {
             double f = Double.parseDouble(fee);
             if (f > 100) {
@@ -53,24 +42,16 @@ public class MarketSentinel {
             }
         } catch (NumberFormatException ignored) {}
 
-        // 4. 零地址检查
         if (toAddress.startsWith("0x0000000000000000000000000")) {
             report.level = RiskLevel.HIGH;
             warnings.append("Sending to zero/burn address! ");
             report.shouldWarn = true;
         }
 
-        // 5. 自转账检查
-        // (需要调用方传入 fromAddress 做判断，这里留扩展点)
-
         report.message = warnings.length() > 0 ? warnings.toString().trim() : "Transaction looks safe.";
         return report;
     }
 
-    /**
-     * AI 深度安全检查（调 DeepSeek，异步）。
-     * 用于高风险场景。
-     */
     public static void deepCheck(String toAddress, String value, String fee, SentinelCallback callback) {
         if (!DeepSeekClient.isConfigured()) {
             callback.onResult("DeepSeek not configured. Skipping AI security check.", false);

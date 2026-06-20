@@ -1,4 +1,4 @@
-package com.example.brokerfi.xc.agent.model;
+package com.example.brokerfi.xc.agent.ai;
 
 import android.content.Context;
 import android.content.SharedPreferences;
@@ -124,8 +124,6 @@ public class DeepSeekClient {
         chat("你是一个专业的区块链DeFi助手，服务于BrokerChain钱包用户。请用中文回答，简洁、可操作。",
                 userMessage, callback);
     }
-
-    // --- request/response models ---
 
     private static boolean isValidApiKey(String key) {
         return key != null && key.startsWith("sk-") && key.length() > 10;

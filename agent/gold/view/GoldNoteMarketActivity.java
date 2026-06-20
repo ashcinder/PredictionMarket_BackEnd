@@ -15,9 +15,9 @@ import androidx.viewpager2.widget.ViewPager2;
 
 import com.example.brokerfi.R;
 import com.example.brokerfi.xc.StorageUtil;
+import com.example.brokerfi.xc.agent.ai.DeepSeekClient;
 import com.example.brokerfi.xc.agent.gold.model.logic.GoldAdvisoryManager;
 import com.example.brokerfi.xc.agent.gold.viewmodel.GoldNoteMarketViewModel;
-import com.example.brokerfi.xc.agent.model.DeepSeekClient;
 import com.google.android.material.tabs.TabLayout;
 import com.google.android.material.tabs.TabLayoutMediator;
 
@@ -79,16 +79,18 @@ public class GoldNoteMarketActivity extends AppCompatActivity {
                     case 0: return new GoldMarketListFragment();
                     case 1: return new GoldMyPositionsFragment();
                     case 2: return new GoldCreatePoolFragment();
+                    case 3: return new AIChatFragment();
                     default: return new GoldMarketListFragment();
                 }
             }
-            @Override public int getItemCount() { return 3; }
+            @Override public int getItemCount() { return 4; }
         });
         new TabLayoutMediator(tabLayout, viewPager, (tab, position) -> {
             switch (position) {
                 case 0: tab.setText("博弈市场"); break;
                 case 1: tab.setText("个人持仓"); break;
                 case 2: tab.setText("创建博弈"); break;
+                case 3: tab.setText("AI投研"); break;
             }
         }).attach();
     }

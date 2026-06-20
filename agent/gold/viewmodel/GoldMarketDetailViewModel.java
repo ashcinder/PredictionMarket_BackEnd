@@ -6,11 +6,11 @@ import androidx.lifecycle.AndroidViewModel;
 import androidx.lifecycle.LiveData;
 import androidx.lifecycle.MutableLiveData;
 
+import com.example.brokerfi.xc.StorageUtil;
+import com.example.brokerfi.xc.agent.ai.AgentManager;
 import com.example.brokerfi.xc.agent.gold.model.data.GoldMarketRepository;
 import com.example.brokerfi.xc.agent.gold.model.logic.GoldAdvisoryManager;
 import com.example.brokerfi.xc.agent.gold.model.logic.GoldMarketResearchPromptBuilder;
-import com.example.brokerfi.xc.agent.model.AgentManager;
-import com.example.brokerfi.xc.StorageUtil;
 
 import java.math.BigInteger;
 
@@ -42,14 +42,47 @@ public class GoldMarketDetailViewModel extends AndroidViewModel {
         repository.getGameInfo(gameId, new GoldMarketRepository.DataCallback<GoldMarketRepository.GameModel>() {
             @Override
             public void onSuccess(GoldMarketRepository.GameModel model) {
-                isLoading.postValue(false);
-                currentGame.postValue(model);
-                requestAiSummary(model);
+                // 加载博弈池后，查询 AI 托管状态
+                repository.getAiManagedStatus(gameId, new GoldMarketRepository.DataCallback<Boolean>() {
+                    @Override
+                    public void onSuccess(Boolean managed) {
+                        model.isManaged = managed;
+                        isLoading.postValue(false);
+                        currentGame.postValue(model);
+                        requestAiSummary(model);
+                    }
+                    @Override
+                    public void onError(String err) {
+                        isLoading.postValue(false);
+                        currentGame.postValue(model);
+                        requestAiSummary(model);
+                    }
+                });
             }
             @Override
             public void onError(String err) {
                 isLoading.postValue(false);
                 error.postValue(err);
+            }
+        });
+    }
+
+    public void toggleAiManaged(int gameId, boolean enabled) {
+        repository.toggleAiManaged(gameId, enabled, new GoldMarketRepository.DataCallback<Boolean>() {
+            @Override
+            public void onSuccess(Boolean result) {
+                GoldMarketRepository.GameModel model = currentGame.getValue();
+                if (model != null && model.id == gameId) {
+                    model.isManaged = result;
+                    currentGame.postValue(model);
+                }
+            }
+            @Override
+            public void onError(String err) {
+                error.postValue(err);
+                // 恢复 UI 状态
+                GoldMarketRepository.GameModel model = currentGame.getValue();
+                if (model != null) currentGame.postValue(model);
             }
         });
     }

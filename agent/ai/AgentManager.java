@@ -1,4 +1,4 @@
-package com.example.brokerfi.xc.agent.model;
+package com.example.brokerfi.xc.agent.ai;
 
 import androidx.appcompat.app.AppCompatActivity;
 
@@ -13,10 +13,6 @@ import com.google.gson.reflect.TypeToken;
 import java.lang.reflect.Type;
 import java.util.Map;
 
-/**
- * AI Agent 主控制器 — 单例，编排 Wallet 现有 API + DeepSeek AI 分析。
- * 不修改任何 Wallet 底层代码，只做只读调用和策略建议。
- */
 public class AgentManager {
     private final Gson gson = new Gson();
 
@@ -30,12 +26,6 @@ public class AgentManager {
         return Holder.INSTANCE;
     }
 
-    // =============== Broker 收益分析 ===============
-
-    /**
-     * 查询各 shard 收益并让 AI 给出调仓建议。
-     * 返回的 BrokerReport 可直接展示给用户。
-     */
     public void analyzeBroker(AppCompatActivity activity, AnalysisCallback callback) {
         String pk = StorageUtil.getCurrentPrivatekey(activity);
         if (pk == null || pk.isEmpty()) {
@@ -51,10 +41,8 @@ public class AgentManager {
                     return;
                 }
 
-                // 解析 shard 数据
                 ShardProfit[] shards = parseShardProfits(profitJson);
 
-                // 构建 prompt
                 StringBuilder sb = new StringBuilder();
                 sb.append("分析以下经纪分片质押数据，给出调仓建议：\n");
                 for (ShardProfit s : shards) {
@@ -77,7 +65,6 @@ public class AgentManager {
 
                             @Override
                             public void onError(String error) {
-                                // 即使 AI 不可用，也返回原始数据
                                 BrokerReport report = new BrokerReport();
                                 report.rawAnalysis = "AI分析不可用，以下为原始数据：";
                                 report.shards = shards;
@@ -89,8 +76,6 @@ public class AgentManager {
             }
         }).start();
     }
-
-    // =============== NFT 市场 AI 推荐 ===============
 
     public void recommendNFTs(AppCompatActivity activity, AnalysisCallback callback) {
         String pk = StorageUtil.getCurrentPrivatekey(activity);
@@ -137,8 +122,6 @@ public class AgentManager {
         }).start();
     }
 
-    // =============== 通用对话 ===============
-
     public void askAnything(String question, AnalysisCallback callback) {
         if (containsPrivateKey(question)) {
             callback.onError("您的消息可能包含私钥或助记词，为保障安全，未发送至AI。");
@@ -183,14 +166,11 @@ public class AgentManager {
 
     private static boolean containsPrivateKey(String text) {
         if (text == null) return false;
-        // 64 hex chars (private key) or 12/24 word seed phrase
         String stripped = text.replaceAll("\\s+", "");
         if (stripped.matches("(?i)^[0-9a-f]{64}$")) return true;
         int wordCount = text.trim().split("\\s+").length;
         return wordCount == 12 || wordCount == 24;
     }
-
-    // =============== 工具方法 ===============
 
     public ShardProfit[] parseShardProfitsPublic(String json) {
         return parseShardProfits(json);
@@ -225,8 +205,6 @@ public class AgentManager {
         try { return Double.parseDouble(s.trim()); }
         catch (NumberFormatException e) { return 0; }
     }
-
-    // =============== 数据模型 ===============
 
     public static class ShardProfit {
         public int shardIndex;
