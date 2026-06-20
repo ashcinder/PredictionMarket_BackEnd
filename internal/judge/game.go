@@ -2,6 +2,7 @@ package judge
 
 import (
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -77,7 +78,7 @@ func EvaluateWinner(condition string, quote *oracle.Quote) int {
 	// 格式: "博弈指定日成交量 大于 (Above) 500 吨 (...)"
 	// ============================================================
 	if strings.Contains(cond, "成交量") {
-		if targetVol, ok := parseNumericValue(cond, "成交量 ", " 吨"); ok {
+		if targetVol, ok := parseComparisonThreshold(cond); ok {
 			actualVol := 400.0 // TODO: 这里需要对接真实的交易量数据源
 			if strings.Contains(cond, "大于") {
 				if actualVol > targetVol {
@@ -107,9 +108,9 @@ func EvaluateWinner(condition string, quote *oracle.Quote) int {
 	// ============================================================
 	if strings.Contains(cond, "指标") {
 		// 先尝试解析 "大于/小于" 模式
-		if threshold, ok := parseThresholdFromIndicator(cond); ok {
+		if threshold, ok := parseComparisonThreshold(cond); ok {
 			currentIndicatorValue := 65.0 // TODO: 这里需要计算真实的技术指标
-			
+
 			if strings.Contains(cond, "大于") {
 				if currentIndicatorValue > threshold {
 					return 0
@@ -123,7 +124,7 @@ func EvaluateWinner(condition string, quote *oracle.Quote) int {
 				return 1
 			}
 		}
-		
+
 		// 解析 "交叉向上/交叉向下" 模式
 		if strings.Contains(cond, "交叉") {
 			if strings.Contains(cond, "交叉向上") {
@@ -162,18 +163,18 @@ func EvaluateWinner(condition string, quote *oracle.Quote) int {
 	return 1
 }
 
-func parseThresholdFromIndicator(cond string) (float64, bool) {
-	if idx := strings.Index(cond, " ("); idx > 0 {
-		lastSpace := strings.LastIndex(cond[:idx], " ")
-		if lastSpace >= 0 && lastSpace+1 < idx {
-			valueStr := strings.TrimSpace(cond[lastSpace+1 : idx])
-			threshold, err := strconv.ParseFloat(valueStr, 64)
-			if err == nil {
-				return threshold, true
-			}
-		}
+var comparisonThresholdPattern = regexp.MustCompile(`(?:大于|小于|等于)\s*(?:\([^)]*\))?\s*(-?\d+(?:\.\d+)?)`)
+
+func parseComparisonThreshold(condition string) (float64, bool) {
+	match := comparisonThresholdPattern.FindStringSubmatch(condition)
+	if len(match) != 2 {
+		return 0, false
 	}
-	return 0, false
+	value, err := strconv.ParseFloat(match[1], 64)
+	if err != nil {
+		return 0, false
+	}
+	return value, true
 }
 
 func parseNumericValue(text, prefix, suffix string) (float64, bool) {

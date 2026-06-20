@@ -246,3 +246,25 @@ func TestEvaluateWinner_InvalidCases(t *testing.T) {
 		})
 	}
 }
+
+func TestParseComparisonThreshold(t *testing.T) {
+	tests := []struct {
+		name      string
+		condition string
+		want      float64
+		ok        bool
+	}{
+		{"bilingual volume", "成交量 大于 (Above) 100 吨", 100, true},
+		{"bilingual RSI", "指标 RSI (14) 大于 (Above) 60 (Indicator Option)", 60, true},
+		{"Chinese only", "指标 RSI (14) 小于 30", 30, true},
+		{"missing threshold", "指标 RSI (14) 大于 (Above)", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := parseComparisonThreshold(tt.condition)
+			if ok != tt.ok || got != tt.want {
+				t.Fatalf("parseComparisonThreshold() = (%v, %v), want (%v, %v)", got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
