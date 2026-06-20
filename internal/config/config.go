@@ -24,17 +24,29 @@ type XMLConfig struct {
 	PollInterval    string   `xml:"poll_interval"`
 	ResolveDelay    string   `xml:"resolve_delay"`
 	UseBrokerChain  string   `xml:"use_broker_chain"`
+	HTTPListen      string   `xml:"http_listen"`
+	AIBaseURL       string   `xml:"ai_base_url"`
+	AIModel         string   `xml:"ai_model"`
+	AIPollInterval  string   `xml:"ai_poll_interval"`
+	AIBuyAmountBKC  string   `xml:"ai_buy_amount_bkc"`
+	AIConfidenceMin string   `xml:"ai_confidence_min"`
 }
 
 type Config struct {
-	PrivateKey       string
-	ContractAddress  string
-	RPCURL           string
-	BrokerChainURL   string
-	IPFSGateway      string
-	PollInterval     time.Duration
-	ResolveDelay     time.Duration
-	UseBrokerChain   bool
+	PrivateKey      string
+	ContractAddress string
+	RPCURL          string
+	BrokerChainURL  string
+	IPFSGateway     string
+	PollInterval    time.Duration
+	ResolveDelay    time.Duration
+	UseBrokerChain  bool
+	HTTPListen      string
+	AIBaseURL       string
+	AIModel         string
+	AIPollInterval  time.Duration
+	AIBuyAmountBKC  string
+	AIConfidenceMin float64
 }
 
 func Load() (*Config, error) {
@@ -113,6 +125,46 @@ func loadFromXML() (*Config, error) {
 		useBrokerChain = strings.EqualFold(v, "true") || v == "1"
 	}
 
+	httpListen := firstNonEmpty(os.Getenv("HTTP_LISTEN"), strings.TrimSpace(xmlCfg.HTTPListen), ":8081")
+
+	aiBaseURL := firstNonEmpty(os.Getenv("AI_BASE_URL"), strings.TrimSpace(xmlCfg.AIBaseURL))
+	if aiBaseURL == "" {
+		if os.Getenv("DEEPSEEK_API_KEY") != "" {
+			aiBaseURL = "https://api.deepseek.com/chat/completions"
+		} else {
+			aiBaseURL = "https://api.openai.com/v1/chat/completions"
+		}
+	}
+
+	aiModel := firstNonEmpty(os.Getenv("AI_MODEL"), strings.TrimSpace(xmlCfg.AIModel))
+	if aiModel == "" {
+		if os.Getenv("DEEPSEEK_API_KEY") != "" {
+			aiModel = "deepseek-chat"
+		} else {
+			aiModel = "gpt-4o"
+		}
+	}
+
+	aiPollInterval := 2 * time.Minute
+	if v := firstNonEmpty(os.Getenv("AI_POLL_INTERVAL_SECONDS"), strings.TrimSpace(xmlCfg.AIPollInterval)); v != "" {
+		sec, err := strconv.Atoi(v)
+		if err != nil || sec <= 0 {
+			return nil, fmt.Errorf("invalid ai_poll_interval: %q", v)
+		}
+		aiPollInterval = time.Duration(sec) * time.Second
+	}
+
+	aiBuyAmountBKC := firstNonEmpty(os.Getenv("AI_BUY_AMOUNT_BKC"), strings.TrimSpace(xmlCfg.AIBuyAmountBKC), "10")
+
+	aiConfidenceMin := 0.70
+	if v := firstNonEmpty(os.Getenv("AI_CONFIDENCE_MIN"), strings.TrimSpace(xmlCfg.AIConfidenceMin)); v != "" {
+		parsed, err := strconv.ParseFloat(v, 64)
+		if err != nil || parsed < 0 || parsed > 1 {
+			return nil, fmt.Errorf("invalid ai_confidence_min: %q", v)
+		}
+		aiConfidenceMin = parsed
+	}
+
 	return &Config{
 		PrivateKey:      privateKey,
 		ContractAddress: contract,
@@ -122,5 +174,20 @@ func loadFromXML() (*Config, error) {
 		PollInterval:    pollInterval,
 		ResolveDelay:    resolveDelay,
 		UseBrokerChain:  useBrokerChain,
+		HTTPListen:      httpListen,
+		AIBaseURL:       aiBaseURL,
+		AIModel:         aiModel,
+		AIPollInterval:  aiPollInterval,
+		AIBuyAmountBKC:  aiBuyAmountBKC,
+		AIConfidenceMin: aiConfidenceMin,
 	}, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }

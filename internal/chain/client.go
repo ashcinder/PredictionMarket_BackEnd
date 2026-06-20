@@ -364,6 +364,22 @@ type GameOnChain struct {
 	WinningOption int
 }
 
+type GameInfo struct {
+	ID            int
+	IPFSCID       string
+	TotalPool     *big.Int
+	DeadlineRaw   int64
+	IsResolved    bool
+	IsRefunded    bool
+	WinningOption int
+}
+
+type GameExtraData struct {
+	// Contract order is NO, YES for reserves and YES, NO for user shares.
+	VirtualReservesNOYES []*big.Int
+	MySharesYESNO        []*big.Int
+}
+
 func RemainingSecondsUntilDeadline(rawDeadline int64, nowMillis int64) int64 {
 	if rawDeadline <= 0 {
 		return 0

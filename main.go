@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"PredictionMarket/internal/aimanaged"
 	"PredictionMarket/internal/chain"
 	"PredictionMarket/internal/config"
 	"PredictionMarket/internal/ipfs"
@@ -39,12 +42,53 @@ func main() {
 	ipfsClient := ipfs.NewClient(cfg.IPFSGateway)
 	goldOracle := oracle.NewGoldOracle()
 	watcher := sentinel.NewWatcher(cfg, chainClient, ipfsClient, goldOracle)
+	managedStore, err := aimanaged.NewStore()
+	if err != nil {
+		slog.Error("init ai-managed store failed", "error", err)
+		os.Exit(1)
+	}
+	managedServer := aimanaged.NewServer(managedStore)
+	managedEngine := aimanaged.NewEngine(cfg, managedStore, ipfsClient, goldOracle)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	if err := watcher.Run(ctx); err != nil && err != context.Canceled {
-		slog.Error("watcher exited with error", "error", err)
-		os.Exit(1)
+	mux := http.NewServeMux()
+	managedServer.Register(mux)
+	httpServer := &http.Server{
+		Addr:              cfg.HTTPListen,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	errCh := make(chan error, 3)
+	go func() {
+		slog.Info("http api server started", "listen", cfg.HTTPListen)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errCh <- err
+		}
+	}()
+	go func() {
+		if err := managedEngine.Run(ctx); err != nil && err != context.Canceled {
+			errCh <- err
+		}
+	}()
+	go func() {
+		if err := watcher.Run(ctx); err != nil && err != context.Canceled {
+			errCh <- err
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+	case err := <-errCh:
+		slog.Error("service exited with error", "error", err)
+		cancel()
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		slog.Warn("http api shutdown failed", "error", err)
 	}
 }
