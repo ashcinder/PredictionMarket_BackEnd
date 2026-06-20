@@ -77,12 +77,77 @@ type Server struct {
 	store *Store
 }
 
+type managedChain interface {
+	WalletAddress() string
+	Close()
+	GetGameInfo(context.Context, int) (*chain.GameInfo, error)
+	GetGameExtraData(context.Context, int, string) (*chain.GameExtraData, error)
+	BuyShares(context.Context, int, int, *big.Int) (string, error)
+}
+
+type metadataSource interface {
+	DownloadMetadata(string) (*ipfs.Metadata, error)
+}
+
+type quoteSource interface {
+	FetchQuote() (*oracle.Quote, error)
+}
+
+type decisionSource interface {
+	Decide(context.Context, *chain.GameInfo, *chain.GameExtraData, *ipfs.Metadata, *oracle.Quote) (*Decision, error)
+}
+
+type managedChainFactory func(privateKey, contractAddress string) (managedChain, error)
+
 type Engine struct {
-	cfg    *config.Config
-	store  *Store
-	ipfs   *ipfs.Client
-	oracle *oracle.GoldOracle
-	ai     *AIClient
+	cfg       *config.Config
+	store     *Store
+	newChain  managedChainFactory
+	metadata  metadataSource
+	quotes    quoteSource
+	decisions decisionSource
+}
+
+type productionManagedChain struct {
+	client *chain.Client
+}
+
+func (p *productionManagedChain) WalletAddress() string { return p.client.WalletAddress() }
+func (p *productionManagedChain) Close()                { p.client.Close() }
+
+func (p *productionManagedChain) GetGameInfo(ctx context.Context, gameID int) (*chain.GameInfo, error) {
+	data, err := chain.EncodeGetGameInfo(gameID)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := p.client.EthCall(ctx, data)
+	if err != nil {
+		return nil, err
+	}
+	return chain.DecodeGetGameInfo(gameID, encoded)
+}
+
+func (p *productionManagedChain) GetGameExtraData(ctx context.Context, gameID int, user string) (*chain.GameExtraData, error) {
+	data, err := chain.EncodeGetGameExtraData(gameID, user)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := p.client.EthCall(ctx, data)
+	if err != nil {
+		return nil, err
+	}
+	if encoded == "" || encoded == "0x" {
+		return nil, errors.New("empty game extra data")
+	}
+	return chain.DecodeGetGameExtraData(encoded)
+}
+
+func (p *productionManagedChain) BuyShares(ctx context.Context, gameID, option int, value *big.Int) (string, error) {
+	data, err := chain.EncodeBuyShares(gameID, option)
+	if err != nil {
+		return "", err
+	}
+	return p.client.SendTransaction(ctx, data, value)
 }
 
 func NewStore() (*Store, error) {
@@ -107,11 +172,18 @@ func NewServer(store *Store) *Server {
 
 func NewEngine(cfg *config.Config, store *Store, ipfsClient *ipfs.Client, goldOracle *oracle.GoldOracle) *Engine {
 	return &Engine{
-		cfg:    cfg,
-		store:  store,
-		ipfs:   ipfsClient,
-		oracle: goldOracle,
-		ai:     NewAIClient(cfg),
+		cfg:   cfg,
+		store: store,
+		newChain: func(privateKey, contractAddress string) (managedChain, error) {
+			client, err := chain.NewClient(privateKey, contractAddress, cfg.RPCURL, cfg.BrokerChainURL, cfg.UseBrokerChain)
+			if err != nil {
+				return nil, err
+			}
+			return &productionManagedChain{client: client}, nil
+		},
+		metadata:  ipfsClient,
+		quotes:    goldOracle,
+		decisions: NewAIClient(cfg),
 	}
 }
 
@@ -341,27 +413,19 @@ func (e *Engine) process(ctx context.Context, snapshot EntrySnapshot) error {
 	if err != nil {
 		return fmt.Errorf("decrypt private key: %w", err)
 	}
-	client, err := chain.NewClient(privateKey, snapshot.ContractAddress, e.cfg.RPCURL, e.cfg.BrokerChainURL, e.cfg.UseBrokerChain)
+	client, err := e.newChain(privateKey, snapshot.ContractAddress)
 	if err != nil {
 		return fmt.Errorf("init user chain client: %w", err)
 	}
 	defer client.Close()
 	if !strings.EqualFold(client.WalletAddress(), snapshot.UserAddress) {
 		e.store.Disable(snapshot.GameID, snapshot.UserAddress)
-		return fmt.Errorf("private key no longer matches managed user")
+		return errors.New("private key no longer matches managed user")
 	}
 
-	infoData, err := chain.EncodeGetGameInfo(snapshot.GameID)
+	info, err := client.GetGameInfo(ctx, snapshot.GameID)
 	if err != nil {
-		return err
-	}
-	infoHex, err := client.EthCall(ctx, infoData)
-	if err != nil {
-		return fmt.Errorf("eth_call getGameInfo: %w", err)
-	}
-	info, err := chain.DecodeGetGameInfo(snapshot.GameID, infoHex)
-	if err != nil {
-		return err
+		return fmt.Errorf("get game info: %w", err)
 	}
 	if info.IsResolved || info.IsRefunded || chain.IsDeadlinePassed(info.DeadlineRaw, time.Now().UnixMilli()) {
 		e.store.Disable(snapshot.GameID, snapshot.UserAddress)
@@ -369,28 +433,23 @@ func (e *Engine) process(ctx context.Context, snapshot EntrySnapshot) error {
 		return nil
 	}
 
-	meta, err := e.ipfs.DownloadMetadata(info.IPFSCID)
+	meta, err := e.metadata.DownloadMetadata(info.IPFSCID)
 	if err != nil {
 		slog.Warn("ai-managed metadata unavailable", "game_id", snapshot.GameID, "cid", info.IPFSCID, "error", err)
 		meta = &ipfs.Metadata{}
 	}
 
 	extra := &chain.GameExtraData{VirtualReservesNOYES: []*big.Int{big.NewInt(0), big.NewInt(0)}}
-	extraData, err := chain.EncodeGetGameExtraData(snapshot.GameID, snapshot.UserAddress)
-	if err == nil {
-		if extraHex, callErr := client.EthCall(ctx, extraData); callErr == nil && extraHex != "" && extraHex != "0x" {
-			if decoded, decodeErr := chain.DecodeGetGameExtraData(extraHex); decodeErr == nil {
-				extra = decoded
-			}
-		}
+	if decoded, extraErr := client.GetGameExtraData(ctx, snapshot.GameID, snapshot.UserAddress); extraErr == nil && decoded != nil {
+		extra = decoded
 	}
 
-	quote, err := e.oracle.FetchQuote()
+	quote, err := e.quotes.FetchQuote()
 	if err != nil {
 		return fmt.Errorf("fetch gold quote: %w", err)
 	}
 
-	decision, err := e.ai.Decide(ctx, info, extra, meta, quote)
+	decision, err := e.decisions.Decide(ctx, info, extra, meta, quote)
 	if err != nil {
 		return fmt.Errorf("ai decide: %w", err)
 	}
@@ -406,8 +465,7 @@ func (e *Engine) process(ctx context.Context, snapshot EntrySnapshot) error {
 		return nil
 	}
 
-	now := time.Now()
-	if !e.store.CanTrade(snapshot.GameID, snapshot.UserAddress, option, now) {
+	if !e.store.CanTrade(snapshot.GameID, snapshot.UserAddress, option, time.Now()) {
 		slog.Info("ai-managed skipped by cooldown", "game_id", snapshot.GameID, "user", snapshot.UserAddress, "option", option)
 		return nil
 	}
@@ -416,11 +474,7 @@ func (e *Engine) process(ctx context.Context, snapshot EntrySnapshot) error {
 	if err != nil {
 		return fmt.Errorf("invalid ai buy amount: %w", err)
 	}
-	txData, err := chain.EncodeBuyShares(snapshot.GameID, option)
-	if err != nil {
-		return err
-	}
-	tx, err := client.SendTransaction(ctx, txData, value)
+	tx, err := client.BuyShares(ctx, snapshot.GameID, option, value)
 	if err != nil {
 		return fmt.Errorf("send buyShares tx: %w", err)
 	}

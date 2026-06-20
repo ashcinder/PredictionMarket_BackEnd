@@ -115,3 +115,122 @@ func TestAIManagedEndpointEnablesQueriesAndDisables(t *testing.T) {
 		t.Fatal("managed entry was not disabled")
 	}
 }
+
+type fakeManagedChain struct {
+	wallet    string
+	info      *chain.GameInfo
+	extra     *chain.GameExtraData
+	sendCount int
+	option    int
+	value     *big.Int
+}
+
+func (f *fakeManagedChain) WalletAddress() string { return f.wallet }
+func (f *fakeManagedChain) Close()                {}
+func (f *fakeManagedChain) GetGameInfo(context.Context, int) (*chain.GameInfo, error) {
+	return f.info, nil
+}
+func (f *fakeManagedChain) GetGameExtraData(context.Context, int, string) (*chain.GameExtraData, error) {
+	return f.extra, nil
+}
+func (f *fakeManagedChain) BuyShares(_ context.Context, _ int, option int, value *big.Int) (string, error) {
+	f.sendCount++
+	f.option = option
+	f.value = new(big.Int).Set(value)
+	return "0xtest", nil
+}
+
+type staticMetadata struct{ value *ipfs.Metadata }
+
+func (s staticMetadata) DownloadMetadata(string) (*ipfs.Metadata, error) { return s.value, nil }
+
+type staticQuote struct{ value *oracle.Quote }
+
+func (s staticQuote) FetchQuote() (*oracle.Quote, error) { return s.value, nil }
+
+type staticDecision struct{ value *Decision }
+
+func (s staticDecision) Decide(context.Context, *chain.GameInfo, *chain.GameExtraData, *ipfs.Metadata, *oracle.Quote) (*Decision, error) {
+	return s.value, nil
+}
+
+func newManagedTestEntry(t *testing.T) (*Store, EntrySnapshot, string) {
+	t.Helper()
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := crypto.PubkeyToAddress(key.PublicKey).Hex()
+	store, err := NewStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Enable(SetRequest{
+		GameID: 1, UserAddress: user, Enabled: true,
+		ContractAddress: "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c",
+		PrivateKey:      hexutil.Encode(crypto.FromECDSA(key)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return store, store.Entries()[0], user
+}
+
+func newTestEngine(store *Store, client *fakeManagedChain, decision *Decision) *Engine {
+	return &Engine{
+		cfg:       &config.Config{AIConfidenceMin: 0.70, AIBuyAmountBKC: "2.5"},
+		store:     store,
+		newChain:  func(string, string) (managedChain, error) { return client, nil },
+		metadata:  staticMetadata{value: &ipfs.Metadata{}},
+		quotes:    staticQuote{value: &oracle.Quote{PriceUSD: 2300, QuoteSource: "test"}},
+		decisions: staticDecision{value: decision},
+	}
+}
+
+func TestEngineDoesNotTradeHoldOrLowConfidence(t *testing.T) {
+	tests := map[string]*Decision{
+		"hold":           {Action: "hold", Confidence: 1, Reason: "wait"},
+		"low confidence": {Action: "buy_yes", Confidence: 0.69, Reason: "weak"},
+	}
+	for name, decision := range tests {
+		t.Run(name, func(t *testing.T) {
+			store, snapshot, user := newManagedTestEntry(t)
+			client := &fakeManagedChain{
+				wallet: user,
+				info: &chain.GameInfo{ID: 1, TotalPool: big.NewInt(0),
+					DeadlineRaw: time.Now().Add(time.Hour).UnixMilli()},
+				extra: &chain.GameExtraData{VirtualReservesNOYES: []*big.Int{big.NewInt(0), big.NewInt(0)}},
+			}
+			if err := newTestEngine(store, client, decision).process(context.Background(), snapshot); err != nil {
+				t.Fatal(err)
+			}
+			if client.sendCount != 0 {
+				t.Fatalf("unexpected transactions: %d", client.sendCount)
+			}
+		})
+	}
+}
+
+func TestEngineSendsAndRecordsOneSimulatedTrade(t *testing.T) {
+	store, snapshot, user := newManagedTestEntry(t)
+	client := &fakeManagedChain{
+		wallet: user,
+		info: &chain.GameInfo{ID: 1, TotalPool: big.NewInt(0),
+			DeadlineRaw: time.Now().Add(time.Hour).UnixMilli()},
+		extra: &chain.GameExtraData{VirtualReservesNOYES: []*big.Int{big.NewInt(0), big.NewInt(0)}},
+	}
+	engine := newTestEngine(store, client, &Decision{Action: "buy_yes", Confidence: 0.91, Reason: "strong"})
+	if err := engine.process(context.Background(), snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if client.sendCount != 1 || client.option != 0 {
+		t.Fatalf("unexpected simulated sends: count=%d option=%d", client.sendCount, client.option)
+	}
+	expected := new(big.Int).Mul(big.NewInt(25), big.NewInt(100000000000000000))
+	if client.value == nil || client.value.Cmp(expected) != 0 {
+		t.Fatalf("unexpected trade value: %v", client.value)
+	}
+	entries := store.Entries()
+	if len(entries) != 1 || entries[0].LastTradeTx != "0xtest" {
+		t.Fatalf("trade was not recorded: %+v", entries)
+	}
+}
