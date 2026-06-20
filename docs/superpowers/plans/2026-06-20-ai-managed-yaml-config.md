@@ -22,6 +22,89 @@
 - Modify `SETUP.md`: document YAML-only setup and simulated tests.
 - Modify `internal/aimanaged/manager.go`: read AI key from `Config` and add injectable engine boundaries.
 - Create `internal/aimanaged/manager_test.go`: endpoint, AI HTTP, hold/low-confidence, and simulated trade tests.
+- Modify `internal/judge/game.go`: correctly parse bilingual comparison thresholds.
+- Modify `internal/judge/game_test.go`: isolate comparison parsing and preserve the two failing template regressions.
+
+### Task 0: Repair baseline comparison-threshold parsing
+
+**Files:**
+- Modify: `internal/judge/game_test.go`
+- Modify: `internal/judge/game.go`
+
+- [ ] **Step 1: Add a focused failing parser test**
+
+Append this test to `internal/judge/game_test.go`:
+
+```go
+func TestParseComparisonThreshold(t *testing.T) {
+    tests := []struct {
+        name string
+        condition string
+        want float64
+        ok bool
+    }{
+        {"bilingual volume", "成交量 大于 (Above) 100 吨", 100, true},
+        {"bilingual RSI", "指标 RSI (14) 大于 (Above) 60 (Indicator Option)", 60, true},
+        {"Chinese only", "指标 RSI (14) 小于 30", 30, true},
+        {"missing threshold", "指标 RSI (14) 大于 (Above)", 0, false},
+    }
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            got, ok := parseComparisonThreshold(tt.condition)
+            if ok != tt.ok || got != tt.want {
+                t.Fatalf("parseComparisonThreshold() = (%v, %v), want (%v, %v)", got, ok, tt.want, tt.ok)
+            }
+        })
+    }
+}
+```
+
+- [ ] **Step 2: Run parser and existing template tests and verify RED**
+
+Run: `go test ./internal/judge -run 'TestParseComparisonThreshold|TestEvaluateWinner_Template(3_Volume|4_Indicator)' -v`
+
+Expected: build failure because `parseComparisonThreshold` does not exist; the two existing template cases remain known failures.
+
+- [ ] **Step 3: Implement one comparison-threshold parser**
+
+Add `regexp` to the imports in `internal/judge/game.go` and define:
+
+```go
+var comparisonThresholdPattern = regexp.MustCompile(`(?:大于|小于|等于)\s*(?:\([^)]*\))?\s*(-?\d+(?:\.\d+)?)`)
+
+func parseComparisonThreshold(condition string) (float64, bool) {
+    match := comparisonThresholdPattern.FindStringSubmatch(condition)
+    if len(match) != 2 {
+        return 0, false
+    }
+    value, err := strconv.ParseFloat(match[1], 64)
+    if err != nil {
+        return 0, false
+    }
+    return value, true
+}
+```
+
+Use `parseComparisonThreshold(cond)` in both the `成交量` and `指标` branches. Remove `parseThresholdFromIndicator`; retain the existing greater-than, less-than, equal, and current simulated-value comparisons without changing their semantics.
+
+- [ ] **Step 4: Verify the focused regression tests are GREEN**
+
+Run: `go test ./internal/judge -run 'TestParseComparisonThreshold|TestEvaluateWinner_Template(3_Volume|4_Indicator)' -v`
+
+Expected: all focused parser, volume, and indicator cases pass.
+
+- [ ] **Step 5: Run the complete baseline package**
+
+Run: `go test ./internal/judge -v`
+
+Expected: every judge test passes.
+
+- [ ] **Step 6: Commit the root-cause fix**
+
+```bash
+git add internal/judge/game.go internal/judge/game_test.go
+git commit -m "fix: parse bilingual market thresholds"
+```
 
 ### Task 1: Strict YAML configuration loader
 
