@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/url"
 	"os"
 	"strconv"
@@ -130,11 +131,12 @@ func LoadFile(path string) (*Config, error) {
 	if strings.TrimSpace(raw.Oracle.UserAgent) == "" {
 		return nil, errors.New("oracle.user_agent is required")
 	}
-	if raw.AI.ConfidenceMin < 0 || raw.AI.ConfidenceMin > 1 {
+	if math.IsNaN(raw.AI.ConfidenceMin) || math.IsInf(raw.AI.ConfidenceMin, 0) ||
+		raw.AI.ConfidenceMin < 0 || raw.AI.ConfidenceMin > 1 {
 		return nil, errors.New("ai.confidence_min must be between 0 and 1")
 	}
 	amount, err := strconv.ParseFloat(strings.TrimSpace(raw.AI.BuyAmountBKC), 64)
-	if err != nil || amount <= 0 {
+	if err != nil || math.IsNaN(amount) || math.IsInf(amount, 0) || amount <= 0 {
 		return nil, errors.New("ai.buy_amount_bkc must be positive")
 	}
 

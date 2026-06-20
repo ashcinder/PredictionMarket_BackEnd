@@ -84,8 +84,12 @@ func TestLoadFileRejectsInvalidConfiguration(t *testing.T) {
 			"poll_interval_seconds: 30", "poll_interval_seconds: 0", 1),
 		"confidence": strings.Replace(validYAML,
 			"confidence_min: 0.70", "confidence_min: 1.1", 1),
+		"NaN confidence": strings.Replace(validYAML,
+			"confidence_min: 0.70", "confidence_min: .nan", 1),
 		"buy amount": strings.Replace(validYAML,
 			`buy_amount_bkc: "10"`, `buy_amount_bkc: "0"`, 1),
+		"NaN buy amount": strings.Replace(validYAML,
+			`buy_amount_bkc: "10"`, `buy_amount_bkc: "NaN"`, 1),
 		"unknown field": validYAML + "unexpected: true\n",
 	}
 
