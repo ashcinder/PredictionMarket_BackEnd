@@ -29,3 +29,5 @@ ai:
   poll_interval_seconds: 120
   buy_amount_bkc: "10"
   confidence_min: 0.70
+  history_min_points: 3
+  history_max_points: 256

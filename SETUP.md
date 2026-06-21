@@ -45,6 +45,8 @@ cp config.example.yaml config.yaml
 | `ai` | `poll_interval_seconds` | AI 托管扫描间隔，必须大于 0 |
 | `ai` | `buy_amount_bkc` | 单次自动买入 BKC 数量，必须大于 0 |
 | `ai` | `confidence_min` | 自动交易最低置信度，范围为 0 到 1 |
+| `ai` | `history_min_points` | 调用模型前要求的真实历史点数，推荐为 3，必须大于 0 |
+| `ai` | `history_max_points` | 进程内每个市场最多保留的历史点数，推荐为 256，且不能小于最小点数 |
 
 配置采用严格校验：未知字段、非法地址、非法 URL 或无效交易参数都会阻止服务启动。后端不再读取 XML，也不使用环境变量覆盖 YAML。
 

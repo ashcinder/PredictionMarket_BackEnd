@@ -51,6 +51,8 @@ type fileConfig struct {
 		PollIntervalSeconds int     `yaml:"poll_interval_seconds"`
 		BuyAmountBKC        string  `yaml:"buy_amount_bkc"`
 		ConfidenceMin       float64 `yaml:"confidence_min"`
+		HistoryMinPoints    int     `yaml:"history_min_points"`
+		HistoryMaxPoints    int     `yaml:"history_max_points"`
 	} `yaml:"ai"`
 }
 
@@ -75,6 +77,8 @@ type Config struct {
 	AIPollInterval       time.Duration
 	AIBuyAmountBKC       string
 	AIConfidenceMin      float64
+	AIHistoryMinPoints   int
+	AIHistoryMaxPoints   int
 }
 
 func Load() (*Config, error) {
@@ -124,6 +128,15 @@ func LoadFile(path string) (*Config, error) {
 	}
 	if raw.AI.PollIntervalSeconds <= 0 {
 		return nil, errors.New("ai.poll_interval_seconds must be positive")
+	}
+	if raw.AI.HistoryMinPoints <= 0 {
+		return nil, errors.New("ai.history_min_points must be positive")
+	}
+	if raw.AI.HistoryMaxPoints <= 0 {
+		return nil, errors.New("ai.history_max_points must be positive")
+	}
+	if raw.AI.HistoryMaxPoints < raw.AI.HistoryMinPoints {
+		return nil, errors.New("ai.history_max_points must be greater than or equal to ai.history_min_points")
 	}
 	if raw.Oracle.RequestTimeoutSeconds <= 0 {
 		return nil, errors.New("oracle.request_timeout_seconds must be positive")
@@ -199,6 +212,8 @@ func LoadFile(path string) (*Config, error) {
 		AIPollInterval:       time.Duration(raw.AI.PollIntervalSeconds) * time.Second,
 		AIBuyAmountBKC:       strings.TrimSpace(raw.AI.BuyAmountBKC),
 		AIConfidenceMin:      raw.AI.ConfidenceMin,
+		AIHistoryMinPoints:   raw.AI.HistoryMinPoints,
+		AIHistoryMaxPoints:   raw.AI.HistoryMaxPoints,
 	}, nil
 }
 

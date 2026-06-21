@@ -34,6 +34,8 @@ ai:
   poll_interval_seconds: 120
   buy_amount_bkc: "10"
   confidence_min: 0.70
+  history_min_points: 3
+  history_max_points: 256
 `
 
 func writeTestConfig(t *testing.T, body string) string {
@@ -64,6 +66,9 @@ func TestLoadFileReadsCompleteYAML(t *testing.T) {
 	if cfg.PollInterval != 30*time.Second || cfg.AIPollInterval != 120*time.Second {
 		t.Fatalf("unexpected intervals: poll=%s ai=%s", cfg.PollInterval, cfg.AIPollInterval)
 	}
+	if cfg.AIHistoryMinPoints != 3 || cfg.AIHistoryMaxPoints != 256 {
+		t.Fatalf("unexpected AI history settings: min=%d max=%d", cfg.AIHistoryMinPoints, cfg.AIHistoryMaxPoints)
+	}
 }
 
 func TestLoadFileRejectsInvalidConfiguration(t *testing.T) {
@@ -90,6 +95,14 @@ func TestLoadFileRejectsInvalidConfiguration(t *testing.T) {
 			`buy_amount_bkc: "10"`, `buy_amount_bkc: "0"`, 1),
 		"NaN buy amount": strings.Replace(validYAML,
 			`buy_amount_bkc: "10"`, `buy_amount_bkc: "NaN"`, 1),
+		"history minimum": strings.Replace(validYAML,
+			"history_min_points: 3", "history_min_points: 0", 1),
+		"history maximum": strings.Replace(validYAML,
+			"history_max_points: 256", "history_max_points: 0", 1),
+		"history range": strings.NewReplacer(
+			"history_min_points: 3", "history_min_points: 4",
+			"history_max_points: 256", "history_max_points: 3",
+		).Replace(validYAML),
 		"unknown field": validYAML + "unexpected: true\n",
 	}
 
@@ -119,6 +132,11 @@ func TestRepositoryConfigurationArtifactsUseYAML(t *testing.T) {
 		"replace-with-wallet-private-key",
 		"0000000000000000000000000000000000000000000000000000000000000001")
 	usable = strings.ReplaceAll(usable, "replace-with-ai-api-key", "test-ai-key")
+	for _, field := range []string{"history_min_points", "history_max_points"} {
+		if !strings.Contains(string(example), field) {
+			t.Fatalf("example config does not mention %s", field)
+		}
+	}
 	if _, err := LoadFile(writeTestConfig(t, usable)); err != nil {
 		t.Fatalf("example config is not valid after inserting secrets: %v", err)
 	}
@@ -134,6 +152,13 @@ func TestRepositoryConfigurationArtifactsUseYAML(t *testing.T) {
 		}
 		if !strings.Contains(string(body), "config.yaml") {
 			t.Fatalf("%s does not mention config.yaml", name)
+		}
+		if name == "SETUP.md" {
+			for _, field := range []string{"history_min_points", "history_max_points"} {
+				if !strings.Contains(string(body), field) {
+					t.Fatalf("%s does not explain %s", name, field)
+				}
+			}
 		}
 	}
 }
