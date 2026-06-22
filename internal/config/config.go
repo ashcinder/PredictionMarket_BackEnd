@@ -156,7 +156,8 @@ func LoadFile(path string) (*Config, error) {
 	if mysqlDSN == "" || strings.Contains(mysqlDSN, "replace-with-") {
 		return nil, errors.New("mysql.dsn is required")
 	}
-	if _, err := mysql.ParseDSN(mysqlDSN); err != nil {
+	parsedMySQLDSN, err := mysql.ParseDSN(mysqlDSN)
+	if err != nil || strings.TrimSpace(parsedMySQLDSN.DBName) == "" {
 		return nil, errors.New("mysql.dsn is invalid")
 	}
 	if raw.MySQL.MaxOpenConnections <= 0 {

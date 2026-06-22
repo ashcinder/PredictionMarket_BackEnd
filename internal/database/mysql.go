@@ -10,7 +10,10 @@ import (
 	mysql "github.com/go-sql-driver/mysql"
 )
 
-const mysqlOperationTimeout = 10 * time.Second
+const (
+	mysqlOperationTimeout = 10 * time.Second
+	mysqlMigrationTimeout = 60 * time.Second
+)
 
 type Config struct {
 	DSN                   string
@@ -32,12 +35,15 @@ func OpenMySQL(ctx context.Context, cfg Config) (*sql.DB, error) {
 	configurePool(db, cfg)
 
 	pingCtx, cancel := context.WithTimeout(ctx, mysqlOperationTimeout)
-	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
+		cancel()
 		db.Close()
 		return nil, fmt.Errorf("ping mysql: %w", err)
 	}
-	if err := RunMigrations(pingCtx, db); err != nil {
+	cancel()
+	migrationCtx, migrationCancel := context.WithTimeout(ctx, mysqlMigrationTimeout)
+	defer migrationCancel()
+	if err := RunMigrations(migrationCtx, db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate mysql: %w", err)
 	}

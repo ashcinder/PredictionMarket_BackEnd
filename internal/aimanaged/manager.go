@@ -106,7 +106,6 @@ type Engine struct {
 	metadata  metadataSource
 	quotes    quoteSource
 	decisions decisionSource
-	history   *marketHistoryStore
 	histories HistoryRepository
 	audits    DecisionRepository
 	now       func() time.Time

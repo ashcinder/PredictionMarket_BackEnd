@@ -68,6 +68,24 @@ func TestMySQLRepositoryListRejectsUnsafeLimits(t *testing.T) {
 	}
 }
 
+func TestMySQLRepositoryRejectsInvalidPercentageSum(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	repository := NewMySQLRepository(db)
+	_, err = repository.MergeAndList(context.Background(),
+		MarketIdentity{ContractAddress: repositoryTestContract, GameID: 1}, nil,
+		HistoryObservation{
+			Time: 1, YesPercent: 70, NoPercent: 20,
+			ReserveNO: big.NewInt(20), ReserveYES: big.NewInt(70), Source: historySourceChain,
+		}, 1)
+	if err == nil || !strings.Contains(err.Error(), "percentages") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestMySQLRepositoryListRejectsOversizedStoredReserve(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

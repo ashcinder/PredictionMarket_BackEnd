@@ -48,25 +48,9 @@ func (r *MySQLRepository) MergeAndList(ctx context.Context, market MarketIdentit
 	if err := validateMarketAndLimit(market, limit); err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, repositoryOperationTimeout)
-	defer cancel()
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("begin history merge: %w", err)
-	}
-	defer tx.Rollback()
-
-	contract := normalizeAddress(market.ContractAddress)
 	for _, point := range seed {
 		if err := validateObservation(point, historySourceIPFS); err != nil {
 			return nil, fmt.Errorf("validate IPFS history: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx, insertIPFSHistorySQL,
-			contract, market.GameID, point.Time,
-			formatPercentage(point.YesPercent), formatPercentage(point.NoPercent),
-			nil, nil, historySourceIPFS,
-		); err != nil {
-			return nil, fmt.Errorf("insert IPFS history: %w", err)
 		}
 	}
 	if err := validateObservation(current, historySourceChain); err != nil {
@@ -79,6 +63,24 @@ func (r *MySQLRepository) MergeAndList(ctx context.Context, market MarketIdentit
 	reserveYES, err := reserveBytes(current.ReserveYES)
 	if err != nil {
 		return nil, fmt.Errorf("reserve_yes: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, repositoryOperationTimeout)
+	defer cancel()
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin history merge: %w", err)
+	}
+	defer tx.Rollback()
+
+	contract := normalizeAddress(market.ContractAddress)
+	for _, point := range seed {
+		if _, err := tx.ExecContext(ctx, insertIPFSHistorySQL,
+			contract, market.GameID, point.Time,
+			formatPercentage(point.YesPercent), formatPercentage(point.NoPercent),
+			nil, nil, historySourceIPFS,
+		); err != nil {
+			return nil, fmt.Errorf("insert IPFS history: %w", err)
+		}
 	}
 	if _, err := tx.ExecContext(ctx, upsertChainHistorySQL,
 		contract, market.GameID, current.Time,
@@ -233,6 +235,9 @@ func validateObservation(point HistoryObservation, source string) error {
 		math.IsNaN(point.NoPercent) || math.IsInf(point.NoPercent, 0) ||
 		point.YesPercent < 0 || point.YesPercent > 100 || point.NoPercent < 0 || point.NoPercent > 100 {
 		return errors.New("history percentages are invalid")
+	}
+	if math.Abs(point.YesPercent+point.NoPercent-100) > 0.5 {
+		return errors.New("history percentages must sum to 100")
 	}
 	if source == historySourceChain && (point.ReserveNO == nil || point.ReserveYES == nil) {
 		return errors.New("chain reserves are required")

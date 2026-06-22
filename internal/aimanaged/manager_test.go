@@ -337,7 +337,6 @@ func newTestEngine(store *Store, client *fakeManagedChain, decision *Decision) *
 		}}},
 		quotes:    quotes,
 		decisions: decisions,
-		history:   histories,
 		histories: histories,
 		audits:    &recordingDecisionRepository{},
 		now:       func() time.Time { return time.Unix(370, 0) },

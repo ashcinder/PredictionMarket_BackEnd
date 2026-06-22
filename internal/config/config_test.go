@@ -122,6 +122,8 @@ func TestLoadFileRejectsInvalidConfiguration(t *testing.T) {
 			"prediction:secret@tcp", "prediction:replace-with-mysql-password@tcp", 1),
 		"MySQL DSN malformed": strings.Replace(validYAML,
 			`dsn: "prediction:secret@tcp(127.0.0.1:3306)/prediction_market?charset=utf8mb4&parseTime=true&loc=UTC"`, `dsn: "bad::dsn"`, 1),
+		"MySQL DSN without database": strings.Replace(validYAML,
+			"/prediction_market?charset", "/?charset", 1),
 		"MySQL max open": strings.Replace(validYAML,
 			"max_open_connections: 10", "max_open_connections: 0", 1),
 		"MySQL max idle": strings.Replace(validYAML,

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -67,17 +68,34 @@ func embeddedMigrations() ([]migration, error) {
 	return result, nil
 }
 
-func runMigrationSet(ctx context.Context, db *sql.DB, migrations []migration) (err error) {
+type migrationConnection interface {
+	QueryRowContext(context.Context, string, ...interface{}) *sql.Row
+	QueryContext(context.Context, string, ...interface{}) (*sql.Rows, error)
+	ExecContext(context.Context, string, ...interface{}) (sql.Result, error)
+}
+
+func runMigrationSet(ctx context.Context, db *sql.DB, migrations []migration) error {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("pin migration connection: %w", err)
+	}
+	defer conn.Close()
+	return runMigrationsOnConnection(ctx, conn, migrations)
+}
+
+func runMigrationsOnConnection(ctx context.Context, conn migrationConnection, migrations []migration) (err error) {
 	var locked sql.NullInt64
-	if scanErr := db.QueryRowContext(ctx, "SELECT GET_LOCK(?, ?)", migrationLockName, migrationLockTimeoutSeconds).Scan(&locked); scanErr != nil {
+	if scanErr := conn.QueryRowContext(ctx, "SELECT GET_LOCK(?, ?)", migrationLockName, migrationLockTimeoutSeconds).Scan(&locked); scanErr != nil {
 		return fmt.Errorf("acquire migration lock: %w", scanErr)
 	}
 	if !locked.Valid || locked.Int64 != 1 {
 		return fmt.Errorf("acquire migration lock: unavailable")
 	}
 	defer func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 		var released sql.NullInt64
-		releaseErr := db.QueryRowContext(ctx, "SELECT RELEASE_LOCK(?)", migrationLockName).Scan(&released)
+		releaseErr := conn.QueryRowContext(releaseCtx, "SELECT RELEASE_LOCK(?)", migrationLockName).Scan(&released)
 		if err == nil && (releaseErr != nil || !released.Valid || released.Int64 != 1) {
 			if releaseErr != nil {
 				err = fmt.Errorf("release migration lock: %w", releaseErr)
@@ -87,14 +105,14 @@ func runMigrationSet(ctx context.Context, db *sql.DB, migrations []migration) (e
 		}
 	}()
 
-	if _, err = db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+	if _, err = conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 version BIGINT NOT NULL PRIMARY KEY,
 applied_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`); err != nil {
 		return fmt.Errorf("create schema_migrations: %w", err)
 	}
 
-	rows, err := db.QueryContext(ctx, "SELECT version FROM schema_migrations")
+	rows, err := conn.QueryContext(ctx, "SELECT version FROM schema_migrations")
 	if err != nil {
 		return fmt.Errorf("read applied migrations: %w", err)
 	}
@@ -119,11 +137,11 @@ applied_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
 			continue
 		}
 		for index, statement := range splitMigrationStatements(item.SQL) {
-			if _, err := db.ExecContext(ctx, statement); err != nil {
+			if _, err := conn.ExecContext(ctx, statement); err != nil {
 				return fmt.Errorf("migration %d statement %d: %w", item.Version, index+1, err)
 			}
 		}
-		if _, err := db.ExecContext(ctx, "INSERT INTO schema_migrations(version) VALUES (?)", item.Version); err != nil {
+		if _, err := conn.ExecContext(ctx, "INSERT INTO schema_migrations(version) VALUES (?)", item.Version); err != nil {
 			return fmt.Errorf("record migration %d: %w", item.Version, err)
 		}
 	}
