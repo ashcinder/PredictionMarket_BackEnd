@@ -16,6 +16,11 @@ const validYAML = `chain:
   use_broker_chain: true
 server:
   http_listen: ":8081"
+mysql:
+  dsn: "prediction:secret@tcp(127.0.0.1:3306)/prediction_market?charset=utf8mb4&parseTime=true&loc=UTC"
+  max_open_connections: 10
+  max_idle_connections: 5
+  connection_max_lifetime_seconds: 300
 ipfs:
   gateway: "http://127.0.0.1:8080/ipfs"
 oracle:
@@ -69,6 +74,10 @@ func TestLoadFileReadsCompleteYAML(t *testing.T) {
 	if cfg.AIHistoryMinPoints != 3 || cfg.AIHistoryMaxPoints != 256 {
 		t.Fatalf("unexpected AI history settings: min=%d max=%d", cfg.AIHistoryMinPoints, cfg.AIHistoryMaxPoints)
 	}
+	if cfg.MySQLDSN == "" || cfg.MySQLMaxOpenConnections != 10 ||
+		cfg.MySQLMaxIdleConnections != 5 || cfg.MySQLConnectionMaxLifetime != 300*time.Second {
+		t.Fatalf("unexpected MySQL config: %+v", cfg)
+	}
 }
 
 func TestLoadFileRejectsInvalidConfiguration(t *testing.T) {
@@ -103,6 +112,26 @@ func TestLoadFileRejectsInvalidConfiguration(t *testing.T) {
 			"history_min_points: 3", "history_min_points: 4",
 			"history_max_points: 256", "history_max_points: 3",
 		).Replace(validYAML),
+		"history maximum API limit": strings.Replace(validYAML,
+			"history_max_points: 256", "history_max_points: 1001", 1),
+		"MySQL DSN empty": strings.Replace(validYAML,
+			`dsn: "prediction:secret@tcp(127.0.0.1:3306)/prediction_market?charset=utf8mb4&parseTime=true&loc=UTC"`, `dsn: ""`, 1),
+		"MySQL DSN placeholder": strings.Replace(validYAML,
+			`dsn: "prediction:secret@tcp(127.0.0.1:3306)/prediction_market?charset=utf8mb4&parseTime=true&loc=UTC"`, `dsn: "replace-with-mysql-dsn"`, 1),
+		"MySQL password placeholder": strings.Replace(validYAML,
+			"prediction:secret@tcp", "prediction:replace-with-mysql-password@tcp", 1),
+		"MySQL DSN malformed": strings.Replace(validYAML,
+			`dsn: "prediction:secret@tcp(127.0.0.1:3306)/prediction_market?charset=utf8mb4&parseTime=true&loc=UTC"`, `dsn: "bad::dsn"`, 1),
+		"MySQL max open": strings.Replace(validYAML,
+			"max_open_connections: 10", "max_open_connections: 0", 1),
+		"MySQL max idle": strings.Replace(validYAML,
+			"max_idle_connections: 5", "max_idle_connections: 0", 1),
+		"MySQL connection lifetime": strings.Replace(validYAML,
+			"connection_max_lifetime_seconds: 300", "connection_max_lifetime_seconds: 0", 1),
+		"MySQL idle exceeds open": strings.NewReplacer(
+			"max_open_connections: 10", "max_open_connections: 4",
+			"max_idle_connections: 5", "max_idle_connections: 5",
+		).Replace(validYAML),
 		"unknown field": validYAML + "unexpected: true\n",
 	}
 
@@ -110,6 +139,8 @@ func TestLoadFileRejectsInvalidConfiguration(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if _, err := LoadFile(writeTestConfig(t, body)); err == nil {
 				t.Fatal("expected validation error")
+			} else if strings.Contains(err.Error(), "prediction:secret") {
+				t.Fatalf("validation error leaked MySQL credentials: %v", err)
 			}
 		})
 	}
@@ -132,6 +163,7 @@ func TestRepositoryConfigurationArtifactsUseYAML(t *testing.T) {
 		"replace-with-wallet-private-key",
 		"0000000000000000000000000000000000000000000000000000000000000001")
 	usable = strings.ReplaceAll(usable, "replace-with-ai-api-key", "test-ai-key")
+	usable = strings.ReplaceAll(usable, "replace-with-mysql-password", "test-mysql-password")
 	for _, field := range []string{"history_min_points", "history_max_points"} {
 		if !strings.Contains(string(example), field) {
 			t.Fatalf("example config does not mention %s", field)

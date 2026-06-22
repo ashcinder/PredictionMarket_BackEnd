@@ -8,6 +8,12 @@ chain:
 server:
   http_listen: ":8081"
 
+mysql:
+  dsn: "prediction:replace-with-mysql-password@tcp(127.0.0.1:3306)/prediction_market?charset=utf8mb4&parseTime=true&loc=UTC"
+  max_open_connections: 10
+  max_idle_connections: 5
+  connection_max_lifetime_seconds: 300
+
 ipfs:
   gateway: "http://127.0.0.1:8080/ipfs/"
 

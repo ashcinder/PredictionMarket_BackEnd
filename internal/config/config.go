@@ -14,6 +14,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
+	mysql "github.com/go-sql-driver/mysql"
 	"gopkg.in/yaml.v3"
 )
 
@@ -30,6 +31,12 @@ type fileConfig struct {
 	Server struct {
 		HTTPListen string `yaml:"http_listen"`
 	} `yaml:"server"`
+	MySQL struct {
+		DSN                          string `yaml:"dsn"`
+		MaxOpenConnections           int    `yaml:"max_open_connections"`
+		MaxIdleConnections           int    `yaml:"max_idle_connections"`
+		ConnectionMaxLifetimeSeconds int    `yaml:"connection_max_lifetime_seconds"`
+	} `yaml:"mysql"`
 	IPFS struct {
 		Gateway string `yaml:"gateway"`
 	} `yaml:"ipfs"`
@@ -57,28 +64,32 @@ type fileConfig struct {
 }
 
 type Config struct {
-	PrivateKey           string
-	ContractAddress      string
-	RPCURL               string
-	BrokerChainURL       string
-	IPFSGateway          string
-	GoldAPIURL           string
-	SinaURL              string
-	SinaReferer          string
-	OracleUserAgent      string
-	OracleRequestTimeout time.Duration
-	PollInterval         time.Duration
-	ResolveDelay         time.Duration
-	UseBrokerChain       bool
-	HTTPListen           string
-	AIAPIKey             string
-	AIBaseURL            string
-	AIModel              string
-	AIPollInterval       time.Duration
-	AIBuyAmountBKC       string
-	AIConfidenceMin      float64
-	AIHistoryMinPoints   int
-	AIHistoryMaxPoints   int
+	PrivateKey                 string
+	ContractAddress            string
+	RPCURL                     string
+	BrokerChainURL             string
+	IPFSGateway                string
+	GoldAPIURL                 string
+	SinaURL                    string
+	SinaReferer                string
+	OracleUserAgent            string
+	OracleRequestTimeout       time.Duration
+	PollInterval               time.Duration
+	ResolveDelay               time.Duration
+	UseBrokerChain             bool
+	HTTPListen                 string
+	AIAPIKey                   string
+	AIBaseURL                  string
+	AIModel                    string
+	AIPollInterval             time.Duration
+	AIBuyAmountBKC             string
+	AIConfidenceMin            float64
+	AIHistoryMinPoints         int
+	AIHistoryMaxPoints         int
+	MySQLDSN                   string
+	MySQLMaxOpenConnections    int
+	MySQLMaxIdleConnections    int
+	MySQLConnectionMaxLifetime time.Duration
 }
 
 func Load() (*Config, error) {
@@ -138,6 +149,28 @@ func LoadFile(path string) (*Config, error) {
 	if raw.AI.HistoryMaxPoints < raw.AI.HistoryMinPoints {
 		return nil, errors.New("ai.history_max_points must be greater than or equal to ai.history_min_points")
 	}
+	if raw.AI.HistoryMaxPoints > 1000 {
+		return nil, errors.New("ai.history_max_points must not exceed 1000")
+	}
+	mysqlDSN := strings.TrimSpace(raw.MySQL.DSN)
+	if mysqlDSN == "" || strings.Contains(mysqlDSN, "replace-with-") {
+		return nil, errors.New("mysql.dsn is required")
+	}
+	if _, err := mysql.ParseDSN(mysqlDSN); err != nil {
+		return nil, errors.New("mysql.dsn is invalid")
+	}
+	if raw.MySQL.MaxOpenConnections <= 0 {
+		return nil, errors.New("mysql.max_open_connections must be positive")
+	}
+	if raw.MySQL.MaxIdleConnections <= 0 {
+		return nil, errors.New("mysql.max_idle_connections must be positive")
+	}
+	if raw.MySQL.MaxIdleConnections > raw.MySQL.MaxOpenConnections {
+		return nil, errors.New("mysql.max_idle_connections must not exceed mysql.max_open_connections")
+	}
+	if raw.MySQL.ConnectionMaxLifetimeSeconds <= 0 {
+		return nil, errors.New("mysql.connection_max_lifetime_seconds must be positive")
+	}
 	if raw.Oracle.RequestTimeoutSeconds <= 0 {
 		return nil, errors.New("oracle.request_timeout_seconds must be positive")
 	}
@@ -192,28 +225,32 @@ func LoadFile(path string) (*Config, error) {
 	}
 
 	return &Config{
-		PrivateKey:           privateKey,
-		ContractAddress:      common.HexToAddress(raw.Chain.ContractAddress).Hex(),
-		RPCURL:               rpcURL,
-		BrokerChainURL:       brokerURL,
-		IPFSGateway:          ipfsGateway,
-		GoldAPIURL:           goldAPIURL,
-		SinaURL:              sinaURL,
-		SinaReferer:          sinaReferer,
-		OracleUserAgent:      strings.TrimSpace(raw.Oracle.UserAgent),
-		OracleRequestTimeout: time.Duration(raw.Oracle.RequestTimeoutSeconds) * time.Second,
-		PollInterval:         time.Duration(raw.Sentinel.PollIntervalSeconds) * time.Second,
-		ResolveDelay:         time.Duration(raw.Sentinel.ResolveDelaySeconds) * time.Second,
-		UseBrokerChain:       raw.Chain.UseBrokerChain,
-		HTTPListen:           strings.TrimSpace(raw.Server.HTTPListen),
-		AIAPIKey:             apiKey,
-		AIBaseURL:            aiBaseURL,
-		AIModel:              strings.TrimSpace(raw.AI.Model),
-		AIPollInterval:       time.Duration(raw.AI.PollIntervalSeconds) * time.Second,
-		AIBuyAmountBKC:       strings.TrimSpace(raw.AI.BuyAmountBKC),
-		AIConfidenceMin:      raw.AI.ConfidenceMin,
-		AIHistoryMinPoints:   raw.AI.HistoryMinPoints,
-		AIHistoryMaxPoints:   raw.AI.HistoryMaxPoints,
+		PrivateKey:                 privateKey,
+		ContractAddress:            common.HexToAddress(raw.Chain.ContractAddress).Hex(),
+		RPCURL:                     rpcURL,
+		BrokerChainURL:             brokerURL,
+		IPFSGateway:                ipfsGateway,
+		GoldAPIURL:                 goldAPIURL,
+		SinaURL:                    sinaURL,
+		SinaReferer:                sinaReferer,
+		OracleUserAgent:            strings.TrimSpace(raw.Oracle.UserAgent),
+		OracleRequestTimeout:       time.Duration(raw.Oracle.RequestTimeoutSeconds) * time.Second,
+		PollInterval:               time.Duration(raw.Sentinel.PollIntervalSeconds) * time.Second,
+		ResolveDelay:               time.Duration(raw.Sentinel.ResolveDelaySeconds) * time.Second,
+		UseBrokerChain:             raw.Chain.UseBrokerChain,
+		HTTPListen:                 strings.TrimSpace(raw.Server.HTTPListen),
+		AIAPIKey:                   apiKey,
+		AIBaseURL:                  aiBaseURL,
+		AIModel:                    strings.TrimSpace(raw.AI.Model),
+		AIPollInterval:             time.Duration(raw.AI.PollIntervalSeconds) * time.Second,
+		AIBuyAmountBKC:             strings.TrimSpace(raw.AI.BuyAmountBKC),
+		AIConfidenceMin:            raw.AI.ConfidenceMin,
+		AIHistoryMinPoints:         raw.AI.HistoryMinPoints,
+		AIHistoryMaxPoints:         raw.AI.HistoryMaxPoints,
+		MySQLDSN:                   mysqlDSN,
+		MySQLMaxOpenConnections:    raw.MySQL.MaxOpenConnections,
+		MySQLMaxIdleConnections:    raw.MySQL.MaxIdleConnections,
+		MySQLConnectionMaxLifetime: time.Duration(raw.MySQL.ConnectionMaxLifetimeSeconds) * time.Second,
 	}, nil
 }
 
