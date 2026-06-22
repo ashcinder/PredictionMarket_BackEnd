@@ -67,7 +67,7 @@ func main() {
 		os.Exit(1)
 	}
 	managedServer := aimanaged.NewServer(managedStore)
-	historyHandler := aimanaged.NewHistoryHandler(repository, cfg.AIHistoryMaxPoints)
+	historyHandler := aimanaged.NewHistoryHandler(repository, cfg.AIHistoryMaxPoints, chainClient)
 	managedEngine := aimanaged.NewEngine(cfg, managedStore, ipfsClient, goldOracle, repository, repository)
 	sampler := aimanaged.NewMarketHistorySampler(chainClient, repository, cfg.ContractAddress, cfg.SamplerPollInterval, cfg.AIHistoryMaxPoints)
 

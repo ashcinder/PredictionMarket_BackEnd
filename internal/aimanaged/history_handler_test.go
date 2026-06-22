@@ -2,13 +2,20 @@ package aimanaged
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
+	"sync"
 	"testing"
+
+	"PredictionMarket/internal/chain"
+
+	"github.com/ethereum/go-ethereum/accounts/abi"
 )
 
 type handlerHistoryRepository struct {
@@ -34,7 +41,7 @@ func TestMarketHistoryHandlerReturnsAscendingHistoryWithStringReserves(t *testin
 		{Time: 200, YesPercent: 60, NoPercent: 40, ReserveNO: big.NewInt(40), ReserveYES: big.NewInt(60), Source: historySourceChain},
 	}}
 	mux := http.NewServeMux()
-	NewHistoryHandler(repository, 256).Register(mux)
+	NewHistoryHandler(repository, 256, nil).Register(mux)
 	target := "/api/gold/market-history?contract_address=" + url.QueryEscape(repositoryTestContract) + "&game_id=1"
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
@@ -66,7 +73,7 @@ func TestMarketHistoryHandlerReturnsAscendingHistoryWithStringReserves(t *testin
 func TestMarketHistoryHandlerValidatesParameters(t *testing.T) {
 	repository := &handlerHistoryRepository{}
 	mux := http.NewServeMux()
-	NewHistoryHandler(repository, 256).Register(mux)
+	NewHistoryHandler(repository, 256, nil).Register(mux)
 	tests := []string{
 		"/api/gold/market-history",
 		"/api/gold/market-history?contract_address=bad&game_id=1",
@@ -86,7 +93,7 @@ func TestMarketHistoryHandlerValidatesParameters(t *testing.T) {
 func TestMarketHistoryHandlerReturnsServiceUnavailableWithoutDetails(t *testing.T) {
 	repository := &handlerHistoryRepository{err: errors.New("mysql password secret")}
 	mux := http.NewServeMux()
-	NewHistoryHandler(repository, 256).Register(mux)
+	NewHistoryHandler(repository, 256, nil).Register(mux)
 	target := "/api/gold/market-history?contract_address=" + repositoryTestContract + "&game_id=1&limit=1"
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
@@ -101,7 +108,7 @@ func TestMarketHistoryHandlerReturnsServiceUnavailableWithoutDetails(t *testing.
 func TestMarketHistoryHandlerSupportsCORSAndMethods(t *testing.T) {
 	repository := &handlerHistoryRepository{}
 	mux := http.NewServeMux()
-	NewHistoryHandler(repository, 256).Register(mux)
+	NewHistoryHandler(repository, 256, nil).Register(mux)
 
 	options := httptest.NewRecorder()
 	mux.ServeHTTP(options, httptest.NewRequest(http.MethodOptions, "/api/gold/market-history", nil))
@@ -113,5 +120,224 @@ func TestMarketHistoryHandlerSupportsCORSAndMethods(t *testing.T) {
 	mux.ServeHTTP(post, httptest.NewRequest(http.MethodPost, "/api/gold/market-history", nil))
 	if post.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST status=%d", post.Code)
+	}
+}
+
+// ---------- on-demand sampling tests ----------
+
+const handlerTestABI = `[{"constant":true,"inputs":[{"name":"id","type":"uint256"},{"name":"user","type":"address"}],"name":"getGameExtraData","outputs":[{"name":"virtualReserves","type":"uint256[]"},{"name":"myShares","type":"uint256[]"}],"payable":false,"stateMutability":"view","type":"function"}]`
+
+var handlerParsedABI abi.ABI
+
+func init() {
+	var err error
+	handlerParsedABI, err = abi.JSON(strings.NewReader(handlerTestABI))
+	if err != nil {
+		panic("handler test ABI: " + err.Error())
+	}
+}
+
+func encodeHandlerExtraData(extra *chain.GameExtraData) string {
+	method := handlerParsedABI.Methods["getGameExtraData"]
+	packed, err := method.Outputs.Pack(extra.VirtualReservesNOYES, extra.MySharesYESNO)
+	if err != nil {
+		panic("encode handler extra data: " + err.Error())
+	}
+	return "0x" + hex.EncodeToString(packed)
+}
+
+// mockHandlerChain implements historyFetcher for handler tests.
+type mockHandlerChain struct {
+	wallet    string
+	ethCallFn func(ctx context.Context, data string) (string, error)
+	mu        sync.Mutex
+	calls     int
+}
+
+func (m *mockHandlerChain) EthCall(ctx context.Context, data string) (string, error) {
+	m.mu.Lock()
+	m.calls++
+	m.mu.Unlock()
+	if m.ethCallFn != nil {
+		return m.ethCallFn(ctx, data)
+	}
+	return "0x", nil
+}
+
+func (m *mockHandlerChain) WalletAddress() string { return m.wallet }
+
+func (m *mockHandlerChain) callCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls
+}
+
+// onDemandRepository wraps handlerHistoryRepository and records MergeAndList calls.
+type onDemandRepository struct {
+	handlerHistoryRepository
+	mergeCalls []mergeCallRec
+}
+
+type mergeCallRec struct {
+	seedLen int
+	current HistoryObservation
+	limit   int
+}
+
+func (r *onDemandRepository) MergeAndList(ctx context.Context, market MarketIdentity, seed []HistoryObservation, current HistoryObservation, limit int) ([]HistoryObservation, error) {
+	r.mergeCalls = append(r.mergeCalls, mergeCallRec{seedLen: len(seed), current: current, limit: limit})
+	return []HistoryObservation{current}, nil
+}
+
+func TestHistoryHandlerOnDemandSampleWhenNoHistory(t *testing.T) {
+	chainMock := &mockHandlerChain{
+		wallet: "0x1111111111111111111111111111111111111111",
+		ethCallFn: func(ctx context.Context, data string) (string, error) {
+			extra := &chain.GameExtraData{
+				VirtualReservesNOYES: []*big.Int{big.NewInt(300), big.NewInt(700)},
+				MySharesYESNO:        []*big.Int{big.NewInt(0), big.NewInt(0)},
+			}
+			return encodeHandlerExtraData(extra), nil
+		},
+	}
+	repo := &onDemandRepository{}
+	repo.points = nil
+
+	mux := http.NewServeMux()
+	NewHistoryHandler(repo, 256, chainMock).Register(mux)
+
+	target := "/api/gold/market-history?contract_address=" + url.QueryEscape(repositoryTestContract) + "&game_id=1"
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	var response struct {
+		History []historyResponsePoint `json:"history"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.History) != 1 {
+		t.Fatalf("expected 1 on-demand point, got %d: %+v", len(response.History), response.History)
+	}
+	p := response.History[0]
+	if p.YesPercent < 69 || p.YesPercent > 71 {
+		t.Fatalf("expected yes~70%%, got %.4f", p.YesPercent)
+	}
+	if p.Source != historySourceChain {
+		t.Fatalf("expected chain source, got %q", p.Source)
+	}
+	if p.ReserveNO == nil || *p.ReserveNO != "300" {
+		t.Fatalf("unexpected reserve_no: %v", p.ReserveNO)
+	}
+	if p.ReserveYES == nil || *p.ReserveYES != "700" {
+		t.Fatalf("unexpected reserve_yes: %v", p.ReserveYES)
+	}
+
+	if len(repo.mergeCalls) != 1 {
+		t.Fatalf("expected 1 MergeAndList call, got %d", len(repo.mergeCalls))
+	}
+	if repo.mergeCalls[0].seedLen != 0 {
+		t.Fatalf("expected empty seed, got len=%d", repo.mergeCalls[0].seedLen)
+	}
+	if c := chainMock.callCount(); c != 1 {
+		t.Fatalf("expected 1 eth_call, got %d", c)
+	}
+}
+
+func TestHistoryHandlerNoOnDemandWhenHistoryExists(t *testing.T) {
+	chainMock := &mockHandlerChain{
+		wallet:    "0x1111111111111111111111111111111111111111",
+		ethCallFn: func(ctx context.Context, data string) (string, error) { return "0x", nil },
+	}
+	repo := &onDemandRepository{}
+	repo.points = []HistoryObservation{
+		{Time: 100, YesPercent: 50, NoPercent: 50, Source: historySourceIPFS},
+	}
+
+	mux := http.NewServeMux()
+	NewHistoryHandler(repo, 256, chainMock).Register(mux)
+
+	target := "/api/gold/market-history?contract_address=" + url.QueryEscape(repositoryTestContract) + "&game_id=1"
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	if c := chainMock.callCount(); c != 0 {
+		t.Fatalf("chain was called %d times but should not be called when history exists", c)
+	}
+
+	var response struct {
+		History []historyResponsePoint `json:"history"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.History) != 1 {
+		t.Fatalf("expected existing history point, got %d", len(response.History))
+	}
+}
+
+func TestHistoryHandlerEmptyWhenNoChainAndNoHistory(t *testing.T) {
+	repo := &onDemandRepository{}
+	repo.points = nil
+
+	mux := http.NewServeMux()
+	NewHistoryHandler(repo, 256, nil).Register(mux)
+
+	target := "/api/gold/market-history?contract_address=" + url.QueryEscape(repositoryTestContract) + "&game_id=1"
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	var response struct {
+		History []historyResponsePoint `json:"history"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.History) != 0 {
+		t.Fatalf("expected empty history when no chain, got %d points", len(response.History))
+	}
+}
+
+func TestHistoryHandlerOnDemandDegradesGracefully(t *testing.T) {
+	chainMock := &mockHandlerChain{
+		wallet: "0x1111111111111111111111111111111111111111",
+		ethCallFn: func(ctx context.Context, data string) (string, error) {
+			return "0x", nil
+		},
+	}
+	repo := &onDemandRepository{}
+	repo.points = nil
+
+	mux := http.NewServeMux()
+	NewHistoryHandler(repo, 256, chainMock).Register(mux)
+
+	target := "/api/gold/market-history?contract_address=" + url.QueryEscape(repositoryTestContract) + "&game_id=1"
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	var response struct {
+		History []historyResponsePoint `json:"history"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.History) != 0 {
+		t.Fatalf("expected empty history on chain failure, got %d points", len(response.History))
 	}
 }
