@@ -67,6 +67,7 @@ func main() {
 		os.Exit(1)
 	}
 	managedServer := aimanaged.NewServer(managedStore)
+	historyHandler := aimanaged.NewHistoryHandler(repository, cfg.AIHistoryMaxPoints)
 	managedEngine := aimanaged.NewEngine(cfg, managedStore, ipfsClient, goldOracle, repository, repository)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -74,6 +75,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	managedServer.Register(mux)
+	historyHandler.Register(mux)
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPListen,
 		Handler:           mux,
