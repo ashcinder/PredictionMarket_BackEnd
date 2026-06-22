@@ -203,6 +203,7 @@ type fakeManagedChain struct {
 	sendCount int
 	option    int
 	value     *big.Int
+	buyErr    error
 }
 
 func (f *fakeManagedChain) WalletAddress() string { return f.wallet }
@@ -217,6 +218,9 @@ func (f *fakeManagedChain) BuyShares(_ context.Context, _ int, option int, value
 	f.sendCount++
 	f.option = option
 	f.value = new(big.Int).Set(value)
+	if f.buyErr != nil {
+		return "", f.buyErr
+	}
 	return "0xtest", nil
 }
 
@@ -238,6 +242,52 @@ type staticDecision struct {
 	value    *Decision
 	calls    int
 	research *ResearchContext
+}
+
+type recordingDecisionRepository struct {
+	rules       []RuleDecisionRecord
+	pending     []ModelDecisionRecord
+	finalized   []decisionFinalization
+	recordErr   error
+	createErr   error
+	finalizeErr error
+}
+
+type decisionFinalization struct {
+	id           int64
+	outcome      string
+	txHash       string
+	errorSummary string
+}
+
+func (r *recordingDecisionRepository) RecordRule(_ context.Context, record RuleDecisionRecord) error {
+	r.rules = append(r.rules, record)
+	return r.recordErr
+}
+
+func (r *recordingDecisionRepository) CreatePending(_ context.Context, record ModelDecisionRecord) (int64, error) {
+	r.pending = append(r.pending, record)
+	if r.createErr != nil {
+		return 0, r.createErr
+	}
+	return int64(len(r.pending)), nil
+}
+
+func (r *recordingDecisionRepository) Finalize(_ context.Context, id int64, outcome, txHash, errorSummary string) error {
+	r.finalized = append(r.finalized, decisionFinalization{
+		id: id, outcome: outcome, txHash: txHash, errorSummary: errorSummary,
+	})
+	return r.finalizeErr
+}
+
+type failingHistoryRepository struct{ err error }
+
+func (f failingHistoryRepository) MergeAndList(context.Context, MarketIdentity, []HistoryObservation, HistoryObservation, int) ([]HistoryObservation, error) {
+	return nil, f.err
+}
+
+func (f failingHistoryRepository) List(context.Context, MarketIdentity, int) ([]HistoryObservation, error) {
+	return nil, f.err
 }
 
 func (s *staticDecision) Decide(_ context.Context, _ *chain.GameInfo, _ *chain.GameExtraData, _ *ipfs.Metadata, _ *oracle.Quote, research *ResearchContext) (*Decision, error) {
@@ -270,6 +320,7 @@ func newManagedTestEntry(t *testing.T) (*Store, EntrySnapshot, string) {
 func newTestEngine(store *Store, client *fakeManagedChain, decision *Decision) *Engine {
 	decisions := &staticDecision{value: decision}
 	quotes := &staticQuote{value: &oracle.Quote{PriceUSD: 2300, QuoteSource: "test"}}
+	histories := newMarketHistoryStore(256, time.Minute)
 	return &Engine{
 		cfg: &config.Config{
 			AIConfidenceMin:    0.70,
@@ -286,17 +337,22 @@ func newTestEngine(store *Store, client *fakeManagedChain, decision *Decision) *
 		}}},
 		quotes:    quotes,
 		decisions: decisions,
-		history:   newMarketHistoryStore(256, time.Minute),
+		history:   histories,
+		histories: histories,
+		audits:    &recordingDecisionRepository{},
 		now:       func() time.Time { return time.Unix(370, 0) },
 	}
 }
 
 func TestEngineDoesNotTradeHoldOrLowConfidence(t *testing.T) {
-	tests := map[string]*Decision{
-		"hold":           {Action: "hold", Confidence: 1, Reason: "wait"},
-		"low confidence": {Action: "buy_yes", Confidence: 0.69, Reason: "weak"},
+	tests := map[string]struct {
+		decision *Decision
+		outcome  string
+	}{
+		"hold":           {decision: &Decision{Action: "hold", Confidence: 1, Reason: "wait"}, outcome: "hold"},
+		"low confidence": {decision: &Decision{Action: "buy_yes", Confidence: 0.69, Reason: "weak"}, outcome: "low_confidence"},
 	}
-	for name, decision := range tests {
+	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			store, snapshot, user := newManagedTestEntry(t)
 			client := &fakeManagedChain{
@@ -305,11 +361,16 @@ func TestEngineDoesNotTradeHoldOrLowConfidence(t *testing.T) {
 					DeadlineRaw: time.Now().Add(time.Hour).UnixMilli()},
 				extra: &chain.GameExtraData{VirtualReservesNOYES: []*big.Int{big.NewInt(40), big.NewInt(60)}},
 			}
-			if err := newTestEngine(store, client, decision).process(context.Background(), snapshot); err != nil {
+			engine := newTestEngine(store, client, test.decision)
+			if err := engine.process(context.Background(), snapshot); err != nil {
 				t.Fatal(err)
 			}
 			if client.sendCount != 0 {
 				t.Fatalf("unexpected transactions: %d", client.sendCount)
+			}
+			finalized := engine.audits.(*recordingDecisionRepository).finalized
+			if len(finalized) != 1 || finalized[0].outcome != test.outcome {
+				t.Fatalf("unexpected audit finalization: %+v", finalized)
 			}
 		})
 	}
@@ -337,6 +398,10 @@ func TestEngineSendsAndRecordsOneSimulatedTrade(t *testing.T) {
 	entries := store.Entries()
 	if len(entries) != 1 || entries[0].LastTradeTx != "0xtest" {
 		t.Fatalf("trade was not recorded: %+v", entries)
+	}
+	finalized := engine.audits.(*recordingDecisionRepository).finalized
+	if len(finalized) != 1 || finalized[0].outcome != "traded" || finalized[0].txHash != "0xtest" {
+		t.Fatalf("trade audit was not finalized: %+v", finalized)
 	}
 }
 
@@ -376,7 +441,12 @@ func TestEngineForcesHoldUntilHistoryMinimumIsReached(t *testing.T) {
 			if decisions.calls != test.wantCalls || client.sendCount != 0 {
 				t.Fatalf("calls=%d sends=%d, want calls=%d sends=0", decisions.calls, client.sendCount, test.wantCalls)
 			}
-			history := engine.history.Snapshot(marketKey(snapshot.ContractAddress, snapshot.GameID))
+			history, err := engine.histories.List(context.Background(), MarketIdentity{
+				ContractAddress: snapshot.ContractAddress, GameID: snapshot.GameID,
+			}, 256)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if len(history) != test.wantHistory {
 				t.Fatalf("history=%+v, want %d points", history, test.wantHistory)
 			}
@@ -406,6 +476,10 @@ func TestEngineInvalidReservesDoNotCallQuoteDecisionOrTrade(t *testing.T) {
 	if engine.quotes.(*staticQuote).calls != 0 || engine.decisions.(*staticDecision).calls != 0 || client.sendCount != 0 {
 		t.Fatalf("invalid reserves reached downstream services: quote=%d decision=%d sends=%d",
 			engine.quotes.(*staticQuote).calls, engine.decisions.(*staticDecision).calls, client.sendCount)
+	}
+	rules := engine.audits.(*recordingDecisionRepository).rules
+	if len(rules) != 1 || rules[0].Outcome != "invalid_reserves" {
+		t.Fatalf("invalid reserves were not audited: %+v", rules)
 	}
 }
 
@@ -455,7 +529,12 @@ func TestEngineBuildsHistoryAcrossPollsWithoutIPFSSeed(t *testing.T) {
 		now = now.Add(time.Minute)
 	}
 
-	history := engine.history.Snapshot(marketKey(snapshot.ContractAddress, snapshot.GameID))
+	history, err := engine.histories.List(context.Background(), MarketIdentity{
+		ContractAddress: snapshot.ContractAddress, GameID: snapshot.GameID,
+	}, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(history) != 3 || history[0].Time != 60 || history[2].Time != 180 {
 		t.Fatalf("unexpected accumulated history: %+v", history)
 	}
@@ -512,11 +591,92 @@ func TestEngineSharesOnePollPointAcrossUsersOfSameMarket(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	history := engine.history.Snapshot(marketKey(contract, 1))
+	history, err := engine.histories.List(context.Background(), MarketIdentity{
+		ContractAddress: contract, GameID: 1,
+	}, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(history) != 1 {
 		t.Fatalf("same market poll was duplicated per user: %+v", history)
 	}
 	if engine.decisions.(*staticDecision).calls != 0 {
 		t.Fatal("shared single point unexpectedly passed the history gate")
+	}
+}
+
+func TestEngineHistoryPersistenceFailureStopsBeforeQuoteDecisionAndTrade(t *testing.T) {
+	store, snapshot, user := newManagedTestEntry(t)
+	client := &fakeManagedChain{
+		wallet: user,
+		info: &chain.GameInfo{ID: 1, TotalPool: big.NewInt(100),
+			DeadlineRaw: time.Now().Add(time.Hour).UnixMilli()},
+		extra: &chain.GameExtraData{VirtualReservesNOYES: []*big.Int{big.NewInt(40), big.NewInt(60)}},
+	}
+	engine := newTestEngine(store, client, &Decision{Action: "buy_yes", Confidence: 1})
+	engine.histories = failingHistoryRepository{err: errors.New("mysql unavailable")}
+	err := engine.process(context.Background(), snapshot)
+	if err == nil || !strings.Contains(err.Error(), "persist market history") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if engine.quotes.(*staticQuote).calls != 0 || engine.decisions.(*staticDecision).calls != 0 || client.sendCount != 0 {
+		t.Fatalf("persistence failure reached downstream services: quote=%d decision=%d sends=%d",
+			engine.quotes.(*staticQuote).calls, engine.decisions.(*staticDecision).calls, client.sendCount)
+	}
+}
+
+func TestEnginePendingAuditFailurePreventsTrade(t *testing.T) {
+	store, snapshot, user := newManagedTestEntry(t)
+	client := &fakeManagedChain{
+		wallet: user,
+		info: &chain.GameInfo{ID: 1, TotalPool: big.NewInt(100),
+			DeadlineRaw: time.Now().Add(time.Hour).UnixMilli()},
+		extra: &chain.GameExtraData{VirtualReservesNOYES: []*big.Int{big.NewInt(40), big.NewInt(60)}},
+	}
+	engine := newTestEngine(store, client, &Decision{Action: "buy_yes", Confidence: 1})
+	engine.audits = &recordingDecisionRepository{createErr: errors.New("audit unavailable")}
+	err := engine.process(context.Background(), snapshot)
+	if err == nil || !strings.Contains(err.Error(), "record pending AI decision") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if client.sendCount != 0 {
+		t.Fatalf("trade was sent without audit record: %d", client.sendCount)
+	}
+}
+
+func TestEngineTradeFailureIsAudited(t *testing.T) {
+	store, snapshot, user := newManagedTestEntry(t)
+	client := &fakeManagedChain{
+		wallet: user,
+		info: &chain.GameInfo{ID: 1, TotalPool: big.NewInt(100),
+			DeadlineRaw: time.Now().Add(time.Hour).UnixMilli()},
+		extra:  &chain.GameExtraData{VirtualReservesNOYES: []*big.Int{big.NewInt(40), big.NewInt(60)}},
+		buyErr: errors.New("broadcast failed"),
+	}
+	engine := newTestEngine(store, client, &Decision{Action: "buy_yes", Confidence: 1})
+	err := engine.process(context.Background(), snapshot)
+	if err == nil || !strings.Contains(err.Error(), "broadcast failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	finalized := engine.audits.(*recordingDecisionRepository).finalized
+	if client.sendCount != 1 || len(finalized) != 1 || finalized[0].outcome != "trade_failed" ||
+		!strings.Contains(finalized[0].errorSummary, "broadcast failed") {
+		t.Fatalf("failed trade audit mismatch: sends=%d audit=%+v", client.sendCount, finalized)
+	}
+}
+
+func TestEngineAuditFailureAfterSuccessfulBroadcastDoesNotResend(t *testing.T) {
+	store, snapshot, user := newManagedTestEntry(t)
+	client := &fakeManagedChain{
+		wallet: user,
+		info: &chain.GameInfo{ID: 1, TotalPool: big.NewInt(100),
+			DeadlineRaw: time.Now().Add(time.Hour).UnixMilli()},
+		extra: &chain.GameExtraData{VirtualReservesNOYES: []*big.Int{big.NewInt(40), big.NewInt(60)}},
+	}
+	engine := newTestEngine(store, client, &Decision{Action: "buy_yes", Confidence: 1})
+	engine.audits = &recordingDecisionRepository{finalizeErr: errors.New("audit update failed")}
+	err := engine.process(context.Background(), snapshot)
+	if err == nil || !strings.Contains(err.Error(), "audit update failed") || client.sendCount != 1 {
+		t.Fatalf("error=%v sends=%d", err, client.sendCount)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"PredictionMarket/internal/aimanaged"
 	"PredictionMarket/internal/chain"
 	"PredictionMarket/internal/config"
+	"PredictionMarket/internal/database"
 	"PredictionMarket/internal/ipfs"
 	"PredictionMarket/internal/oracle"
 	"PredictionMarket/internal/sentinel"
@@ -31,6 +32,18 @@ func main() {
 	} else {
 		slog.Info("using local RPC", "url", cfg.RPCURL)
 	}
+	db, err := database.OpenMySQL(context.Background(), database.Config{
+		DSN:                   cfg.MySQLDSN,
+		MaxOpenConnections:    cfg.MySQLMaxOpenConnections,
+		MaxIdleConnections:    cfg.MySQLMaxIdleConnections,
+		ConnectionMaxLifetime: cfg.MySQLConnectionMaxLifetime,
+	})
+	if err != nil {
+		slog.Error("init mysql failed", "error", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+	repository := aimanaged.NewMySQLRepository(db)
 
 	chainClient, err := chain.NewClient(cfg.PrivateKey, cfg.ContractAddress, cfg.RPCURL, cfg.BrokerChainURL, cfg.UseBrokerChain)
 	if err != nil {
@@ -54,7 +67,7 @@ func main() {
 		os.Exit(1)
 	}
 	managedServer := aimanaged.NewServer(managedStore)
-	managedEngine := aimanaged.NewEngine(cfg, managedStore, ipfsClient, goldOracle)
+	managedEngine := aimanaged.NewEngine(cfg, managedStore, ipfsClient, goldOracle, repository, repository)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

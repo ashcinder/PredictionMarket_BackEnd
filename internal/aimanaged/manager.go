@@ -107,6 +107,8 @@ type Engine struct {
 	quotes    quoteSource
 	decisions decisionSource
 	history   *marketHistoryStore
+	histories HistoryRepository
+	audits    DecisionRepository
 	now       func() time.Time
 }
 
@@ -172,7 +174,7 @@ func NewServer(store *Store) *Server {
 	return &Server{store: store}
 }
 
-func NewEngine(cfg *config.Config, store *Store, ipfsClient *ipfs.Client, goldOracle *oracle.GoldOracle) *Engine {
+func NewEngine(cfg *config.Config, store *Store, ipfsClient *ipfs.Client, goldOracle *oracle.GoldOracle, histories HistoryRepository, audits DecisionRepository) *Engine {
 	return &Engine{
 		cfg:   cfg,
 		store: store,
@@ -186,7 +188,8 @@ func NewEngine(cfg *config.Config, store *Store, ipfsClient *ipfs.Client, goldOr
 		metadata:  ipfsClient,
 		quotes:    goldOracle,
 		decisions: NewAIClient(cfg),
-		history:   newMarketHistoryStore(cfg.AIHistoryMaxPoints, cfg.AIPollInterval),
+		histories: histories,
+		audits:    audits,
 		now:       time.Now,
 	}
 }
@@ -456,8 +459,15 @@ func (e *Engine) process(ctx context.Context, snapshot EntrySnapshot) error {
 	if extra == nil {
 		return errors.New("get game extra data: empty response")
 	}
-	current, err := pointFromReserves(extra, now)
+	market := MarketIdentity{ContractAddress: snapshot.ContractAddress, GameID: snapshot.GameID}
+	current, err := observationFromReserves(extra, now)
 	if err != nil {
+		if auditErr := e.audits.RecordRule(ctx, RuleDecisionRecord{
+			Market: market, UserAddress: snapshot.UserAddress, ObservedAt: now.Unix(),
+			Action: "hold", Reason: err.Error(), Outcome: "invalid_reserves",
+		}); auditErr != nil {
+			return fmt.Errorf("record invalid-reserves hold: %w", auditErr)
+		}
 		slog.Info("ai-managed forced hold for invalid market reserves",
 			"game_id", snapshot.GameID,
 			"contract", snapshot.ContractAddress,
@@ -467,12 +477,18 @@ func (e *Engine) process(ctx context.Context, snapshot EntrySnapshot) error {
 		return nil
 	}
 	current.Time = bucketTimestamp(current.Time, e.cfg.AIPollInterval)
-	history := e.history.MergeAndAppend(
-		marketKey(snapshot.ContractAddress, snapshot.GameID),
-		meta.History,
-		current,
-	)
+	history, err := e.histories.MergeAndList(ctx, market, observationsFromIPFS(meta.History), current, e.cfg.AIHistoryMaxPoints)
+	if err != nil {
+		return fmt.Errorf("persist market history: %w", err)
+	}
 	if len(history) < e.cfg.AIHistoryMinPoints {
+		if err := e.audits.RecordRule(ctx, RuleDecisionRecord{
+			Market: market, UserAddress: snapshot.UserAddress, ObservedAt: current.Time,
+			Action: "hold", Reason: "insufficient market history",
+			HistoryPoints: len(history), Outcome: "history_insufficient",
+		}); err != nil {
+			return fmt.Errorf("record insufficient-history hold: %w", err)
+		}
 		slog.Info("ai-managed forced hold for insufficient market history",
 			"game_id", snapshot.GameID,
 			"contract", snapshot.ContractAddress,
@@ -488,15 +504,50 @@ func (e *Engine) process(ctx context.Context, snapshot EntrySnapshot) error {
 		return fmt.Errorf("fetch gold quote: %w", err)
 	}
 
+	researchHistory := make([]ipfs.HistoryPoint, len(history))
+	for i, point := range history {
+		researchHistory[i] = ipfs.HistoryPoint{
+			Time: point.Time, YesPercent: point.YesPercent, NoPercent: point.NoPercent,
+		}
+	}
+	currentPoint := ipfs.HistoryPoint{
+		Time: current.Time, YesPercent: current.YesPercent, NoPercent: current.NoPercent,
+	}
 	decision, err := e.decisions.Decide(ctx, info, extra, meta, quote, &ResearchContext{
-		Current: current,
-		History: history,
+		Current: currentPoint,
+		History: researchHistory,
 	})
 	if err != nil {
 		return fmt.Errorf("ai decide: %w", err)
 	}
 	option, ok := decision.Option()
-	if !ok || decision.Confidence < e.cfg.AIConfidenceMin {
+	action := "hold"
+	if ok && option == 0 {
+		action = "buy_yes"
+	} else if ok {
+		action = "buy_no"
+	}
+	auditID, err := e.audits.CreatePending(ctx, ModelDecisionRecord{
+		Market: market, UserAddress: snapshot.UserAddress, ObservedAt: current.Time,
+		Action: action, Confidence: decision.Confidence, Reason: decision.Reason,
+		HistoryPoints: len(history),
+	})
+	if err != nil {
+		return fmt.Errorf("record pending AI decision: %w", err)
+	}
+	if !ok {
+		if err := e.audits.Finalize(ctx, auditID, "hold", "", ""); err != nil {
+			return fmt.Errorf("finalize AI hold: %w", err)
+		}
+		slog.Info("ai-managed skipped trade",
+			"game_id", snapshot.GameID, "user", snapshot.UserAddress,
+			"action", decision.Action, "confidence", decision.Confidence, "reason", decision.Reason)
+		return nil
+	}
+	if decision.Confidence < e.cfg.AIConfidenceMin {
+		if err := e.audits.Finalize(ctx, auditID, "low_confidence", "", ""); err != nil {
+			return fmt.Errorf("finalize low-confidence decision: %w", err)
+		}
 		slog.Info("ai-managed skipped trade",
 			"game_id", snapshot.GameID,
 			"user", snapshot.UserAddress,
@@ -508,6 +559,9 @@ func (e *Engine) process(ctx context.Context, snapshot EntrySnapshot) error {
 	}
 
 	if !e.store.CanTrade(snapshot.GameID, snapshot.UserAddress, option, now) {
+		if err := e.audits.Finalize(ctx, auditID, "cooldown", "", ""); err != nil {
+			return fmt.Errorf("finalize cooldown decision: %w", err)
+		}
 		slog.Info("ai-managed skipped by cooldown", "game_id", snapshot.GameID, "user", snapshot.UserAddress, "option", option)
 		return nil
 	}
@@ -518,9 +572,15 @@ func (e *Engine) process(ctx context.Context, snapshot EntrySnapshot) error {
 	}
 	tx, err := client.BuyShares(ctx, snapshot.GameID, option, value)
 	if err != nil {
+		if auditErr := e.audits.Finalize(ctx, auditID, "trade_failed", "", err.Error()); auditErr != nil {
+			return fmt.Errorf("send buyShares tx: %v; finalize failed trade: %w", err, auditErr)
+		}
 		return fmt.Errorf("send buyShares tx: %w", err)
 	}
 	e.store.RecordTrade(snapshot.GameID, snapshot.UserAddress, option, tx)
+	if err := e.audits.Finalize(ctx, auditID, "traded", tx, ""); err != nil {
+		return fmt.Errorf("finalize traded decision after tx %s: %w", tx, err)
+	}
 	slog.Info("ai-managed buyShares sent",
 		"game_id", snapshot.GameID,
 		"user", snapshot.UserAddress,
