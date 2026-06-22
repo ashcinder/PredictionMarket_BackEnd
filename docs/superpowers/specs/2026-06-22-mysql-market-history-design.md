@@ -51,13 +51,13 @@ mysql:
 - `game_id BIGINT UNSIGNED`：链上博弈池 ID。
 - `observed_at BIGINT UNSIGNED`：Unix 秒时间戳；链上点已按 AI 轮询间隔分桶。
 - `yes_percent DECIMAL(9,6)`、`no_percent DECIMAL(9,6)`：规范化后合计为 100 的占比。
-- `reserve_no DECIMAL(78,0) NULL`、`reserve_yes DECIMAL(78,0) NULL`：链上原始 uint256 储备；IPFS 种子允许为空。
+- `reserve_no VARBINARY(32) NULL`、`reserve_yes VARBINARY(32) NULL`：链上原始 uint256 的无符号大端字节；IPFS 种子允许为空。API 和模型边界再转换为十进制字符串。
 - `source VARCHAR(16)`：仅允许 `chain` 或 `ipfs`。
 - `created_at`、`updated_at`：数据库审计时间。
 
 联合主键为 `(contract_address, game_id, observed_at)`。相同市场、相同时间桶执行 upsert；链上数据优先于 IPFS 种子，IPFS 不得覆盖已存在的链上储备和占比。为市场和时间倒序查询建立索引。
 
-数据库保留完整历史，不按 `ai.history_max_points` 删除旧数据。该配置只限制 AI 每轮和默认 API 响应读取的最新点数，避免模型上下文无限增长。
+数据库保留完整历史，不按 `ai.history_max_points` 删除旧数据。该配置只限制 AI 每轮和默认 API 响应读取的最新点数，避免模型上下文无限增长；配置校验同时要求它不超过 API 上限 1000。
 
 ### `ai_decisions`
 
@@ -157,7 +157,7 @@ GET /api/gold/market-history?contract_address=...&game_id=...&limit=256
 - 历史 API 的参数、默认/最大 limit、升序响应、CORS、`400` 和 `503`。
 - 默认 `go test ./...` 不访问真实外网、不连接真实 MySQL、不调用真实 AI、不广播交易。
 - `go vet ./...` 和 `go test -race ./internal/aimanaged` 通过。
-- 可选 MySQL 8 集成测试验证真实 migration、DECIMAL(78,0)、upsert 和并发唯一键语义。
+- 可选 MySQL 8 集成测试验证真实 migration、完整 256 位储备、upsert 和并发唯一键语义。
 
 ## 后续工作
 
