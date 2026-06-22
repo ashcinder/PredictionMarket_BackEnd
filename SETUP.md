@@ -12,6 +12,22 @@ cp config.example.yaml config.yaml
 
 - `chain.private_key`：后端开奖钱包私钥。
 - `ai.api_key`：与 `ai.base_url` 对应的模型 API Key。
+- `mysql.dsn`：MySQL 8 连接串，包含数据库用户、密码、地址和数据库名。
+
+本地可以先启动仓库提供的 MySQL 8：
+
+```bash
+docker compose -f docker-compose.mysql.yml up -d
+docker compose -f docker-compose.mysql.yml ps
+```
+
+开发容器对应的 DSN 是：
+
+```text
+prediction:prediction-dev-password@tcp(127.0.0.1:3306)/prediction_market?charset=utf8mb4&parseTime=true&loc=UTC
+```
+
+这些是本地开发凭据，生产部署必须替换。
 
 随后启动：
 
@@ -31,6 +47,10 @@ cp config.example.yaml config.yaml
 | `chain` | `broker_chain_url` | BrokerChain HTTP(S) 地址 |
 | `chain` | `use_broker_chain` | `true` 使用 BrokerChain，`false` 使用 RPC |
 | `server` | `http_listen` | AI 托管 HTTP 服务监听地址 |
+| `mysql` | `dsn` | 必填，MySQL 8 DSN；真实密码只写入被忽略的 `config.yaml` |
+| `mysql` | `max_open_connections` | 最大连接数，必须大于 0 |
+| `mysql` | `max_idle_connections` | 最大空闲连接数，必须大于 0 且不超过最大连接数 |
+| `mysql` | `connection_max_lifetime_seconds` | 连接最长复用时间，必须大于 0 |
 | `ipfs` | `gateway` | IPFS HTTP(S) 网关 |
 | `oracle` | `gold_api_url` | Gold API 行情 HTTP(S) 地址 |
 | `oracle` | `sina_url` | 新浪黄金行情 HTTP(S) 地址 |
@@ -48,7 +68,15 @@ cp config.example.yaml config.yaml
 | `ai` | `history_min_points` | 调用模型前要求的真实历史点数，推荐为 3，必须大于 0 |
 | `ai` | `history_max_points` | 进程内每个市场最多保留的历史点数，推荐为 256，且不能小于最小点数 |
 
-配置采用严格校验：未知字段、非法地址、非法 URL 或无效交易参数都会阻止服务启动。后端不再读取 XML，也不使用环境变量覆盖 YAML。
+配置采用严格校验：未知字段、非法地址、非法 URL、MySQL DSN 或无效交易参数都会阻止服务启动。MySQL 连接、Ping 或 migration 失败时后端拒绝启动，不会退回易丢失的内存历史。后端不再读取 XML，也不使用环境变量覆盖 YAML。
+
+## 查询真实市场历史
+
+```bash
+curl "http://127.0.0.1:8081/api/gold/market-history?contract_address=0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c&game_id=1&limit=256"
+```
+
+接口只读，返回按时间升序排列的 YES/NO 占比、可选原始储备和数据来源。
 
 ## 安全测试 AI 托管
 
@@ -63,4 +91,6 @@ go test ./...
 - `chain.private_key is required`：仍在使用模板私钥。
 - `ai.api_key is required`：仍在使用模板 API Key。
 - `chain.rpc_url must be an HTTP(S) URL`：关闭 BrokerChain 后没有填写有效 RPC URL。
+- `mysql.dsn is required`：仍在使用 MySQL 占位密码或没有填写 DSN。
+- `init mysql failed`：MySQL 未启动、账号密码错误或 migration 失败。
 - `config.yaml` 不存在：执行 `cp config.example.yaml config.yaml` 后再编辑。

@@ -164,7 +164,10 @@ func TestRepositoryConfigurationArtifactsUseYAML(t *testing.T) {
 		"0000000000000000000000000000000000000000000000000000000000000001")
 	usable = strings.ReplaceAll(usable, "replace-with-ai-api-key", "test-ai-key")
 	usable = strings.ReplaceAll(usable, "replace-with-mysql-password", "test-mysql-password")
-	for _, field := range []string{"history_min_points", "history_max_points"} {
+	for _, field := range []string{
+		"history_min_points", "history_max_points", "dsn", "max_open_connections",
+		"max_idle_connections", "connection_max_lifetime_seconds",
+	} {
 		if !strings.Contains(string(example), field) {
 			t.Fatalf("example config does not mention %s", field)
 		}
@@ -186,11 +189,18 @@ func TestRepositoryConfigurationArtifactsUseYAML(t *testing.T) {
 			t.Fatalf("%s does not mention config.yaml", name)
 		}
 		if name == "SETUP.md" {
-			for _, field := range []string{"history_min_points", "history_max_points"} {
+			for _, field := range []string{"history_min_points", "history_max_points", "mysql.dsn", "docker-compose.mysql.yml"} {
 				if !strings.Contains(string(body), field) {
 					t.Fatalf("%s does not explain %s", name, field)
 				}
 			}
 		}
+	}
+	compose, err := os.ReadFile(filepath.Join(root, "docker-compose.mysql.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(compose), "mysql:8") {
+		t.Fatal("docker-compose.mysql.yml does not use MySQL 8")
 	}
 }

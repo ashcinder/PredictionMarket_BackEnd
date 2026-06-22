@@ -1,0 +1,22 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: prediction-market-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: prediction_market
+      MYSQL_USER: prediction
+      MYSQL_PASSWORD: prediction-dev-password
+      MYSQL_ROOT_PASSWORD: prediction-root-dev-password
+    ports:
+      - "3306:3306"
+    volumes:
+      - prediction-market-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pprediction-root-dev-password"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  prediction-market-mysql-data:
