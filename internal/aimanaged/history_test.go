@@ -1,6 +1,7 @@
 package aimanaged
 
 import (
+	"context"
 	"math"
 	"math/big"
 	"strings"
@@ -36,6 +37,26 @@ func TestPointFromReservesSupportsHugeIntegers(t *testing.T) {
 	if math.IsNaN(point.YesPercent) || math.IsInf(point.YesPercent, 0) ||
 		point.YesPercent != 75 || point.NoPercent != 25 {
 		t.Fatalf("unexpected huge-reserve percentages: %+v", point)
+	}
+}
+
+func TestObservationFromReservesCopiesRawChainValues(t *testing.T) {
+	reserveNO := big.NewInt(25)
+	reserveYES := big.NewInt(75)
+	observation, err := observationFromReserves(&chain.GameExtraData{
+		VirtualReservesNOYES: []*big.Int{reserveNO, reserveYES},
+	}, time.Unix(120, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserveNO.SetInt64(99)
+	reserveYES.SetInt64(1)
+	if observation.Source != historySourceChain || observation.ReserveNO.Cmp(big.NewInt(25)) != 0 ||
+		observation.ReserveYES.Cmp(big.NewInt(75)) != 0 {
+		t.Fatalf("raw reserves were not copied: %+v", observation)
+	}
+	if observation.YesPercent != 75 || observation.NoPercent != 25 {
+		t.Fatalf("unexpected percentages: %+v", observation)
 	}
 }
 
@@ -113,5 +134,36 @@ func TestMarketHistoryCapsNewestPointsAndReturnsCopies(t *testing.T) {
 	snapshot := store.Snapshot(key)
 	if snapshot[0].YesPercent == 99 {
 		t.Fatal("returned history aliases internal storage")
+	}
+}
+
+func TestMarketHistoryRepositoryMergesAndReturnsReserveCopies(t *testing.T) {
+	store := newMarketHistoryStore(3, time.Minute)
+	market := MarketIdentity{
+		ContractAddress: "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c",
+		GameID:          1,
+	}
+	seed := []HistoryObservation{{
+		Time: 100, YesPercent: 51, NoPercent: 49, Source: historySourceIPFS,
+	}}
+	current := HistoryObservation{
+		Time: 121, YesPercent: 60, NoPercent: 40,
+		ReserveNO: big.NewInt(40), ReserveYES: big.NewInt(60), Source: historySourceChain,
+	}
+
+	got, err := store.MergeAndList(context.Background(), market, seed, current, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[1].Time != 120 || got[1].ReserveNO.Cmp(big.NewInt(40)) != 0 {
+		t.Fatalf("unexpected repository history: %+v", got)
+	}
+	got[1].ReserveNO.SetInt64(99)
+	snapshot, err := store.List(context.Background(), market, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot[1].ReserveNO.Cmp(big.NewInt(40)) != 0 {
+		t.Fatal("repository returned aliased reserve integers")
 	}
 }
