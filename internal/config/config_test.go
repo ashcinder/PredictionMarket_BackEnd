@@ -32,6 +32,8 @@ oracle:
 sentinel:
   poll_interval_seconds: 30
   resolve_delay_seconds: 5
+sampler:
+  poll_interval_seconds: 60
 ai:
   api_key: "test-ai-key"
   base_url: "https://api.deepseek.com/chat/completions"
@@ -68,8 +70,8 @@ func TestLoadFileReadsCompleteYAML(t *testing.T) {
 		cfg.OracleRequestTimeout != 10*time.Second {
 		t.Fatalf("unexpected oracle config: %+v", cfg)
 	}
-	if cfg.PollInterval != 30*time.Second || cfg.AIPollInterval != 120*time.Second {
-		t.Fatalf("unexpected intervals: poll=%s ai=%s", cfg.PollInterval, cfg.AIPollInterval)
+	if cfg.PollInterval != 30*time.Second || cfg.AIPollInterval != 120*time.Second || cfg.SamplerPollInterval != 60*time.Second {
+		t.Fatalf("unexpected intervals: poll=%s ai=%s sampler=%s", cfg.PollInterval, cfg.AIPollInterval, cfg.SamplerPollInterval)
 	}
 	if cfg.AIHistoryMinPoints != 3 || cfg.AIHistoryMaxPoints != 256 {
 		t.Fatalf("unexpected AI history settings: min=%d max=%d", cfg.AIHistoryMinPoints, cfg.AIHistoryMaxPoints)
@@ -96,6 +98,7 @@ func TestLoadFileRejectsInvalidConfiguration(t *testing.T) {
 			"https://api.gold-api.com/price/XAU", "ftp://invalid", 1),
 		"poll interval": strings.Replace(validYAML,
 			"poll_interval_seconds: 30", "poll_interval_seconds: 0", 1),
+		"sampler poll interval": strings.Replace(validYAML, "sampler:\n  poll_interval_seconds: 60", "sampler:\n  poll_interval_seconds: 0", 1),
 		"confidence": strings.Replace(validYAML,
 			"confidence_min: 0.70", "confidence_min: 1.1", 1),
 		"NaN confidence": strings.Replace(validYAML,

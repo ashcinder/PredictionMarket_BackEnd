@@ -51,6 +51,9 @@ type fileConfig struct {
 		PollIntervalSeconds int `yaml:"poll_interval_seconds"`
 		ResolveDelaySeconds int `yaml:"resolve_delay_seconds"`
 	} `yaml:"sentinel"`
+	Sampler struct {
+		PollIntervalSeconds int `yaml:"poll_interval_seconds"`
+	} `yaml:"sampler"`
 	AI struct {
 		APIKey              string  `yaml:"api_key"`
 		BaseURL             string  `yaml:"base_url"`
@@ -86,6 +89,7 @@ type Config struct {
 	AIConfidenceMin            float64
 	AIHistoryMinPoints         int
 	AIHistoryMaxPoints         int
+	SamplerPollInterval         time.Duration
 	MySQLDSN                   string
 	MySQLMaxOpenConnections    int
 	MySQLMaxIdleConnections    int
@@ -136,6 +140,9 @@ func LoadFile(path string) (*Config, error) {
 	}
 	if raw.Sentinel.ResolveDelaySeconds < 0 {
 		return nil, errors.New("sentinel.resolve_delay_seconds must not be negative")
+	}
+	if raw.Sampler.PollIntervalSeconds <= 0 {
+		return nil, errors.New("sampler.poll_interval_seconds must be positive")
 	}
 	if raw.AI.PollIntervalSeconds <= 0 {
 		return nil, errors.New("ai.poll_interval_seconds must be positive")
@@ -254,6 +261,7 @@ func LoadFile(path string) (*Config, error) {
 		AIConfidenceMin:            raw.AI.ConfidenceMin,
 		AIHistoryMinPoints:         raw.AI.HistoryMinPoints,
 		AIHistoryMaxPoints:         raw.AI.HistoryMaxPoints,
+		SamplerPollInterval:        time.Duration(raw.Sampler.PollIntervalSeconds) * time.Second,
 		MySQLDSN:                   mysqlDSN,
 		MySQLMaxOpenConnections:    raw.MySQL.MaxOpenConnections,
 		MySQLMaxIdleConnections:    raw.MySQL.MaxIdleConnections,

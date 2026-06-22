@@ -69,6 +69,7 @@ func main() {
 	managedServer := aimanaged.NewServer(managedStore)
 	historyHandler := aimanaged.NewHistoryHandler(repository, cfg.AIHistoryMaxPoints)
 	managedEngine := aimanaged.NewEngine(cfg, managedStore, ipfsClient, goldOracle, repository, repository)
+	sampler := aimanaged.NewMarketHistorySampler(chainClient, repository, cfg.ContractAddress, cfg.SamplerPollInterval, cfg.AIHistoryMaxPoints)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -82,7 +83,7 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	errCh := make(chan error, 3)
+	errCh := make(chan error, 4)
 	go func() {
 		slog.Info("http api server started", "listen", cfg.HTTPListen)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -96,6 +97,11 @@ func main() {
 	}()
 	go func() {
 		if err := watcher.Run(ctx); err != nil && err != context.Canceled {
+			errCh <- err
+		}
+	}()
+	go func() {
+		if err := sampler.Run(ctx); err != nil && err != context.Canceled {
 			errCh <- err
 		}
 	}()
