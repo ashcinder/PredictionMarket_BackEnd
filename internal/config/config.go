@@ -140,10 +140,16 @@ func LoadFile(path string) (*Config, error) {
 	if raw.AI.PollIntervalSeconds <= 0 {
 		return nil, errors.New("ai.poll_interval_seconds must be positive")
 	}
-	if raw.AI.HistoryMinPoints <= 0 {
+	if raw.AI.HistoryMinPoints == 0 {
+		raw.AI.HistoryMinPoints = 3
+	}
+	if raw.AI.HistoryMinPoints < 0 {
 		return nil, errors.New("ai.history_min_points must be positive")
 	}
-	if raw.AI.HistoryMaxPoints <= 0 {
+	if raw.AI.HistoryMaxPoints == 0 {
+		raw.AI.HistoryMaxPoints = 256
+	}
+	if raw.AI.HistoryMaxPoints < 0 {
 		return nil, errors.New("ai.history_max_points must be positive")
 	}
 	if raw.AI.HistoryMaxPoints < raw.AI.HistoryMinPoints {

@@ -105,9 +105,9 @@ func TestLoadFileRejectsInvalidConfiguration(t *testing.T) {
 		"NaN buy amount": strings.Replace(validYAML,
 			`buy_amount_bkc: "10"`, `buy_amount_bkc: "NaN"`, 1),
 		"history minimum": strings.Replace(validYAML,
-			"history_min_points: 3", "history_min_points: 0", 1),
+			"history_min_points: 3", "history_min_points: -1", 1),
 		"history maximum": strings.Replace(validYAML,
-			"history_max_points: 256", "history_max_points: 0", 1),
+			"history_max_points: 256", "history_max_points: -1", 1),
 		"history range": strings.NewReplacer(
 			"history_min_points: 3", "history_min_points: 4",
 			"history_max_points: 256", "history_max_points: 3",
