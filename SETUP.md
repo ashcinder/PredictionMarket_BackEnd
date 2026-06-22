@@ -86,6 +86,15 @@ go test ./...
 
 测试使用内存存储、模拟 AI、模拟行情和模拟链客户端，不访问真实外网，也不会广播真实交易。只有启动后端并启用托管时，程序才会使用 `config.yaml` 中的真实服务和资金参数。
 
+可选的真实 MySQL 集成测试只允许数据库名以 `_test` 结尾：
+
+```bash
+MYSQL_TEST_DSN='prediction:dev-password@tcp(127.0.0.1:3306)/prediction_market_test?parseTime=true' \
+  go test -tags=integration ./internal/aimanaged -run TestMySQLIntegration -v
+```
+
+未设置 `MYSQL_TEST_DSN` 时该测试自动跳过，不会连接开发或生产数据库。
+
 ## 常见错误
 
 - `chain.private_key is required`：仍在使用模板私钥。
