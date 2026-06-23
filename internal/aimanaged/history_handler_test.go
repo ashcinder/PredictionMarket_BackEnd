@@ -52,21 +52,20 @@ func TestMarketHistoryHandlerReturnsAscendingHistoryWithStringReserves(t *testin
 	if repository.lastLimit != 256 || repository.lastMarket.GameID != 1 {
 		t.Fatalf("unexpected query: market=%+v limit=%d", repository.lastMarket, repository.lastLimit)
 	}
-	var response struct {
-		History []struct {
-			Time       int64   `json:"time"`
-			ReserveNO  *string `json:"reserve_no"`
-			ReserveYES *string `json:"reserve_yes"`
-			Source     string  `json:"source"`
-		} `json:"history"`
+	// Response is now a bare JSON array, not {"history": [...]}
+	var response []struct {
+		ObservedAt int64   `json:"observed_at"`
+		ReserveNO  *string `json:"reserve_no"`
+		ReserveYES *string `json:"reserve_yes"`
+		Source     string  `json:"source"`
 	}
 	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.History) != 2 || response.History[0].Time != 100 || response.History[0].ReserveNO != nil ||
-		response.History[1].ReserveNO == nil || *response.History[1].ReserveNO != "40" ||
-		response.History[1].ReserveYES == nil || *response.History[1].ReserveYES != "60" {
-		t.Fatalf("unexpected response: %+v", response.History)
+	if len(response) != 2 || response[0].ObservedAt != 100 || response[0].ReserveNO != nil ||
+		response[1].ReserveNO == nil || *response[1].ReserveNO != "40" ||
+		response[1].ReserveYES == nil || *response[1].ReserveYES != "60" {
+		t.Fatalf("unexpected response: %+v", response)
 	}
 }
 
@@ -146,7 +145,6 @@ func encodeHandlerExtraData(extra *chain.GameExtraData) string {
 	return "0x" + hex.EncodeToString(packed)
 }
 
-// mockHandlerChain implements historyFetcher for handler tests.
 type mockHandlerChain struct {
 	wallet    string
 	ethCallFn func(ctx context.Context, data string) (string, error)
@@ -172,7 +170,6 @@ func (m *mockHandlerChain) callCount() int {
 	return m.calls
 }
 
-// onDemandRepository wraps handlerHistoryRepository and records MergeAndList calls.
 type onDemandRepository struct {
 	handlerHistoryRepository
 	mergeCalls []mergeCallRec
@@ -214,16 +211,15 @@ func TestHistoryHandlerOnDemandSampleWhenNoHistory(t *testing.T) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 
-	var response struct {
-		History []historyResponsePoint `json:"history"`
-	}
+	// Response is a bare JSON array.
+	var response []historyResponsePoint
 	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.History) != 1 {
-		t.Fatalf("expected 1 on-demand point, got %d: %+v", len(response.History), response.History)
+	if len(response) != 1 {
+		t.Fatalf("expected 1 on-demand point, got %d: %+v", len(response), response)
 	}
-	p := response.History[0]
+	p := response[0]
 	if p.YesPercent < 69 || p.YesPercent > 71 {
 		t.Fatalf("expected yes~70%%, got %.4f", p.YesPercent)
 	}
@@ -273,14 +269,12 @@ func TestHistoryHandlerNoOnDemandWhenHistoryExists(t *testing.T) {
 		t.Fatalf("chain was called %d times but should not be called when history exists", c)
 	}
 
-	var response struct {
-		History []historyResponsePoint `json:"history"`
-	}
+	var response []historyResponsePoint
 	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.History) != 1 {
-		t.Fatalf("expected existing history point, got %d", len(response.History))
+	if len(response) != 1 {
+		t.Fatalf("expected existing history point, got %d", len(response))
 	}
 }
 
@@ -299,14 +293,12 @@ func TestHistoryHandlerEmptyWhenNoChainAndNoHistory(t *testing.T) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 
-	var response struct {
-		History []historyResponsePoint `json:"history"`
-	}
+	var response []historyResponsePoint
 	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.History) != 0 {
-		t.Fatalf("expected empty history when no chain, got %d points", len(response.History))
+	if len(response) != 0 {
+		t.Fatalf("expected empty history when no chain, got %d", len(response))
 	}
 }
 
@@ -331,13 +323,18 @@ func TestHistoryHandlerOnDemandDegradesGracefully(t *testing.T) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 
-	var response struct {
-		History []historyResponsePoint `json:"history"`
-	}
+	var response []historyResponsePoint
 	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.History) != 0 {
-		t.Fatalf("expected empty history on chain failure, got %d points", len(response.History))
+	if len(response) != 1 {
+		t.Fatalf("expected 1 fallback point on chain failure, got %d", len(response))
+	}
+	p := response[0]
+	if p.YesPercent != 50 || p.NoPercent != 50 {
+		t.Fatalf("expected neutral 50/50 fallback, got yes=%.4f no=%.4f", p.YesPercent, p.NoPercent)
+	}
+	if p.Source != historySourceChain {
+		t.Fatalf("expected chain source, got %q", p.Source)
 	}
 }

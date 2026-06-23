@@ -5,12 +5,16 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"math/big"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
+
+	"PredictionMarket/internal/database"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -37,14 +41,41 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 )
 
 type MySQLRepository struct {
-	db *sql.DB
+	db           *sql.DB
+	ensureMu     sync.Mutex
 }
 
 func NewMySQLRepository(db *sql.DB) *MySQLRepository {
 	return &MySQLRepository{db: db}
 }
 
+// ensureTables recreates all required tables (CREATE TABLE IF NOT EXISTS).
+// It serialises concurrent callers so only one goroutine runs the DDL while
+// the others wait and then proceed.
+func (r *MySQLRepository) ensureTables(ctx context.Context) {
+	r.ensureMu.Lock()
+	defer r.ensureMu.Unlock()
+	if err := database.EnsureTables(ctx, r.db); err != nil {
+		slog.Error("mysql repository: ensure tables failed", "error", err)
+	}
+}
+
+// isTableNotFound reports whether err indicates a missing table.
+func (r *MySQLRepository) isTableNotFound(err error) bool {
+	return database.IsTableNotFound(err)
+}
+
 func (r *MySQLRepository) MergeAndList(ctx context.Context, market MarketIdentity, seed []HistoryObservation, current HistoryObservation, limit int) ([]HistoryObservation, error) {
+	points, err := r.mergeAndList(ctx, market, seed, current, limit)
+	if err != nil && r.isTableNotFound(err) {
+		slog.Warn("mysql repository: table missing, recreating and retrying", "op", "merge_and_list")
+		r.ensureTables(ctx)
+		points, err = r.mergeAndList(ctx, market, seed, current, limit)
+	}
+	return points, err
+}
+
+func (r *MySQLRepository) mergeAndList(ctx context.Context, market MarketIdentity, seed []HistoryObservation, current HistoryObservation, limit int) ([]HistoryObservation, error) {
 	if err := validateMarketAndLimit(market, limit); err != nil {
 		return nil, err
 	}
@@ -100,6 +131,16 @@ func (r *MySQLRepository) MergeAndList(ctx context.Context, market MarketIdentit
 }
 
 func (r *MySQLRepository) List(ctx context.Context, market MarketIdentity, limit int) ([]HistoryObservation, error) {
+	points, err := r.list(ctx, market, limit)
+	if err != nil && r.isTableNotFound(err) {
+		slog.Warn("mysql repository: table missing, recreating and retrying", "op", "list")
+		r.ensureTables(ctx)
+		points, err = r.list(ctx, market, limit)
+	}
+	return points, err
+}
+
+func (r *MySQLRepository) list(ctx context.Context, market MarketIdentity, limit int) ([]HistoryObservation, error) {
 	if err := validateMarketAndLimit(market, limit); err != nil {
 		return nil, err
 	}
@@ -134,17 +175,14 @@ func queryHistory(ctx context.Context, queryer historyQueryer, contract string, 
 		if err != nil {
 			return nil, fmt.Errorf("parse no_percent: %w", err)
 		}
-		if len(reserveNO) > 32 {
-			return nil, errors.New("parse reserve_no: exceeds uint256")
+		var parseErr error
+		point.ReserveNO, parseErr = parseReserveBytes(reserveNO)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse reserve_no: %w", parseErr)
 		}
-		if len(reserveYES) > 32 {
-			return nil, errors.New("parse reserve_yes: exceeds uint256")
-		}
-		if reserveNO != nil {
-			point.ReserveNO = new(big.Int).SetBytes(reserveNO)
-		}
-		if reserveYES != nil {
-			point.ReserveYES = new(big.Int).SetBytes(reserveYES)
+		point.ReserveYES, parseErr = parseReserveBytes(reserveYES)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse reserve_yes: %w", parseErr)
 		}
 		points = append(points, point)
 	}
@@ -158,6 +196,16 @@ func queryHistory(ctx context.Context, queryer historyQueryer, contract string, 
 }
 
 func (r *MySQLRepository) RecordRule(ctx context.Context, record RuleDecisionRecord) error {
+	err := r.recordRule(ctx, record)
+	if err != nil && r.isTableNotFound(err) {
+		slog.Warn("mysql repository: table missing, recreating and retrying", "op", "record_rule")
+		r.ensureTables(ctx)
+		err = r.recordRule(ctx, record)
+	}
+	return err
+}
+
+func (r *MySQLRepository) recordRule(ctx context.Context, record RuleDecisionRecord) error {
 	if err := validateDecisionIdentity(record.Market, record.UserAddress); err != nil {
 		return err
 	}
@@ -175,6 +223,16 @@ func (r *MySQLRepository) RecordRule(ctx context.Context, record RuleDecisionRec
 }
 
 func (r *MySQLRepository) CreatePending(ctx context.Context, record ModelDecisionRecord) (int64, error) {
+	id, err := r.createPending(ctx, record)
+	if err != nil && r.isTableNotFound(err) {
+		slog.Warn("mysql repository: table missing, recreating and retrying", "op", "create_pending")
+		r.ensureTables(ctx)
+		id, err = r.createPending(ctx, record)
+	}
+	return id, err
+}
+
+func (r *MySQLRepository) createPending(ctx context.Context, record ModelDecisionRecord) (int64, error) {
 	if err := validateDecisionIdentity(record.Market, record.UserAddress); err != nil {
 		return 0, err
 	}
@@ -197,6 +255,16 @@ func (r *MySQLRepository) CreatePending(ctx context.Context, record ModelDecisio
 }
 
 func (r *MySQLRepository) Finalize(ctx context.Context, id int64, outcome, txHash, errorSummary string) error {
+	err := r.finalize(ctx, id, outcome, txHash, errorSummary)
+	if err != nil && r.isTableNotFound(err) {
+		slog.Warn("mysql repository: table missing, recreating and retrying", "op", "finalize")
+		r.ensureTables(ctx)
+		err = r.finalize(ctx, id, outcome, txHash, errorSummary)
+	}
+	return err
+}
+
+func (r *MySQLRepository) finalize(ctx context.Context, id int64, outcome, txHash, errorSummary string) error {
 	if id <= 0 {
 		return errors.New("decision id must be positive")
 	}
@@ -259,7 +327,30 @@ func reserveBytes(value *big.Int) ([]byte, error) {
 	if value == nil || value.Sign() < 0 || value.BitLen() > 256 {
 		return nil, errors.New("value is not uint256")
 	}
-	return value.Bytes(), nil
+	// Store as decimal string so the data is human-readable in the database.
+	return []byte(value.String()), nil
+}
+
+// parseReserveBytes decodes a reserve value from MySQL. It tries decimal
+// string first (current format) and falls back to big-endian binary (for
+// rows written before the decimal-string migration). Returns an error when
+// the stored data is too large for uint256.
+func parseReserveBytes(data []byte) (*big.Int, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	// Try decimal string format first.
+	if v, ok := new(big.Int).SetString(string(data), 10); ok {
+		if v.BitLen() > 256 {
+			return nil, errors.New("reserve exceeds uint256")
+		}
+		return v, nil
+	}
+	// Fall back to legacy big-endian binary encoding.
+	if len(data) > 32 {
+		return nil, errors.New("reserve exceeds uint256")
+	}
+	return new(big.Int).SetBytes(data), nil
 }
 
 func formatPercentage(value float64) string {

@@ -1,0 +1,3 @@
+ALTER TABLE market_history
+  MODIFY COLUMN reserve_no VARBINARY(80) NULL,
+  MODIFY COLUMN reserve_yes VARBINARY(80) NULL;

@@ -87,7 +87,12 @@ func (s *MarketHistorySampler) sampleOnce(ctx context.Context) {
 	nowMillis := now.UnixMilli()
 	wallet := s.chain.WalletAddress()
 
-	var active int
+	var (
+		active  int
+		success int
+		failed  int
+		mu      sync.Mutex
+	)
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, maxSamplerConcurrency)
 
@@ -109,35 +114,48 @@ func (s *MarketHistorySampler) sampleOnce(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			}
-			s.sampleGame(ctx, game, wallet, now)
+			if err := s.sampleGame(ctx, game, wallet, now); err != nil {
+				mu.Lock()
+				failed++
+				mu.Unlock()
+			} else {
+				mu.Lock()
+				success++
+				mu.Unlock()
+			}
 		}()
 	}
 	wg.Wait()
 
-	slog.Info("sampler: cycle complete", "total_games", len(games), "active", active)
+	slog.Info("sampler: cycle complete",
+		"total_games", len(games),
+		"active", active,
+		"success", success,
+		"failed", failed,
+	)
 }
 
-func (s *MarketHistorySampler) sampleGame(ctx context.Context, game chain.GameOnChain, wallet string, now time.Time) {
+func (s *MarketHistorySampler) sampleGame(ctx context.Context, game chain.GameOnChain, wallet string, now time.Time) error {
 	encoded, err := chain.EncodeGetGameExtraData(game.ID, wallet)
 	if err != nil {
 		slog.Warn("sampler: encode getGameExtraData failed", "game_id", game.ID, "error", err)
-		return
+		return err
 	}
 	hexResult, err := s.chain.EthCall(ctx, encoded)
 	if err != nil {
 		slog.Warn("sampler: eth_call getGameExtraData failed", "game_id", game.ID, "error", err)
-		return
+		return err
 	}
 	extra, err := chain.DecodeGetGameExtraData(hexResult)
 	if err != nil {
 		slog.Warn("sampler: decode getGameExtraData failed", "game_id", game.ID, "error", err)
-		return
+		return err
 	}
 
 	obs, err := observationFromReserves(extra, now)
 	if err != nil {
 		slog.Warn("sampler: calculate observation failed", "game_id", game.ID, "error", err)
-		return
+		return err
 	}
 
 	market := MarketIdentity{
@@ -146,5 +164,7 @@ func (s *MarketHistorySampler) sampleGame(ctx context.Context, game chain.GameOn
 	}
 	if _, err := s.histories.MergeAndList(ctx, market, nil, obs, s.historyMax); err != nil {
 		slog.Warn("sampler: persist history failed", "game_id", game.ID, "error", err)
+		return err
 	}
+	return nil
 }

@@ -98,7 +98,7 @@ func TestEmbeddedMigrationDefinesPersistenceTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 1 || migrations[0].Version != 1 {
+	if len(migrations) < 1 || migrations[0].Version != 1 {
 		t.Fatalf("unexpected migrations: %+v", migrations)
 	}
 	for _, table := range []string{"market_history", "ai_decisions"} {

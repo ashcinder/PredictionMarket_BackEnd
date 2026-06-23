@@ -198,6 +198,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 }
 
 func (s *Server) handleAIManaged(w http.ResponseWriter, r *http.Request) {
+	slog.Info("api request", "method", r.Method, "path", r.URL.Path, "query", r.URL.RawQuery, "remote", r.RemoteAddr)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")

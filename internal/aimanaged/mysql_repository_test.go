@@ -31,13 +31,13 @@ func TestMySQLRepositoryMergeAndListPersistsSeedsAndChainPoint(t *testing.T) {
 		WithArgs(repositoryTestContract, 1, int64(100), "51.000000", "49.000000", nil, nil, historySourceIPFS).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO market_history").
-		WithArgs(repositoryTestContract, 1, int64(120), "60.000000", "40.000000", []byte{40}, []byte{60}, historySourceChain).
+		WithArgs(repositoryTestContract, 1, int64(120), "60.000000", "40.000000", []byte("40"), []byte("60"), historySourceChain).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("SELECT observed_at, yes_percent, no_percent, reserve_no, reserve_yes, source").
 		WithArgs(repositoryTestContract, 1, 3).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"observed_at", "yes_percent", "no_percent", "reserve_no", "reserve_yes", "source",
-		}).AddRow(120, "60.000000", "40.000000", []byte{40}, []byte{60}, "chain").
+		}).AddRow(120, "60.000000", "40.000000", []byte("40"), []byte("60"), "chain").
 			AddRow(100, "51.000000", "49.000000", nil, nil, "ipfs"))
 	mock.ExpectCommit()
 

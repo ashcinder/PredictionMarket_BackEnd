@@ -29,12 +29,12 @@ type HistoryHandler struct {
 }
 
 type historyResponsePoint struct {
-	Time       int64   `json:"time"`
+	ObservedAt int64   `json:"observed_at"`
 	YesPercent float64 `json:"yes_percent"`
 	NoPercent  float64 `json:"no_percent"`
-	ReserveNO  *string `json:"reserve_no"`
-	ReserveYES *string `json:"reserve_yes"`
-	Source     string  `json:"source"`
+	ReserveNO  *string `json:"reserve_no,omitempty"`
+	ReserveYES *string `json:"reserve_yes,omitempty"`
+	Source     string  `json:"source,omitempty"`
 }
 
 // NewHistoryHandler creates a handler that serves market history. If chain is
@@ -50,6 +50,8 @@ func (h *HistoryHandler) Register(mux *http.ServeMux) {
 }
 
 func (h *HistoryHandler) handle(w http.ResponseWriter, r *http.Request) {
+	slog.Info("api request", "method", r.Method, "path", r.URL.Path, "query", r.URL.RawQuery, "remote", r.RemoteAddr)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
@@ -105,55 +107,71 @@ func (h *HistoryHandler) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Build response as a bare JSON array (frontend Java code expects [...]
+	// at the top level, not {"history": [...]}).
 	response := make([]historyResponsePoint, len(points))
 	for i, point := range points {
 		response[i] = historyResponsePoint{
-			Time: point.Time, YesPercent: point.YesPercent, NoPercent: point.NoPercent,
+			ObservedAt: point.Time, YesPercent: point.YesPercent, NoPercent: point.NoPercent,
 			ReserveNO:  decimalStringPointer(point.ReserveNO),
 			ReserveYES: decimalStringPointer(point.ReserveYES),
 			Source:     point.Source,
 		}
 	}
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"history": response})
+	slog.Info("api response", "path", r.URL.Path, "game_id", gameID, "points", len(response))
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // sampleOnDemand fetches the current reserves for a game from chain, persists
-// a snapshot to market_history, and returns the observation. It returns nil on
-// any error so the API degrades gracefully to an empty response.
+// a snapshot to market_history, and returns the observation. On any error it
+// falls back to a neutral 50/50 placeholder so the frontend always has at
+// least one data point to display; real percentages arrive on the next sampler
+// tick. The fallback is deliberately NOT persisted — only real chain data is
+// written to market_history.
 func (h *HistoryHandler) sampleOnDemand(ctx context.Context, market MarketIdentity) *HistoryObservation {
 	encoded, err := chain.EncodeGetGameExtraData(market.GameID, h.chain.WalletAddress())
 	if err != nil {
 		slog.Warn("history handler: on-demand encode failed", "game_id", market.GameID, "error", err)
-		return nil
+		return h.fallbackObservation()
 	}
 	hexResult, err := h.chain.EthCall(ctx, encoded)
 	if err != nil {
 		slog.Warn("history handler: on-demand eth_call failed", "game_id", market.GameID, "error", err)
-		return nil
+		return h.fallbackObservation()
 	}
 	extra, err := chain.DecodeGetGameExtraData(hexResult)
 	if err != nil {
 		slog.Warn("history handler: on-demand decode failed", "game_id", market.GameID, "error", err)
-		return nil
+		return h.fallbackObservation()
 	}
 	obs, err := observationFromReserves(extra, time.Now())
 	if err != nil {
 		slog.Warn("history handler: on-demand observation failed", "game_id", market.GameID, "error", err)
-		return nil
+		return h.fallbackObservation()
 	}
 
 	saved, err := h.histories.MergeAndList(ctx, market, nil, obs, h.defaultLimit)
 	if err != nil {
 		slog.Warn("history handler: on-demand persist failed", "game_id", market.GameID, "error", err)
-		return nil
+		return h.fallbackObservation()
 	}
 	if len(saved) == 0 {
-		return nil
+		return h.fallbackObservation()
 	}
 	// Return the most recent point (last in the returned slice, which is
 	// ordered ascending in time).
 	last := saved[len(saved)-1]
 	return &last
+}
+
+// fallbackObservation returns a neutral 50/50 data point.
+func (h *HistoryHandler) fallbackObservation() *HistoryObservation {
+	return &HistoryObservation{
+		Time:       time.Now().Unix(),
+		YesPercent: 50,
+		NoPercent:  50,
+		Source:     historySourceChain,
+	}
 }
 
 func decimalStringPointer(value *big.Int) *string {
