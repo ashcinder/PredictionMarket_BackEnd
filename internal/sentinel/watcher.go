@@ -65,7 +65,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 
 func (w *Watcher) scanOnce(ctx context.Context) error {
 	data := chain.EncodeGetAllGames()
-	hexResult, err := w.chain.EthCall(ctx, data)
+	hexResult, err := w.chain.RetryableEthCall(ctx, data)
 	if err != nil {
 		return fmt.Errorf("eth_call getAllGames: %w", err)
 	}

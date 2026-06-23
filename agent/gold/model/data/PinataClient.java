@@ -23,7 +23,7 @@ public class PinataClient {
     // 1. Android Studio 模拟器访问 Mac 宿主机，固定使用 10.0.2.2
     // 2. 如果你是真机调试，请修改为 Mac 的局域网 IP (如 http://192.168.1.100:8080/ipfs/)
     // ---------------------------------------------------------
-    private static final String IPFS_GATEWAY = "http://10.0.2.2:8080/ipfs/";
+    public static final String IPFS_GATEWAY = "http://10.0.2.2:8080/ipfs/";
     private static final String IPFS_API_ADD = "http://10.0.2.2:5001/api/v0/add";
 
     /**
@@ -39,69 +39,46 @@ public class PinataClient {
      * @return 返回文件的 CID (哈希值)
      */
     public static String uploadJsonToIPFS(JSONObject jsonMetadata) throws Exception {
+        return uploadFileToIPFS(jsonMetadata.toString().getBytes(StandardCharsets.UTF_8), "metadata.json", "application/json");
+    }
+
+    /**
+     * 将字节数组上传到本地 IPFS 节点
+     */
+    public static String uploadFileToIPFS(byte[] data, String fileName, String contentType) throws Exception {
         URL url = new URL(IPFS_API_ADD);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("POST");
         conn.setDoOutput(true);
 
-        // 使用更标准、没有特殊字符的 boundary
         String boundary = "IPFS_BOUNDARY_" + System.currentTimeMillis();
         conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
 
-        // 将整个请求体先拼装成一个完整的字符串，方便打印和校验
-        String jsonStr = jsonMetadata.toString();
-        StringBuilder payloadBuilder = new StringBuilder();
-        payloadBuilder.append("--").append(boundary).append("\r\n");
-        // 注意这里的 name 必须是 "file" (部分 IPFS 版本要求带引号)
-        payloadBuilder.append("Content-Disposition: form-data; name=\"file\"; filename=\"metadata.json\"\r\n");
-        payloadBuilder.append("Content-Type: application/json\r\n\r\n");
-        payloadBuilder.append(jsonStr).append("\r\n"); // JSON 数据末尾加上换行，防止与边界符粘连
-        payloadBuilder.append("--").append(boundary).append("--\r\n");
-
-        String payload = payloadBuilder.toString();
-
-        // ----------------- 开启极限调试日志 -----------------
-        android.util.Log.d(TAG, "==== IPFS 极客调试: 上传报文 ====");
-        android.util.Log.d(TAG, "URL: " + url.toString());
-        android.util.Log.d(TAG, "Content-Type: multipart/form-data; boundary=" + boundary);
-        android.util.Log.d(TAG, "Payload Length: " + payload.getBytes(StandardCharsets.UTF_8).length);
-        android.util.Log.d(TAG, "Payload Content (严格核对空行):\n" + payload);
-        android.util.Log.d(TAG, "===================================");
-        // ----------------------------------------------------
-
-        // 一次性将完整的报文写入流
         try (OutputStream os = conn.getOutputStream()) {
-            os.write(payload.getBytes(StandardCharsets.UTF_8));
+            PrintWriter writer = new PrintWriter(new OutputStreamWriter(os, StandardCharsets.UTF_8), true);
+            writer.append("--").append(boundary).append("\r\n");
+            writer.append("Content-Disposition: form-data; name=\"file\"; filename=\"").append(fileName).append("\"\r\n");
+            writer.append("Content-Type: ").append(contentType).append("\r\n\r\n");
+            writer.flush();
+            os.write(data);
             os.flush();
+            writer.append("\r\n");
+            writer.append("--").append(boundary).append("--\r\n");
+            writer.flush();
         }
 
         int responseCode = conn.getResponseCode();
-        android.util.Log.d(TAG, "响应状态码 (Response Code): " + responseCode);
-        android.util.Log.d(TAG, "响应信息 (Response Message): " + conn.getResponseMessage());
-
         if (responseCode != 200) {
-            java.io.InputStream errorStream = conn.getErrorStream();
-            String errorMsg = "";
-            if (errorStream != null) {
-                try (Scanner scanner = new Scanner(errorStream, "UTF-8")) {
-                    errorMsg = scanner.useDelimiter("\\A").hasNext() ? scanner.useDelimiter("\\A").next() : "";
-                }
-            }
-            android.util.Log.e(TAG, "IPFS 原生报错详情: " + errorMsg);
-            throw new Exception("HTTP " + responseCode + " - " + errorMsg.trim());
+            throw new Exception("IPFS 上传失败: HTTP " + responseCode);
         }
 
         try (Scanner scanner = new Scanner(conn.getInputStream(), "UTF-8")) {
             String response = scanner.useDelimiter("\\A").next();
-            android.util.Log.d(TAG, "IPFS 上传成功, 原始响应: " + response);
             JSONObject resJson = new JSONObject(response);
-
-            // 本地节点返回的 CID 键名为 "Hash"
-            String cid = resJson.getString("Hash");
-            android.util.Log.d(TAG, "解析获得的 CID: " + cid);
-            return cid;
+            return resJson.getString("Hash");
         }
-    }    /**
+    }
+   /**
      * 从本地 IPFS 节点网关下载 JSON 文本
      */
     public static String downloadJsonFromIPFS(String cid) throws Exception {

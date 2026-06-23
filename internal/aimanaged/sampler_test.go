@@ -91,6 +91,10 @@ func (m *mockSamplerChain) EthCall(ctx context.Context, data string) (string, er
 	return "0x", nil
 }
 
+func (m *mockSamplerChain) RetryableEthCall(ctx context.Context, data string) (string, error) {
+	return m.EthCall(ctx, data)
+}
+
 func (m *mockSamplerChain) WalletAddress() string { return m.wallet }
 
 func (m *mockSamplerChain) callCount() int {

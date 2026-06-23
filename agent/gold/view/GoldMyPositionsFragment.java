@@ -26,9 +26,12 @@ import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
 import com.example.brokerfi.R;
 import com.example.brokerfi.xc.agent.gold.model.data.GoldMarketRepository;
+import com.example.brokerfi.xc.agent.gold.model.data.PinataClient;
 import com.example.brokerfi.xc.agent.gold.model.logic.GoldPositionValuation;
 import com.example.brokerfi.xc.agent.gold.viewmodel.GoldMyPositionsViewModel;
+import com.bumptech.glide.Glide;
 
+import android.widget.ImageView;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
@@ -88,8 +91,16 @@ public class GoldMyPositionsFragment extends Fragment {
         for (GoldMarketRepository.GameModel game : myPositions) {
             View card = inflater.inflate(R.layout.item_gold_position_card, positionsContainer, false);
             TextView tvTitle = card.findViewById(R.id.tv_position_title);
+            ImageView ivIcon = card.findViewById(R.id.iv_position_icon);
             String rawTitle = game.desc != null && !game.desc.isEmpty() ? game.desc : "博弈池 #" + game.id;
             tvTitle.setText(styleMarketTitle(rawTitle));
+
+            if (game.avatarUrl != null && !game.avatarUrl.isEmpty()) {
+                Glide.with(this).load(PinataClient.IPFS_GATEWAY + game.avatarUrl).placeholder(R.drawable.apartment_icon).into(ivIcon);
+            } else {
+                ivIcon.setImageResource(R.drawable.apartment_icon);
+            }
+
             TextView tvSide = card.findViewById(R.id.tv_position_side);
             TextView tvShares = card.findViewById(R.id.tv_shares);
             TextView tvCurrentValue = card.findViewById(R.id.tv_current_value);
@@ -113,7 +124,27 @@ public class GoldMyPositionsFragment extends Fragment {
 
             GoldPositionValuation.MarketValue marketValue = GoldPositionValuation.calculateMarket(game);
             tvCurrentValue.setText(marketValue.isComplete() ? GoldNoteMarketActivity.formatBkc(marketValue.getValueWei()) + " BKC" : "暂不可估值");
-            tvProfit.setText(game.isRefunded ? "已退款" : (game.isResolved ? "已结算" : "AMM估值"));
+            
+            String status;
+            int statusColor;
+            if (game.isRefunded) {
+                status = "已退款";
+                statusColor = Color.GRAY;
+            } else if (game.isResolved) {
+                status = "已结算";
+                statusColor = 0xFF3B82F6; // Blue
+            } else {
+                long remaining = GoldNoteMarketActivity.remainingSecondsUntilDeadline(game.deadlineSec, System.currentTimeMillis());
+                if (remaining > 0) {
+                    status = "进行中";
+                    statusColor = 0xFF047857; // Green
+                } else {
+                    status = "等待开奖";
+                    statusColor = Color.RED;
+                }
+            }
+            tvProfit.setText(status);
+            tvProfit.setTextColor(statusColor);
 
             card.setOnClickListener(v -> {
                 Intent intent = new Intent(requireContext(), GoldMarketDetailActivity.class);

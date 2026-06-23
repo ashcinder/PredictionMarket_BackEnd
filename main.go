@@ -13,6 +13,7 @@ import (
 	"PredictionMarket/internal/chain"
 	"PredictionMarket/internal/config"
 	"PredictionMarket/internal/database"
+	"PredictionMarket/internal/gameapi"
 	"PredictionMarket/internal/ipfs"
 	"PredictionMarket/internal/oracle"
 	"PredictionMarket/internal/sentinel"
@@ -74,9 +75,13 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	gameRepo := gameapi.NewGameRepository(db)
+	gameAPI := gameapi.NewHandler(gameRepo, chainClient, cfg.ContractAddress, historyHandler)
+
 	mux := http.NewServeMux()
 	managedServer.Register(mux)
-	historyHandler.Register(mux)
+	historyHandler.Register(mux) // /api/gold/market-history (old path, compat)
+	gameAPI.Register(mux)         // /api/gold/games, /api/gold/health, etc.
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPListen,
 		Handler:           mux,
@@ -103,6 +108,28 @@ func main() {
 	go func() {
 		if err := sampler.Run(ctx); err != nil && err != context.Canceled {
 			errCh <- err
+		}
+	}()
+	go func() {
+		// Periodic game cache sync: pull all games + reserves from chain
+		// into gold_games so the list/detail/positions APIs are fast.
+		slog.Info("game cache syncer started", "interval", "30s")
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		// Initial sync.
+		syncCtx, syncCancel := context.WithTimeout(ctx, 120*time.Second)
+		gameAPI.SyncAllGames(syncCtx)
+		syncCancel()
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Info("game cache syncer stopped")
+				return
+			case <-ticker.C:
+				syncCtx, syncCancel := context.WithTimeout(ctx, 120*time.Second)
+				gameAPI.SyncAllGames(syncCtx)
+				syncCancel()
+			}
 		}
 	}()
 

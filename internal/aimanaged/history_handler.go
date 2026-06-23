@@ -49,6 +49,12 @@ func (h *HistoryHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/api/gold/market-history", h.handle)
 }
 
+// ServeHTTP allows HistoryHandler to be used as an http.Handler so other
+// muxes (e.g. the game API) can forward requests to it.
+func (h *HistoryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.handle(w, r)
+}
+
 func (h *HistoryHandler) handle(w http.ResponseWriter, r *http.Request) {
 	slog.Info("api request", "method", r.Method, "path", r.URL.Path, "query", r.URL.RawQuery, "remote", r.RemoteAddr)
 

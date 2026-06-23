@@ -14,6 +14,7 @@ const maxSamplerConcurrency = 4
 // samplerChain is the subset of chain.Client used by MarketHistorySampler.
 type samplerChain interface {
 	EthCall(ctx context.Context, data string) (string, error)
+	RetryableEthCall(ctx context.Context, data string) (string, error)
 	WalletAddress() string
 }
 
@@ -79,7 +80,7 @@ func (s *MarketHistorySampler) Run(ctx context.Context) error {
 
 func (s *MarketHistorySampler) sampleOnce(ctx context.Context) {
 	data := chain.EncodeGetAllGames()
-	hexResult, err := s.chain.EthCall(ctx, data)
+	hexResult, err := s.chain.RetryableEthCall(ctx, data)
 	if err != nil {
 		slog.Warn("sampler: eth_call getAllGames failed", "error", err)
 		return
@@ -152,7 +153,7 @@ func (s *MarketHistorySampler) sampleGame(ctx context.Context, game chain.GameOn
 		slog.Warn("sampler: encode getGameExtraData failed", "game_id", game.ID, "error", err)
 		return err
 	}
-	hexResult, err := s.chain.EthCall(ctx, encoded)
+	hexResult, err := s.chain.RetryableEthCall(ctx, encoded)
 	if err != nil {
 		slog.Warn("sampler: eth_call getGameExtraData failed", "game_id", game.ID, "error", err)
 		return err

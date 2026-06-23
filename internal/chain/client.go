@@ -58,6 +58,36 @@ func (c *Client) WalletAddress() string {
 
 func (c *Client) Close() {}
 
+// RetryableEthCall is like EthCall but automatically retries transient
+// BrokerChain errors (HTTP 502/503/504) up to 2 times with backoff.
+// Use this for background polling where a brief delay is acceptable.
+func (c *Client) RetryableEthCall(ctx context.Context, data string) (string, error) {
+	const maxRetries = 2
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(time.Duration(attempt) * 2 * time.Second):
+			}
+		}
+		result, err := c.EthCall(ctx, data)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		// Only retry on gateway/proxy errors.
+		if !strings.Contains(err.Error(), "HTTP 502") &&
+			!strings.Contains(err.Error(), "HTTP 503") &&
+			!strings.Contains(err.Error(), "HTTP 504") &&
+			!strings.Contains(err.Error(), "deadline exceeded") {
+			break
+		}
+	}
+	return "", lastErr
+}
+
 func (c *Client) EthCall(ctx context.Context, data string) (string, error) {
 	if c.useBrokerChain {
 		return c.brokerEthCall(ctx, data)
@@ -253,7 +283,21 @@ func (c *Client) post(ctx context.Context, endpoint string, body []byte) (string
 		return "", err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("broker chain %s: HTTP %d %s", endpoint, resp.StatusCode, string(raw))
+			detail := strings.TrimSpace(string(raw))
+			if strings.Contains(detail, "<html>") || strings.Contains(detail, "<HTML>") {
+				title := "proxy error"
+				if start := strings.Index(detail, "<title>"); start >= 0 {
+					end := strings.Index(detail[start:], "</title>")
+					if end > 0 {
+						title = detail[start+7 : start+end]
+					}
+				}
+				return "", fmt.Errorf("broker chain %s: HTTP %d (%s)", endpoint, resp.StatusCode, title)
+			}
+			if len(detail) > 200 {
+				detail = detail[:200]
+			}
+			return "", fmt.Errorf("broker chain %s: HTTP %d %s", endpoint, resp.StatusCode, detail)
 	}
 	return string(raw), nil
 }

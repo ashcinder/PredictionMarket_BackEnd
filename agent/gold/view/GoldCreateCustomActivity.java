@@ -2,24 +2,36 @@ package com.example.brokerfi.xc.agent.gold.view;
 
 import android.app.AlertDialog;
 import android.app.DatePickerDialog;
+import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.net.Uri;
 import android.os.Bundle;
+import android.provider.MediaStore;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 import android.util.Log;
+
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.lifecycle.ViewModelProvider;
 
+import com.bumptech.glide.Glide;
 import com.example.brokerfi.R;
 import com.example.brokerfi.xc.agent.gold.model.data.GoldMarketRepository;
 import com.example.brokerfi.xc.agent.gold.viewmodel.GoldCreatePoolViewModel;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
 import java.util.Calendar;
@@ -34,10 +46,20 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
     private boolean startSelected = false, endSelected = false;
     private TextView tvTemplateName, tvTemplateDetail;
     private EditText etParam1, etInitialLiquidity;
-    private Button btnSelectStartTime, btnSelectTime, btnDeploy;
+    private Button btnSelectStartTime, btnSelectTime, btnDeploy, btnSelectImage;
+    private ImageView ivPoolIcon;
     private LinearLayout containerTechnical, containerDirection;
     private Spinner spinnerIndicator, spinnerOperator, spinnerDirection;
     private SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault());
+    
+    private byte[] selectedImageData = null;
+    private final ActivityResultLauncher<Intent> imagePickerLauncher = registerForActivityResult(
+            new ActivityResultContracts.StartActivityForResult(),
+            result -> {
+                if (result.getResultCode() == RESULT_OK && result.getData() != null) {
+                    handleImageResult(result.getData().getData());
+                }
+            });
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -75,6 +97,8 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
         etInitialLiquidity = findViewById(R.id.et_initial_liquidity);
         btnSelectStartTime = findViewById(R.id.btn_select_start_time);
         btnSelectTime = findViewById(R.id.btn_select_time);
+        btnSelectImage = findViewById(R.id.btn_select_image);
+        ivPoolIcon = findViewById(R.id.iv_pool_icon);
         btnDeploy = findViewById(R.id.btn_deploy);
         containerTechnical = findViewById(R.id.container_technical);
         spinnerIndicator = findViewById(R.id.spinner_indicator);
@@ -83,6 +107,7 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
         spinnerDirection = findViewById(R.id.spinner_direction);
         btnSelectStartTime.setOnClickListener(v -> showDatePicker(true));
         btnSelectTime.setOnClickListener(v -> showDatePicker(false));
+        btnSelectImage.setOnClickListener(v -> pickImage());
         btnDeploy.setOnClickListener(v -> attemptShowSummary());
 
         List<String> indicators = Arrays.asList("RSI (14)", "MACD (12,26,9)", "KDJ (9,3,3)", "BOLL (20,2)");
@@ -158,6 +183,28 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
         showSummaryDialog(title, cond, start, end, dur);
     }
 
+    private void pickImage() {
+        Intent intent = new Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+        imagePickerLauncher.launch(intent);
+    }
+
+    private void handleImageResult(Uri uri) {
+        try {
+            Glide.with(this).load(uri).into(ivPoolIcon);
+            InputStream is = getContentResolver().openInputStream(uri);
+            Bitmap bitmap = BitmapFactory.decodeStream(is);
+            if (bitmap != null) {
+                // 压缩图片至合理大小
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos);
+                selectedImageData = baos.toByteArray();
+                Log.d("GoldCreate", "图片选取成功, 大小: " + selectedImageData.length);
+            }
+        } catch (Exception e) {
+            Toast.makeText(this, "图片加载失败", Toast.LENGTH_SHORT).show();
+        }
+    }
+
     private void showSummaryDialog(String title, String condition, long start, long end, long dur) {
         String liqStr = etInitialLiquidity.getText().toString().trim();
         if (liqStr.isEmpty()) liqStr = "100";
@@ -173,7 +220,10 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
         Button btn = v.findViewById(R.id.btn_summary_close);
         btn.setText("确认并部署");
         AlertDialog dialog = builder.create();
-        btn.setOnClickListener(view -> { dialog.dismiss(); viewModel.createGame(title, condition, "", "Premium", Arrays.asList("达成 (YES)", "未达成 (NO)"), dur, liqWei); });
+        btn.setOnClickListener(view -> { 
+            dialog.dismiss(); 
+            viewModel.createGame(title, condition, selectedImageData, "Premium", Arrays.asList("达成 (YES)", "未达成 (NO)"), dur, liqWei); 
+        });
         dialog.show();
     }
 
