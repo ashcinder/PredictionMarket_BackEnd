@@ -33,6 +33,9 @@ func TestMySQLRepositoryMergeAndListPersistsSeedsAndChainPoint(t *testing.T) {
 	mock.ExpectExec("INSERT INTO market_history").
 		WithArgs(repositoryTestContract, 1, int64(120), "60.000000", "40.000000", []byte("40"), []byte("60"), historySourceChain).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM market_history").
+		WithArgs(repositoryTestContract, 1, repositoryTestContract, 1, 3).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT observed_at, yes_percent, no_percent, reserve_no, reserve_yes, source").
 		WithArgs(repositoryTestContract, 1, 3).
 		WillReturnRows(sqlmock.NewRows([]string{

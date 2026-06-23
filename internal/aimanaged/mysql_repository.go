@@ -23,26 +23,35 @@ const repositoryOperationTimeout = 10 * time.Second
 
 const (
 	insertIPFSHistorySQL = `INSERT IGNORE INTO market_history
-(contract_address, game_id, observed_at, yes_percent, no_percent, reserve_no, reserve_yes, source)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+	(contract_address, game_id, observed_at, yes_percent, no_percent, reserve_no, reserve_yes, source)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 	upsertChainHistorySQL = `INSERT INTO market_history
-(contract_address, game_id, observed_at, yes_percent, no_percent, reserve_no, reserve_yes, source)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-ON DUPLICATE KEY UPDATE yes_percent=VALUES(yes_percent), no_percent=VALUES(no_percent),
-reserve_no=VALUES(reserve_no), reserve_yes=VALUES(reserve_yes), source='chain'`
+	(contract_address, game_id, observed_at, yes_percent, no_percent, reserve_no, reserve_yes, source)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	ON DUPLICATE KEY UPDATE yes_percent=VALUES(yes_percent), no_percent=VALUES(no_percent),
+	reserve_no=VALUES(reserve_no), reserve_yes=VALUES(reserve_yes), source='chain'`
 	selectHistorySQL = `SELECT observed_at, yes_percent, no_percent, reserve_no, reserve_yes, source
-FROM market_history WHERE contract_address=? AND game_id=?
-ORDER BY observed_at DESC LIMIT ?`
+	FROM market_history WHERE contract_address=? AND game_id=?
+	ORDER BY observed_at DESC LIMIT ?`
 	insertDecisionSQL = `INSERT INTO ai_decisions
-(contract_address, game_id, user_address, observed_at, decision_source, action,
-confidence, reason, history_points, outcome)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	(contract_address, game_id, user_address, observed_at, decision_source, action,
+	confidence, reason, history_points, outcome)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	finalizeDecisionSQL = `UPDATE ai_decisions SET outcome=?, tx_hash=?, error_summary=? WHERE id=?`
+	pruneHistorySQL = `DELETE FROM market_history
+	WHERE contract_address = ? AND game_id = ?
+	AND observed_at NOT IN (
+		SELECT * FROM (
+			SELECT observed_at FROM market_history
+			WHERE contract_address = ? AND game_id = ?
+			ORDER BY observed_at DESC LIMIT ?
+		) keep
+	)`
 )
 
 type MySQLRepository struct {
-	db           *sql.DB
-	ensureMu     sync.Mutex
+	db       *sql.DB
+	ensureMu sync.Mutex
 }
 
 func NewMySQLRepository(db *sql.DB) *MySQLRepository {
@@ -119,6 +128,14 @@ func (r *MySQLRepository) mergeAndList(ctx context.Context, market MarketIdentit
 		reserveNO, reserveYES, historySourceChain,
 	); err != nil {
 		return nil, fmt.Errorf("upsert chain history: %w", err)
+	}
+	// Prune old rows: keep only the most recent `limit` observations
+	// per game so the table does not grow without bound.
+	if _, err := tx.ExecContext(ctx, pruneHistorySQL,
+		contract, market.GameID,
+		contract, market.GameID, limit,
+	); err != nil {
+		return nil, fmt.Errorf("prune history: %w", err)
 	}
 	points, err := queryHistory(ctx, tx, contract, market.GameID, limit)
 	if err != nil {

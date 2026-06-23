@@ -168,6 +168,9 @@ func (s *MarketHistorySampler) sampleGame(ctx context.Context, game chain.GameOn
 		slog.Warn("sampler: calculate observation failed", "game_id", game.ID, "error", err)
 		return err
 	}
+	// Bucket the timestamp so that successive samples within the same
+	// interval update the same row instead of creating duplicates.
+	obs.Time = bucketTimestamp(obs.Time, s.interval)
 
 	market := MarketIdentity{
 		ContractAddress: s.contractAddress,
