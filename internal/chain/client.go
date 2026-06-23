@@ -48,7 +48,7 @@ func NewClient(privateKeyHex, contractAddress, rpcURL, brokerBaseURL string, use
 		useBrokerChain:  useBrokerChain,
 		brokerBaseURL:   strings.TrimSuffix(brokerBaseURL, "/") + "/",
 		rpcURL:          rpcURL,
-		httpClient:      &http.Client{Timeout: 60 * time.Second},
+		httpClient:      &http.Client{Timeout: 120 * time.Second},
 	}, nil
 }
 
@@ -60,7 +60,7 @@ func (c *Client) Close() {}
 
 func (c *Client) EthCall(ctx context.Context, data string) (string, error) {
 	if c.useBrokerChain {
-		return c.brokerEthCall(data)
+		return c.brokerEthCall(ctx, data)
 	}
 	msg := map[string]interface{}{
 		"from": c.walletAddress,
@@ -80,7 +80,7 @@ func (c *Client) EthCall(ctx context.Context, data string) (string, error) {
 
 func (c *Client) SendTransaction(ctx context.Context, data string, value *big.Int) (string, error) {
 	if c.useBrokerChain {
-		return c.brokerSendTransaction(data, value)
+		return c.brokerSendTransaction(ctx, data, value)
 	}
 	valueHex := "0x0"
 	if value != nil && value.Sign() > 0 {
@@ -170,7 +170,7 @@ func (c *Client) waitForReceipt(ctx context.Context, txHash string) error {
 	return fmt.Errorf("transaction not confirmed within timeout")
 }
 
-func (c *Client) brokerEthCall(data string) (string, error) {
+func (c *Client) brokerEthCall(ctx context.Context, data string) (string, error) {
 	randomStr := randomUUID()
 	value := "0x0"
 	to := c.contractAddress
@@ -192,14 +192,14 @@ func (c *Client) brokerEthCall(data string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resp, err := c.post("eth_call", body)
+	resp, err := c.post(ctx, "eth_call", body)
 	if err != nil {
 		return "", err
 	}
 	return extractHexResult(resp), nil
 }
 
-func (c *Client) brokerSendTransaction(data string, value *big.Int) (string, error) {
+func (c *Client) brokerSendTransaction(ctx context.Context, data string, value *big.Int) (string, error) {
 	randomStr := randomUUID()
 	gas := "0x7a1200"
 	valueHex := "0x0"
@@ -226,7 +226,7 @@ func (c *Client) brokerSendTransaction(data string, value *big.Int) (string, err
 	if err != nil {
 		return "", err
 	}
-	resp, err := c.post("eth_sendTransaction", body)
+	resp, err := c.post(ctx, "eth_sendTransaction", body)
 	if err != nil {
 		return "", err
 	}
@@ -236,8 +236,8 @@ func (c *Client) brokerSendTransaction(data string, value *big.Int) (string, err
 	return resp, nil
 }
 
-func (c *Client) post(endpoint string, body []byte) (string, error) {
-	req, err := http.NewRequest(http.MethodPost, c.brokerBaseURL+endpoint, bytes.NewReader(body))
+func (c *Client) post(ctx context.Context, endpoint string, body []byte) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.brokerBaseURL+endpoint, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}

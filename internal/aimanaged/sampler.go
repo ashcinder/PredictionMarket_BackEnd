@@ -57,7 +57,10 @@ func (s *MarketHistorySampler) Run(ctx context.Context) error {
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 
-	s.sampleOnce(ctx)
+	// Sample immediately with a generous deadline for the initial cycle.
+	initCtx, initCancel := context.WithTimeout(ctx, 120*time.Second)
+	s.sampleOnce(initCtx)
+	initCancel()
 
 	for {
 		select {
@@ -65,7 +68,11 @@ func (s *MarketHistorySampler) Run(ctx context.Context) error {
 			slog.Info("market history sampler stopped")
 			return ctx.Err()
 		case <-ticker.C:
-			s.sampleOnce(ctx)
+			// Each full cycle gets a deadline so a slow BrokerChain cannot
+			// make the sampler goroutine block forever.
+			cycleCtx, cycleCancel := context.WithTimeout(ctx, 120*time.Second)
+			s.sampleOnce(cycleCtx)
+			cycleCancel()
 		}
 	}
 }
@@ -114,7 +121,11 @@ func (s *MarketHistorySampler) sampleOnce(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			}
-			if err := s.sampleGame(ctx, game, wallet, now); err != nil {
+			// Each game gets its own deadline so one slow call cannot
+			// block the goroutine pool indefinitely.
+			gameCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+			defer cancel()
+			if err := s.sampleGame(gameCtx, game, wallet, now); err != nil {
 				mu.Lock()
 				failed++
 				mu.Unlock()

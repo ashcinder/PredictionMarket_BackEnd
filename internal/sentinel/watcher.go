@@ -42,9 +42,11 @@ func (w *Watcher) Run(ctx context.Context) error {
 	ticker := time.NewTicker(w.cfg.PollInterval)
 	defer ticker.Stop()
 
-	if err := w.scanOnce(ctx); err != nil {
+	initCtx, initCancel := context.WithTimeout(ctx, 120*time.Second)
+	if err := w.scanOnce(initCtx); err != nil {
 		slog.Warn("initial scan failed", "error", err)
 	}
+	initCancel()
 
 	for {
 		select {
@@ -52,9 +54,11 @@ func (w *Watcher) Run(ctx context.Context) error {
 			slog.Info("sentinel stopped")
 			return ctx.Err()
 		case <-ticker.C:
-			if err := w.scanOnce(ctx); err != nil {
+			cycleCtx, cycleCancel := context.WithTimeout(ctx, 120*time.Second)
+			if err := w.scanOnce(cycleCtx); err != nil {
 				slog.Warn("scan failed", "error", err)
 			}
+			cycleCancel()
 		}
 	}
 }
