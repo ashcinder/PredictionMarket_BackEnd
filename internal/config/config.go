@@ -61,8 +61,12 @@ type fileConfig struct {
 		PollIntervalSeconds int     `yaml:"poll_interval_seconds"`
 		BuyAmountBKC        string  `yaml:"buy_amount_bkc"`
 		ConfidenceMin       float64 `yaml:"confidence_min"`
-		HistoryMinPoints    int     `yaml:"history_min_points"`
-		HistoryMaxPoints    int     `yaml:"history_max_points"`
+		HistoryMinPoints       int     `yaml:"history_min_points"`
+		HistoryMaxPoints       int     `yaml:"history_max_points"`
+		KellyFraction          float64 `yaml:"kelly_fraction"`
+		MinEdgePercent         float64 `yaml:"min_edge_percent"`
+		MaxPositionPerMarketBKC string  `yaml:"max_position_per_market_bkc"`
+		AdaptiveCooldown       bool    `yaml:"adaptive_cooldown"`
 	} `yaml:"ai"`
 	AIOracle struct {
 		PollIntervalSeconds int `yaml:"poll_interval_seconds"`
@@ -115,6 +119,10 @@ type Config struct {
 	AIConfidenceMin            float64
 	AIHistoryMinPoints         int
 	AIHistoryMaxPoints         int
+	AIKellyFraction            float64
+	AIMinEdgePercent           float64
+	AIMaxPositionPerMarketBKC  string
+	AIAdaptiveCooldown         bool
 	SamplerPollInterval         time.Duration
 	MySQLDSN                   string
 	MySQLMaxOpenConnections    int
@@ -259,6 +267,26 @@ func LoadFile(path string) (*Config, error) {
 	amount, err := strconv.ParseFloat(strings.TrimSpace(raw.AI.BuyAmountBKC), 64)
 	if err != nil || math.IsNaN(amount) || math.IsInf(amount, 0) || amount <= 0 {
 		return nil, errors.New("ai.buy_amount_bkc must be positive")
+	}
+	// Kelly defaults: if not set, use safe defaults.
+	if raw.AI.KellyFraction == 0 {
+		raw.AI.KellyFraction = 0.25 // quarter-Kelly default
+	}
+	if math.IsNaN(raw.AI.KellyFraction) || raw.AI.KellyFraction <= 0 || raw.AI.KellyFraction > 1 {
+		return nil, errors.New("ai.kelly_fraction must be between 0 and 1")
+	}
+	if raw.AI.MinEdgePercent == 0 {
+		raw.AI.MinEdgePercent = 5.0 // 5% minimum edge default
+	}
+	if math.IsNaN(raw.AI.MinEdgePercent) || raw.AI.MinEdgePercent < 0 || raw.AI.MinEdgePercent > 100 {
+		return nil, errors.New("ai.min_edge_percent must be between 0 and 100")
+	}
+	if raw.AI.MaxPositionPerMarketBKC == "" {
+		raw.AI.MaxPositionPerMarketBKC = "50"
+	}
+	maxPos, err2 := strconv.ParseFloat(strings.TrimSpace(raw.AI.MaxPositionPerMarketBKC), 64)
+	if err2 != nil || math.IsNaN(maxPos) || maxPos <= 0 {
+		return nil, errors.New("ai.max_position_per_market_bkc must be positive")
 	}
 
 	brokerURL, err := requireHTTPURL("chain.broker_chain_url", raw.Chain.BrokerChainURL)
@@ -444,6 +472,10 @@ func LoadFile(path string) (*Config, error) {
 		AIConfidenceMin:            raw.AI.ConfidenceMin,
 		AIHistoryMinPoints:         raw.AI.HistoryMinPoints,
 		AIHistoryMaxPoints:         raw.AI.HistoryMaxPoints,
+		AIKellyFraction:            raw.AI.KellyFraction,
+		AIMinEdgePercent:           raw.AI.MinEdgePercent,
+		AIMaxPositionPerMarketBKC:  strings.TrimSpace(raw.AI.MaxPositionPerMarketBKC),
+		AIAdaptiveCooldown:         raw.AI.AdaptiveCooldown,
 		SamplerPollInterval:        time.Duration(raw.Sampler.PollIntervalSeconds) * time.Second,
 		MySQLDSN:                   mysqlDSN,
 		MySQLMaxOpenConnections:    raw.MySQL.MaxOpenConnections,
