@@ -2,10 +2,12 @@ package aimanaged
 
 import (
 	"context"
+	"errors"
 	"math/big"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
@@ -143,6 +145,56 @@ func TestMySQLRepositoryRecordsAndFinalizesDecisions(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := repository.Finalize(context.Background(), 42, "traded", "0xtest", ""); err != nil {
 		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMySQLRepositoryRecordsMarketSyncState(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	repository := NewMySQLRepository(db)
+	market := MarketIdentity{ContractAddress: repositoryTestContract, GameID: 1}
+	now := time.Unix(1000, 0).UTC()
+
+	mock.ExpectExec("INSERT INTO market_sync_state").
+		WithArgs(repositoryTestContract, 1, now, int64(960), now, "ok").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := repository.RecordSyncSuccess(context.Background(), market, 960, now); err != nil {
+		t.Fatal(err)
+	}
+
+	mock.ExpectQuery("SELECT last_success_at, last_observed_at, fail_count, next_poll_at, last_error, status FROM market_sync_state").
+		WithArgs(repositoryTestContract, 1).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"last_success_at", "last_observed_at", "fail_count", "next_poll_at", "last_error", "status",
+		}).AddRow(now, int64(960), 0, now, "", syncStatusOK))
+	mock.ExpectExec("INSERT INTO market_sync_state").
+		WithArgs(repositoryTestContract, 1, 1, nextSyncPollTime(now, 1), "broker chain eth_call: HTTP 504 gateway timeout", "failed").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	state, err := repository.RecordSyncFailure(context.Background(), market, now, errors.New("broker chain eth_call: HTTP 504 gateway timeout"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.FailCount != 1 || state.Status != syncStatusFailed || !state.NextPollAt.Equal(nextSyncPollTime(now, 1)) {
+		t.Fatalf("unexpected sync state: %+v", state)
+	}
+
+	mock.ExpectQuery("SELECT last_success_at, last_observed_at, fail_count, next_poll_at, last_error, status FROM market_sync_state").
+		WithArgs(repositoryTestContract, 1).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"last_success_at", "last_observed_at", "fail_count", "next_poll_at", "last_error", "status",
+		}).AddRow(now, int64(960), 1, nextSyncPollTime(now, 1), "gateway timeout", syncStatusFailed))
+	got, err := repository.GetSyncState(context.Background(), market)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FailCount != 1 || got.LastObservedAt != 960 || got.LastError != "gateway timeout" {
+		t.Fatalf("unexpected fetched sync state: %+v", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

@@ -25,7 +25,7 @@ oracle:
   request_timeout_seconds: 10
 
 sentinel:
-  poll_interval_seconds: 30
+  poll_interval_seconds: 120
   resolve_delay_seconds: 5
 
 sampler:

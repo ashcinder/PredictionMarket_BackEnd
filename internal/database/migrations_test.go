@@ -106,4 +106,14 @@ func TestEmbeddedMigrationDefinesPersistenceTables(t *testing.T) {
 			t.Fatalf("migration does not define %s", table)
 		}
 	}
+	var foundSyncState bool
+	for _, migration := range migrations {
+		if strings.Contains(migration.SQL, "market_sync_state") &&
+			strings.Contains(migration.SQL, "sync_failed") {
+			foundSyncState = true
+		}
+	}
+	if !foundSyncState {
+		t.Fatalf("migrations do not define sync state and sync outcomes: %+v", migrations)
+	}
 }
