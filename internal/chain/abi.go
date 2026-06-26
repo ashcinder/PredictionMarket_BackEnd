@@ -13,6 +13,7 @@ import (
 // Contract ABI JSON definition
 const contractABI = `[
 {"constant":true,"inputs":[],"name":"getAllGames","outputs":[{"name":"ids","type":"uint256[]"},{"name":"cids","type":"string[]"},{"name":"pools","type":"uint256[]"},{"name":"deadlines","type":"uint256[]"},{"name":"resolved","type":"bool[]"},{"name":"refunded","type":"bool[]"},{"name":"winners","type":"uint8[]"}],"payable":false,"stateMutability":"view","type":"function"},
+{"constant":true,"inputs":[{"name":"user","type":"address"}],"name":"getAllGamesExtraData","outputs":[{"name":"resNO","type":"uint256[]"},{"name":"resYES","type":"uint256[]"},{"name":"myYES","type":"uint256[]"},{"name":"myNO","type":"uint256[]"}],"payable":false,"stateMutability":"view","type":"function"},
 {"constant":true,"inputs":[{"name":"id","type":"uint256"}],"name":"getGameInfo","outputs":[{"name":"ipfsCID","type":"string"},{"name":"totalPool","type":"uint256"},{"name":"isResolved","type":"bool"},{"name":"winningOption","type":"uint8"},{"name":"deadlineSec","type":"uint256"},{"name":"isRefunded","type":"bool"}],"payable":false,"stateMutability":"view","type":"function"},
 {"constant":true,"inputs":[{"name":"id","type":"uint256"},{"name":"user","type":"address"}],"name":"getGameExtraData","outputs":[{"name":"virtualReserves","type":"uint256[]"},{"name":"myShares","type":"uint256[]"}],"payable":false,"stateMutability":"view","type":"function"},
 {"constant":false,"inputs":[{"name":"gameId","type":"uint256"},{"name":"optionId","type":"uint8"}],"name":"buyShares","outputs":[],"payable":true,"stateMutability":"payable","type":"function"}
@@ -168,6 +169,20 @@ func EncodeGetGameExtraData(gameID int, userAddress string) (string, error) {
 	return "0x" + hex.EncodeToString(packed), nil
 }
 
+// EncodeGetAllGamesExtraData encodes a call to getAllGamesExtraData(address user).
+// This returns reserves for ALL games in a single eth_call, avoiding N+1
+// per-game calls and dramatically reducing chain round-trips.
+func EncodeGetAllGamesExtraData(userAddress string) (string, error) {
+	if !common.IsHexAddress(userAddress) {
+		return "", fmt.Errorf("invalid user address: %s", userAddress)
+	}
+	packed, err := parsedABI.Pack("getAllGamesExtraData", common.HexToAddress(userAddress))
+	if err != nil {
+		return "", err
+	}
+	return "0x" + hex.EncodeToString(packed), nil
+}
+
 func DecodeGetGameExtraData(hexResult string) (*GameExtraData, error) {
 	results, err := parsedABI.Unpack("getGameExtraData", fromHex(hexResult))
 	if err != nil {
@@ -187,6 +202,41 @@ func DecodeGetGameExtraData(hexResult string) (*GameExtraData, error) {
 	return &GameExtraData{
 		VirtualReservesNOYES: normalizePair(reserves),
 		MySharesYESNO:        normalizePair(shares),
+	}, nil
+}
+
+// DecodeGetAllGamesExtraData unpacks the result of getAllGamesExtraData(address).
+// Returns four parallel arrays (resNO, resYES, myYES, myNO) indexed in the
+// same order as the games from getAllGames.
+func DecodeGetAllGamesExtraData(hexResult string) (*AllGamesExtraData, error) {
+	results, err := parsedABI.Unpack("getAllGamesExtraData", fromHex(hexResult))
+	if err != nil {
+		return nil, fmt.Errorf("failed to unpack getAllGamesExtraData: %w", err)
+	}
+	if len(results) < 4 {
+		return nil, fmt.Errorf("unexpected getAllGamesExtraData results: %d", len(results))
+	}
+	resNO, ok := results[0].([]*big.Int)
+	if !ok {
+		return nil, fmt.Errorf("resNO is not []*big.Int")
+	}
+	resYES, ok := results[1].([]*big.Int)
+	if !ok {
+		return nil, fmt.Errorf("resYES is not []*big.Int")
+	}
+	myYES, ok := results[2].([]*big.Int)
+	if !ok {
+		return nil, fmt.Errorf("myYES is not []*big.Int")
+	}
+	myNO, ok := results[3].([]*big.Int)
+	if !ok {
+		return nil, fmt.Errorf("myNO is not []*big.Int")
+	}
+	return &AllGamesExtraData{
+		ResNO:       resNO,
+		ResYES:      resYES,
+		MySharesYES: myYES,
+		MySharesNO:  myNO,
 	}, nil
 }
 

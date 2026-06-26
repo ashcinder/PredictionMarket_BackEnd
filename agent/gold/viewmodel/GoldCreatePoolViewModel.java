@@ -29,9 +29,9 @@ public class GoldCreatePoolViewModel extends AndroidViewModel {
     public LiveData<Boolean> getIsDeploying() { return isDeploying; }
     public String getWalletAddress() { return repository.getWalletAddress(); }
 
-    public void createGame(String title, String condition, String avatarUrl, String detailedInfo, List<String> optionNames, long durationSec, BigInteger liqWei) {
+    public void createGame(String title, String condition, byte[] imageData, String detailedInfo, List<String> optionNames, long durationSec, BigInteger liqWei) {
         isDeploying.setValue(true);
-        repository.createGame(title, condition, avatarUrl, detailedInfo, optionNames, durationSec, liqWei, new GoldMarketRepository.TxCallback() {
+        repository.createGame(title, condition, imageData, detailedInfo, optionNames, durationSec, liqWei, new GoldMarketRepository.TxCallback() {
             @Override public void onTxSent(String hash) { txStatus.postValue("Sent: " + hash); }
             @Override public void onConfirmed(String msg) { isDeploying.postValue(false); txStatus.postValue("Success"); }
             @Override public void onError(String err) { isDeploying.postValue(false); error.postValue(err); }

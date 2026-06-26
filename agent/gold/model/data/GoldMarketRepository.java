@@ -32,6 +32,26 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
+/**
+ * GoldMarketRepository - 黄金预测市场数据仓库
+ *
+ * ==================== 三层数据交互架构 ====================
+ *
+ * 【读操作】优先级：后端 DB → 链上/IPFS（回退）
+ *   1. 优先从 Go 后端 DB 读取元数据和缓存的链上状态（低延迟）
+ *   2. 后端不可用时，回退到链上 eth_call + IPFS 直读（高延迟但可靠）
+ *
+ * 【写操作】同步写入：IPFS → 链上交易 → 后端 DB
+ *   1. 上传图片/元数据到 IPFS（去中心化存储）
+ *   2. 发送交易到链上（不可篡改的状态变更）
+ *   3. 同步元数据/状态到后端 DB（加速后续读取）
+ *   注意：步骤 3 失败不阻塞主流程（非关键路径），仅记录日志
+ *
+ * ==================== 三层职责划分 ====================
+ * - IPFS：存储图片、元数据 JSON（去中心化、不可篡改的内容寻址存储）
+ * - 区块链：存储合约状态（资金、份额、结算结果，不可篡改的账本）
+ * - 后端 DB：缓存元数据和链上状态、存储历史价格、用户 AI 托管配置（快速查询）
+ */
 public class GoldMarketRepository {
     private static final String TAG = "GoldMarketRepo";
 
@@ -44,7 +64,6 @@ public class GoldMarketRepository {
     private static final BigInteger LOCAL_RPC_CALL_GAS_PRICE = BigInteger.ZERO;
     private static final BigInteger LOCAL_RPC_CALL_VALUE = BigInteger.ZERO;
     public static final int GOLD_GAME_ID = 1;
-    private static final String BACKEND_BASE_URL = "http://10.0.2.2:8081"; // Goland Backend
 
     private static List<String> cachedAddresses;
 
@@ -126,6 +145,10 @@ public class GoldMarketRepository {
         this.contractAddress = contractAddress == null ? getContractAddress(ctx) : contractAddress.trim();
         String rpcUrl = getRpcUrl(ctx);
         this.useLocalRpc = rpcUrl != null && !rpcUrl.isEmpty();
+
+        // 初始化 BackendApiClient 的 Base URL（根据 DEBUG 自动选择本地/生产地址）
+        BackendApiClient.getBaseUrl(ctx);
+
         if (useLocalRpc) {
             Log.d(TAG, "LocalRPC mode: url=" + rpcUrl + " wallet=" + Credentials.create(privateKey).getAddress());
             this.web3j = Web3j.build(new HttpService(rpcUrl));
@@ -151,6 +174,8 @@ public class GoldMarketRepository {
     public interface DataCallback<T> {
         void onSuccess(T result);
         void onError(String error);
+        /** 调试用：报告数据来源和耗时，默认空实现不影响已有代码 */
+        default void onTiming(String source, long durationMs, boolean isFallback) {}
     }
 
     public interface TxCallback {
@@ -191,24 +216,14 @@ public class GoldMarketRepository {
 
     static Transaction buildLocalEthCallTransaction(String from, String to, String data) {
         return Transaction.createFunctionCallTransaction(
-                from,
-                null,
-                LOCAL_RPC_CALL_GAS_PRICE,
-                LOCAL_RPC_CALL_GAS_LIMIT,
-                to,
-                LOCAL_RPC_CALL_VALUE,
-                data);
+                from, null, LOCAL_RPC_CALL_GAS_PRICE, LOCAL_RPC_CALL_GAS_LIMIT,
+                to, LOCAL_RPC_CALL_VALUE, data);
     }
 
     static Transaction buildLocalWriteTransaction(String from, String to, String data, BigInteger value) {
         return Transaction.createFunctionCallTransaction(
-                from,
-                null,
-                LOCAL_RPC_CALL_GAS_PRICE,
-                LOCAL_RPC_CALL_GAS_LIMIT,
-                to,
-                value,
-                data);
+                from, null, LOCAL_RPC_CALL_GAS_PRICE, LOCAL_RPC_CALL_GAS_LIMIT,
+                to, value, data);
     }
 
     private String ethCall(org.web3j.abi.datatypes.Function function) throws Exception {
@@ -233,13 +248,27 @@ public class GoldMarketRepository {
 
     private void sendTransaction(BigInteger value, org.web3j.abi.datatypes.Function function,
                                  String successMsg, TxCallback callback) {
+        sendTransaction(value, function, successMsg, callback, null);
+    }
+
+    /**
+     * 发送链上交易，并在确认后异步同步到后端 DB
+     */
+    private void sendTransaction(BigInteger value, org.web3j.abi.datatypes.Function function,
+                                 String successMsg, TxCallback callback, TradeSyncInfo tradeInfo) {
         AppExecutors.getInstance().networkIO().execute(() -> {
             try {
                 String data = FunctionEncoder.encode(function);
+                String txHash;
                 if (useLocalRpc) {
-                    standardSendTx(value, data, successMsg, callback);
+                    txHash = standardSendTxInternal(value, data, successMsg, callback);
                 } else {
-                    brokerChainSendTx(value, data, successMsg, callback);
+                    txHash = brokerChainSendTxInternal(value, data, successMsg, callback);
+                }
+
+                // ---- 交易确认后，异步同步到后端 DB（非阻塞） ----
+                if (tradeInfo != null && txHash != null && !txHash.isEmpty()) {
+                    syncTradeToBackend(tradeInfo, txHash);
                 }
             } catch (Exception e) {
                 postError(callback, "交易异常: " + e.getMessage());
@@ -247,7 +276,7 @@ public class GoldMarketRepository {
         });
     }
 
-    private void standardSendTx(BigInteger value, String data, String successMsg, TxCallback callback) throws Exception {
+    private String standardSendTxInternal(BigInteger value, String data, String successMsg, TxCallback callback) throws Exception {
         Transaction txn = buildLocalWriteTransaction(walletAddress, contractAddress, data, value);
         Log.d(TAG, "standard eth_sendTransaction to=" + contractAddress
                 + " value=" + txn.getValue()
@@ -255,19 +284,80 @@ public class GoldMarketRepository {
         EthSendTransaction resp = web3j.ethSendTransaction(txn).send();
         if (resp.hasError()) {
             postError(callback, resp.getError().getMessage());
+            return null;
         } else if (resp.getTransactionHash() == null || resp.getTransactionHash().isEmpty()) {
             postError(callback, "本地 RPC 未返回交易哈希，交易未确认提交");
+            return null;
         } else {
             String txHash = resp.getTransactionHash();
             Log.d(TAG, "standard eth_sendTransaction hash=" + txHash);
-            AppExecutors.getInstance().mainThread().execute(() -> {
-                callback.onTxSent(txHash);
-            });
+            AppExecutors.getInstance().mainThread().execute(() -> callback.onTxSent(txHash));
             waitForLocalReceipt(txHash);
+            AppExecutors.getInstance().mainThread().execute(() -> callback.onConfirmed(successMsg));
+            return txHash;
+        }
+    }
+
+    private String brokerChainSendTxInternal(BigInteger value, String data, String successMsg, TxCallback callback) throws Exception {
+        String valueHex = value.compareTo(BigInteger.ZERO) > 0 ? value.toString(16) : "0x0";
+        String response = BrokerChainClient.sendEthTx(privateKey, contractAddress, data, valueHex);
+        if (response == null || response.toLowerCase().contains("error") || response.toLowerCase().contains("failed")) {
+            postError(callback, "交易失败: " + response);
+            return null;
+        } else {
             AppExecutors.getInstance().mainThread().execute(() -> {
+                callback.onTxSent("Transaction Sent");
                 callback.onConfirmed(successMsg);
             });
+            return response; // BrokerChain 返回的 txHash
         }
+    }
+
+    /**
+     * 异步同步交易信息到后端 DB（失败不影响主流程）
+     */
+    private void syncTradeToBackend(TradeSyncInfo tradeInfo, String txHash) {
+        AppExecutors.getInstance().networkIO().execute(() -> {
+            try {
+                // 1. 同步交易记录
+                BackendApiClient.TradeSyncReq tradeReq = new BackendApiClient.TradeSyncReq();
+                tradeReq.gameId = tradeInfo.gameId;
+                tradeReq.contractAddress = contractAddress;
+                tradeReq.userAddress = walletAddress;
+                tradeReq.tradeType = tradeInfo.tradeType;
+                tradeReq.optionId = tradeInfo.optionId;
+                tradeReq.amountWei = tradeInfo.amountWei;
+                tradeReq.txHash = txHash;
+                tradeReq.isSuccess = true;
+                tradeReq.totalPoolAfter = tradeInfo.totalPoolAfter;
+                tradeReq.reserveYESAfter = tradeInfo.reserveYESAfter;
+                tradeReq.reserveNOAfter = tradeInfo.reserveNOAfter;
+                tradeReq.mySharesYESAfter = tradeInfo.mySharesYESAfter;
+                tradeReq.mySharesNOAfter = tradeInfo.mySharesNOAfter;
+                BackendApiClient.syncTrade(tradeReq);
+                Log.d(TAG, "后端交易同步成功: gameId=" + tradeInfo.gameId + " type=" + tradeInfo.tradeType);
+
+                // 2. 添加历史价格点
+                if (tradeInfo.reserveYESAfter != null && tradeInfo.reserveNOAfter != null) {
+                    BackendApiClient.HistoryPointDTO point = new BackendApiClient.HistoryPointDTO();
+                    point.gameId = tradeInfo.gameId;
+                    point.timestampSec = System.currentTimeMillis() / 1000;
+                    BigInteger yesRes = new BigInteger(tradeInfo.reserveYESAfter);
+                    BigInteger noRes = new BigInteger(tradeInfo.reserveNOAfter);
+                    BigInteger total = yesRes.add(noRes);
+                    if (total.compareTo(BigInteger.ZERO) > 0) {
+                        point.yesPrice = (float) (yesRes.doubleValue() / total.doubleValue() * 100);
+                        point.noPrice = 100 - point.yesPrice;
+                    }
+                    point.totalPool = tradeInfo.totalPoolAfter;
+                    BackendApiClient.addHistoryPoint(tradeInfo.gameId, point);
+                    Log.d(TAG, "后端历史数据同步成功: gameId=" + tradeInfo.gameId);
+                }
+            } catch (Exception e) {
+                // 非关键路径：后端同步失败不影响主流程
+                Log.w(TAG, "后端同步失败（非关键）: " + e.getMessage());
+            }
+        });
     }
 
     private void waitForLocalReceipt(String txHash) throws Exception {
@@ -290,19 +380,6 @@ public class GoldMarketRepository {
         throw new Exception("交易已提交但 30 秒内未确认，请稍后手动刷新");
     }
 
-    private void brokerChainSendTx(BigInteger value, String data, String successMsg, TxCallback callback) throws Exception {
-        String valueHex = value.compareTo(BigInteger.ZERO) > 0 ? value.toString(16) : "0x0";
-        String response = BrokerChainClient.sendEthTx(privateKey, contractAddress, data, valueHex);
-        if (response == null || response.toLowerCase().contains("error") || response.toLowerCase().contains("failed")) {
-            postError(callback, "交易失败: " + response);
-        } else {
-            AppExecutors.getInstance().mainThread().execute(() -> {
-                callback.onTxSent("Transaction Sent");
-                callback.onConfirmed(successMsg);
-            });
-        }
-    }
-
     private String extractHexResult(String responseJson) {
         if (responseJson == null || responseJson.isEmpty()) { Log.w(TAG, "extractHexResult: null/empty"); return "0x"; }
         try {
@@ -320,7 +397,133 @@ public class GoldMarketRepository {
         } catch (Exception e) { return "0x"; }
     }
 
-    // ── contract methods ──
+    // ── 辅助：从 BackendApiClient DTO 构建 GameModel ──
+
+    /**
+     * 从后端 DTO 构建 GameModel（含历史数据）
+     * 仅用于详情页 getGameInfo() —— 只查单个博弈池，一次 HTTP 请求可接受。
+     */
+    private GameModel buildModelFromBackend(BackendApiClient.GameMetaDTO meta, BackendApiClient.ChainStateDTO state) {
+        GameModel m = buildModelFromBackendLight(meta, state);
+
+        // 仅详情页需要历史数据：尝试从后端获取，失败则用模拟数据
+        try {
+            List<BackendApiClient.HistoryPointDTO> backendHistory = BackendApiClient.fetchHistory(meta.gameId);
+            if (backendHistory != null && !backendHistory.isEmpty()) {
+                m.history = new ArrayList<>();
+                for (BackendApiClient.HistoryPointDTO p : backendHistory) {
+                    HistoryPoint hp = new HistoryPoint();
+                    hp.time = p.timestampSec;
+                    hp.yesPrice = p.yesPrice;
+                    hp.noPrice = p.noPrice;
+                    m.history.add(hp);
+                }
+            } else {
+                m.history = generateMockHistory(m.virtualReserves);
+            }
+        } catch (Exception e) {
+            m.history = generateMockHistory(m.virtualReserves);
+        }
+
+        return m;
+    }
+
+    /**
+     * 从后端 DTO 构建 GameModel（不含历史数据，使用 mock）
+     * 用于列表页 getAllGamesInfo() —— 避免对每个博弈池串行发 HTTP 请求。
+     */
+    private GameModel buildModelFromBackendLight(BackendApiClient.GameMetaDTO meta, BackendApiClient.ChainStateDTO state) {
+        GameModel m = new GameModel();
+        m.id = meta.gameId;
+        m.contractAddress = meta.contractAddress;
+        m.ipfsCID = meta.ipfsCid;
+        m.desc = meta.desc != null && !meta.desc.isEmpty() ? meta.desc : ("博弈池 #" + meta.gameId);
+        m.condition = meta.condition != null ? meta.condition : "";
+        m.avatarUrl = meta.avatarUrl != null ? meta.avatarUrl : "";
+        m.detailedInfo = meta.detailedInfo != null ? meta.detailedInfo : "";
+        m.optionNames = Arrays.asList(
+                meta.optionYES != null ? meta.optionYES : "YES",
+                meta.optionNO != null ? meta.optionNO : "NO");
+        m.optionCount = 2;
+
+        if (state != null) {
+            m.totalPool = parseBigInteger(state.totalPool);
+            m.isResolved = state.isResolved;
+            m.isRefunded = state.isRefunded;
+            m.winningOption = state.winningOption;
+            m.deadlineSec = state.deadlineSec;
+            BigInteger resYES = parseBigInteger(state.reserveYES);
+            BigInteger resNO = parseBigInteger(state.reserveNO);
+            m.virtualReserves = Arrays.asList(resYES, resNO);
+            BigInteger myYES = parseBigInteger(state.mySharesYES);
+            BigInteger myNO = parseBigInteger(state.mySharesNO);
+            m.myShares = Arrays.asList(myYES, myNO);
+        } else {
+            m.totalPool = BigInteger.ZERO;
+            m.virtualReserves = Arrays.asList(BigInteger.ZERO, BigInteger.ZERO);
+            m.myShares = Arrays.asList(BigInteger.ZERO, BigInteger.ZERO);
+        }
+
+        // 列表页不请求历史数据（避免 N 次串行 HTTP），直接生成模拟折线图
+        m.history = generateMockHistory(m.virtualReserves);
+        return m;
+    }
+
+    private BigInteger parseBigInteger(String s) {
+        if (s == null || s.isEmpty()) return BigInteger.ZERO;
+        try { return new BigInteger(s); }
+        catch (NumberFormatException e) { return BigInteger.ZERO; }
+    }
+
+    // ── 辅助：从 IPFS 补充元数据 ──
+
+    private void enrichFromIPFS(GameModel model) {
+        if (model.ipfsCID == null || model.ipfsCID.isEmpty()) {
+            model.desc = "博弈池 #" + model.id;
+            model.history = generateMockHistory(model.virtualReserves);
+            return;
+        }
+        try {
+            String json = PinataClient.downloadJsonFromIPFS(model.ipfsCID);
+            if (json != null && !json.isEmpty()) {
+                JSONObject obj = new JSONObject(json);
+                model.desc = obj.optString("desc", "博弈池 #" + model.id);
+                model.condition = obj.optString("condition", "");
+                model.avatarUrl = obj.optString("avatarUrl", "");
+                model.detailedInfo = obj.optString("detailedInfo", "");
+                model.optionNames = Arrays.asList(
+                        obj.optString("optionYES", "YES"),
+                        obj.optString("optionNO", "NO"));
+                model.optionCount = 2;
+
+                if (obj.has("history")) {
+                    org.json.JSONArray historyArr = obj.getJSONArray("history");
+                    model.history = new ArrayList<>();
+                    for (int i = 0; i < historyArr.length(); i++) {
+                        JSONObject point = historyArr.getJSONObject(i);
+                        HistoryPoint hp = new HistoryPoint();
+                        hp.time = point.optLong("t", point.optLong("time", 0));
+                        hp.yesPrice = (float) point.optDouble("y", point.optDouble("yes", 0));
+                        hp.noPrice = (float) point.optDouble("n", point.optDouble("no", 0));
+                        model.history.add(hp);
+                    }
+                } else {
+                    model.history = generateMockHistory(model.virtualReserves);
+                }
+            } else {
+                model.desc = "博弈池 #" + model.id;
+                model.history = generateMockHistory(model.virtualReserves);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "IPFS enrich failed for game " + model.id + ": " + e.getMessage());
+            model.desc = "博弈池 #" + model.id;
+            model.history = generateMockHistory(model.virtualReserves);
+        }
+    }
+
+    // ========================================================================
+    //  合约方法 - 读取操作（后端优先 → 链上+IPFS 回退）
+    // ========================================================================
 
     public void getGameCount(DataCallback<Integer> callback) {
         AppExecutors.getInstance().networkIO().execute(() -> {
@@ -340,12 +543,56 @@ public class GoldMarketRepository {
         });
     }
 
+    /**
+     * 获取单个游戏详情
+     *
+     * 读取策略：
+     * 1. 尝试从后端 DB 获取元数据 + 缓存的链上状态（快速路径）
+     * 2. 失败时回退到链上 eth_call + IPFS 直读（可靠回退路径）
+     */
     @SuppressWarnings("unchecked")
     public void getGameInfo(int id, DataCallback<GameModel> callback) {
         AppExecutors.getInstance().networkIO().execute(() -> {
             long totalStart = System.currentTimeMillis();
+
+            // ---- 策略 1: 尝试从后端 DB 读取（快速路径） ----
             try {
-                // 1. 准备链上数据请求
+                long backendStart = System.currentTimeMillis();
+                BackendApiClient.GameMetaDTO meta = BackendApiClient.fetchGameMetadata(id);
+                BackendApiClient.ChainStateDTO state = BackendApiClient.fetchChainState(id, getWalletAddress());
+                long backendEnd = System.currentTimeMillis();
+                long backendMs = backendEnd - backendStart;
+                Log.d("时延", "getGameInfo - 后端DB加载: " + backendMs + "ms");
+                AppExecutors.getInstance().mainThread().execute(() ->
+                    callback.onTiming("数据库+IPFS", backendMs, false));
+
+                GameModel model = buildModelFromBackend(meta, state);
+
+                // 如果后端元数据不完整（缺少 desc 等），从 IPFS 补充
+                if (isEmpty(model.desc) || model.desc.startsWith("博弈池 #")) {
+                    long ipfsStart = System.currentTimeMillis();
+                    enrichFromIPFS(model);
+                    long ipfsEnd = System.currentTimeMillis();
+                    Log.d("时延", "getGameInfo - IPFS补充加载: " + (ipfsEnd - ipfsStart) + "ms");
+                }
+
+                long totalMs = System.currentTimeMillis() - totalStart;
+                Log.d("时延", "getGameInfo - 总耗时(后端优先): " + totalMs + "ms");
+                final long finalTotalMs = totalMs;
+                AppExecutors.getInstance().mainThread().execute(() -> {
+                    callback.onTiming("✅ 数据库读取成功", finalTotalMs, false);
+                    callback.onSuccess(model);
+                });
+                return;
+            } catch (Exception backendErr) {
+                long failMs = System.currentTimeMillis() - totalStart;
+                Log.w(TAG, "后端DB读取失败，回退到链上+IPFS: " + backendErr.getMessage());
+                AppExecutors.getInstance().mainThread().execute(() ->
+                    callback.onTiming("数据库失败，回退链上直读...", failMs, true));
+            }
+
+            // ---- 策略 2: 回退到链上 + IPFS（可靠路径） ----
+            try {
                 long chainStart = System.currentTimeMillis();
                 org.web3j.abi.datatypes.Function fInfo = new org.web3j.abi.datatypes.Function(
                     "getGameInfo", Collections.singletonList(new Uint256(BigInteger.valueOf(id))),
@@ -360,13 +607,12 @@ public class GoldMarketRepository {
 
                 String addr = getWalletAddress();
                 if (addr == null || addr.isEmpty()) addr = "0x0000000000000000000000000000000000000000";
-                
+
                 org.web3j.abi.datatypes.Function fExtra = new org.web3j.abi.datatypes.Function(
                     "getGameExtraData",
                     Arrays.asList(new Uint256(BigInteger.valueOf(id)), new Address(addr)),
                     Arrays.asList(new TypeReference<DynamicArray<Uint256>>() {}, new TypeReference<DynamicArray<Uint256>>() {}));
 
-                // 2. 并发执行链上请求
                 final String[] hexResults = new String[2];
                 final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(2);
                 AppExecutors.getInstance().networkIO().execute(() -> { try { hexResults[0] = ethCall(fInfo); } catch (Exception e) { hexResults[0] = "Error: " + e.getMessage(); } finally { latch.countDown(); } });
@@ -374,17 +620,19 @@ public class GoldMarketRepository {
                 latch.await(30, java.util.concurrent.TimeUnit.SECONDS);
 
                 long chainEnd = System.currentTimeMillis();
-                Log.d("时延", "getGameInfo - 链上数据加载: " + (chainEnd - chainStart) + "ms");
+                long chainMs = chainEnd - chainStart;
+                Log.d("时延", "getGameInfo - 链上数据加载(回退): " + chainMs + "ms");
+                AppExecutors.getInstance().mainThread().execute(() ->
+                    callback.onTiming("链上 eth_call", chainMs, true));
 
-                if (hexResults[0] == null || hexResults[0].equals("0x") || hexResults[0].startsWith("Error")) { 
-                    postError(callback, "链上数据读取失败: " + hexResults[0]); 
-                    return; 
+                if (hexResults[0] == null || hexResults[0].equals("0x") || hexResults[0].startsWith("Error")) {
+                    postError(callback, "链上数据读取失败: " + hexResults[0]);
+                    return;
                 }
 
-                // 3. 解析链上基础数据
                 List<Type> res = FunctionReturnDecoder.decode(hexResults[0], fInfo.getOutputParameters());
                 if (res.isEmpty()) { postError(callback, "基础数据解析为空"); return; }
-                
+
                 GameModel model = new GameModel();
                 model.id = id;
                 model.contractAddress = contractAddress;
@@ -395,25 +643,19 @@ public class GoldMarketRepository {
                 model.deadlineSec = ((Uint256) res.get(4)).getValue().longValue();
                 model.isRefunded = ((Bool) res.get(5)).getValue();
 
-                // 统一初始化，避免 UI 端判断 null
                 model.virtualReserves = Arrays.asList(BigInteger.ZERO, BigInteger.ZERO);
                 model.myShares = Arrays.asList(BigInteger.ZERO, BigInteger.ZERO);
                 model.optionNames = Arrays.asList("YES", "NO");
 
-                // 4. 解析持仓数据
                 if (hexResults[1] != null && !hexResults[1].equals("0x") && !hexResults[1].startsWith("Error")) {
                     try {
                         List<Type> extraRes = FunctionReturnDecoder.decode(hexResults[1], fExtra.getOutputParameters());
                         if (extraRes.size() >= 2) {
                             List<Uint256> reservesArray = ((DynamicArray<Uint256>) extraRes.get(0)).getValue();
                             List<Uint256> sharesArray = ((DynamicArray<Uint256>) extraRes.get(1)).getValue();
-                            
-                            // 合约顺序: 0: reserveNO, 1: reserveYES -> UI 习惯: 0: YES, 1: NO
                             if (reservesArray.size() >= 2) {
                                 model.virtualReserves = Arrays.asList(reservesArray.get(1).getValue(), reservesArray.get(0).getValue());
                             }
-                            
-                            // 合约顺序: userShares[gameId][user][0] (YES), [1] (NO) -> UI 习惯: 0: YES, 1: NO
                             if (sharesArray.size() >= 2) {
                                 model.myShares = Arrays.asList(sharesArray.get(0).getValue(), sharesArray.get(1).getValue());
                             }
@@ -423,31 +665,22 @@ public class GoldMarketRepository {
                     }
                 }
 
-                // 5. 下载文本元数据
+                // 从 IPFS 下载元数据
                 long ipfsStart = System.currentTimeMillis();
-                try {
-                    String ipfsJsonStr = PinataClient.downloadJsonFromIPFS(model.ipfsCID);
-                    Log.d("getGameInfo","Json数据"+ipfsJsonStr);
-                    if (ipfsJsonStr != null && !ipfsJsonStr.isEmpty()) {
-                        JSONObject ipfsData = new JSONObject(ipfsJsonStr);
-                        model.desc = ipfsData.optString("desc", "博弈池 #" + id);
-                        model.condition = ipfsData.optString("condition", "暂无详细判定逻辑");
-                        model.avatarUrl = ipfsData.optString("avatarUrl", "");
-                        model.detailedInfo = ipfsData.optString("detailedInfo", "");
-                        model.optionNames = Arrays.asList(ipfsData.optString("optionYES", "YES"), ipfsData.optString("optionNO", "NO"));
-                        model.optionCount = 2;
-                    } else {
-                        model.desc = "博弈池 #" + id;
-                    }
-                } catch (Exception e) {
-                    Log.e(TAG, "IPFS 数据下载失败: " + e.getMessage());
-                    model.desc = "博弈池 #" + id;
-                }
+                enrichFromIPFS(model);
                 long ipfsEnd = System.currentTimeMillis();
-                Log.d("时延", "getGameInfo - IPFS数据加载: " + (ipfsEnd - ipfsStart) + "ms");
-                Log.d("时延", "getGameInfo - 总耗时: " + (ipfsEnd - totalStart) + "ms");
+                long ipfsMs = ipfsEnd - ipfsStart;
+                Log.d("时延", "getGameInfo - IPFS加载(回退): " + ipfsMs + "ms");
+                long totalMs = ipfsEnd - totalStart;
+                Log.d("时延", "getGameInfo - 总耗时(回退): " + totalMs + "ms");
+                AppExecutors.getInstance().mainThread().execute(() ->
+                    callback.onTiming("IPFS 元数据(回退)", ipfsMs, true));
 
-                AppExecutors.getInstance().mainThread().execute(() -> callback.onSuccess(model));
+                final long finalTotalMs = totalMs;
+                AppExecutors.getInstance().mainThread().execute(() -> {
+                    callback.onTiming("⚠️ 回退链上+IPFS完成", finalTotalMs, true);
+                    callback.onSuccess(model);
+                });
             } catch (Exception e) {
                 Log.d("时延", "getGameInfo - 失败，总耗时: " + (System.currentTimeMillis() - totalStart) + "ms");
                 postError(callback, "获取详情异常: " + e.getMessage());
@@ -455,10 +688,60 @@ public class GoldMarketRepository {
         });
     }
 
+    /**
+     * 获取所有游戏列表
+     *
+     * 读取策略：后端 DB 优先 → 链上+IPFS 回退
+     */
     @SuppressWarnings("unchecked")
     public void getAllGamesInfo(DataCallback<List<GameModel>> callback) {
         AppExecutors.getInstance().networkIO().execute(() -> {
             long totalStart = System.currentTimeMillis();
+
+            // ---- 策略 1: 尝试从后端 DB 批量读取（快速路径） ----
+            try {
+                long backendStart = System.currentTimeMillis();
+                List<BackendApiClient.GameMetaDTO> metas = BackendApiClient.fetchAllGameMetadata();
+                List<BackendApiClient.ChainStateDTO> states = BackendApiClient.fetchAllChainStates(getWalletAddress());
+                long backendEnd = System.currentTimeMillis();
+                long backendMs = backendEnd - backendStart;
+                Log.d("时延", "getAllGamesInfo - 后端DB加载: " + backendMs + "ms");
+                AppExecutors.getInstance().mainThread().execute(() ->
+                    callback.onTiming("数据库批量加载", backendMs, false));
+
+                // 建立 gameId → ChainStateDTO 的映射
+                java.util.Map<Integer, BackendApiClient.ChainStateDTO> stateMap = new java.util.HashMap<>();
+                if (states != null) {
+                    for (BackendApiClient.ChainStateDTO s : states) {
+                        stateMap.put(s.gameId, s);
+                    }
+                }
+
+                List<GameModel> models = new ArrayList<>();
+                for (BackendApiClient.GameMetaDTO meta : metas) {
+                    BackendApiClient.ChainStateDTO state = stateMap.get(meta.gameId);
+                    // 列表页使用轻量构建：跳过串行 fetchHistory HTTP 请求，
+                    // 直接生成模拟折线图。用户点击进入详情页时再加载真实历史数据。
+                    GameModel m = buildModelFromBackendLight(meta, state);
+                    models.add(m);
+                }
+
+                long totalMs = System.currentTimeMillis() - totalStart;
+                Log.d("时延", "getAllGamesInfo - 总耗时(后端优先): " + totalMs + "ms (共 " + models.size() + " 个)");
+                final long finalTotalMs = totalMs;
+                AppExecutors.getInstance().mainThread().execute(() -> {
+                    callback.onTiming("✅ 数据库批量完成(" + models.size() + "个)", finalTotalMs, false);
+                    callback.onSuccess(models);
+                });
+                return;
+            } catch (Exception backendErr) {
+                long failMs = System.currentTimeMillis() - totalStart;
+                Log.w(TAG, "后端DB批量读取失败，回退到链上+IPFS: " + backendErr.getMessage());
+                AppExecutors.getInstance().mainThread().execute(() ->
+                    callback.onTiming("⚠️ 数据库失败，回退链上批量读...", failMs, true));
+            }
+
+            // ---- 策略 2: 回退到链上 + IPFS（可靠路径） ----
             try {
                 long chainStart = System.currentTimeMillis();
                 org.web3j.abi.datatypes.Function fAll = new org.web3j.abi.datatypes.Function(
@@ -491,13 +774,17 @@ public class GoldMarketRepository {
                 latch.await(30, java.util.concurrent.TimeUnit.SECONDS);
 
                 long chainEnd = System.currentTimeMillis();
-                Log.d("时延", "getAllGamesInfo - 链上数据加载: " + (chainEnd - chainStart) + "ms");
+                long chainMs = chainEnd - chainStart;
+                Log.d("时延", "getAllGamesInfo - 链上数据加载(回退): " + chainMs + "ms");
 
                 if (hexResults[0] == null || hexResults[0].equals("0x")) { postError(callback, "基础数据读取失败"); return; }
 
                 List<Type> res = FunctionReturnDecoder.decode(hexResults[0], fAll.getOutputParameters());
                 List<Uint256> ids = ((DynamicArray<Uint256>) res.get(0)).getValue();
                 List<Utf8String> cids = ((DynamicArray<Utf8String>) res.get(1)).getValue();
+
+                AppExecutors.getInstance().mainThread().execute(() ->
+                    callback.onTiming("链上 eth_call 批量(" + ids.size() + "个)", chainMs, true));
                 List<Uint256> pools = ((DynamicArray<Uint256>) res.get(2)).getValue();
                 List<Uint256> deadlines = ((DynamicArray<Uint256>) res.get(3)).getValue();
                 List<Bool> isResolveds = ((DynamicArray<Bool>) res.get(4)).getValue();
@@ -527,9 +814,7 @@ public class GoldMarketRepository {
                     m.optionNames = Arrays.asList("YES", "NO");
 
                     if (resNO != null && i < resNO.size()) {
-                        // 合约顺序: 0: reserveNO, 1: reserveYES -> UI 习惯: 0: YES, 1: NO
                         m.virtualReserves = Arrays.asList(resYES.get(i).getValue(), resNO.get(i).getValue());
-                        // 合约顺序: myYES, myNO -> UI 习惯: 0: YES, 1: NO
                         m.myShares = Arrays.asList(myYES.get(i).getValue(), myNO.get(i).getValue());
                     } else {
                         m.virtualReserves = Arrays.asList(BigInteger.ZERO, BigInteger.ZERO);
@@ -538,6 +823,7 @@ public class GoldMarketRepository {
                     models.add(m);
                 }
 
+                // 并行从 IPFS 下载所有元数据
                 long ipfsStart = System.currentTimeMillis();
                 if (!models.isEmpty()) {
                     java.util.concurrent.CountDownLatch ipfsLatch = new java.util.concurrent.CountDownLatch(models.size());
@@ -545,7 +831,6 @@ public class GoldMarketRepository {
                         AppExecutors.getInstance().networkIO().execute(() -> {
                             try {
                                 String json = PinataClient.downloadJsonFromIPFS(m.ipfsCID);
-                                Log.d("getAllGamesInfo","getAllGamesInfo中IPFS正确");
                                 if (json != null && !json.isEmpty()) {
                                     JSONObject obj = new JSONObject(json);
                                     m.desc = obj.optString("desc", "博弈池 #" + m.id);
@@ -559,7 +844,6 @@ public class GoldMarketRepository {
                                 }
                             } catch (Exception e) {
                                 m.desc = "博弈池 #" + m.id;
-                                Log.d("getAllGamesInfo","getAllGamesInfo中IPFS错误");
                             } finally {
                                 ipfsLatch.countDown();
                             }
@@ -568,10 +852,19 @@ public class GoldMarketRepository {
                     ipfsLatch.await(30, java.util.concurrent.TimeUnit.SECONDS);
                 }
                 long ipfsEnd = System.currentTimeMillis();
-                Log.d("时延", "getAllGamesInfo - IPFS数据加载: " + (ipfsEnd - ipfsStart) + "ms");
-                Log.d("时延", "getAllGamesInfo - 总耗时: " + (ipfsEnd - totalStart) + "ms");
+                long ipfsMs = ipfsEnd - ipfsStart;
+                Log.d("时延", "getAllGamesInfo - IPFS数据加载(回退): " + ipfsMs + "ms");
+                long totalMs = ipfsEnd - totalStart;
+                Log.d("时延", "getAllGamesInfo - 总耗时(回退): " + totalMs + "ms");
+                AppExecutors.getInstance().mainThread().execute(() ->
+                    callback.onTiming("IPFS 批量元数据(回退)", ipfsMs, true));
 
-                AppExecutors.getInstance().mainThread().execute(() -> callback.onSuccess(models));
+                final long finalTotalMs = totalMs;
+                final int modelCount = models.size();
+                AppExecutors.getInstance().mainThread().execute(() -> {
+                    callback.onTiming("⚠️ 回退链上+IPFS完成(" + modelCount + "个)", finalTotalMs, true);
+                    callback.onSuccess(models);
+                });
             } catch (Exception e) {
                 Log.d("时延", "getAllGamesInfo - 失败，总耗时: " + (System.currentTimeMillis() - totalStart) + "ms");
                 postError(callback, "批量获取市场异常: " + e.getMessage());
@@ -579,10 +872,95 @@ public class GoldMarketRepository {
         });
     }
 
+    /**
+     * 获取用户参与的游戏
+     *
+     * 读取策略：后端 DB 优先 → 链上+IPFS 回退
+     */
     @SuppressWarnings("unchecked")
     public void getMyParticipatedGames(DataCallback<List<GameModel>> callback) {
         final long totalStart = System.currentTimeMillis();
         AppExecutors.getInstance().networkIO().execute(() -> {
+            // ---- 策略 1: 尝试从后端 DB 读取（快速路径） ----
+            try {
+                long backendStart = System.currentTimeMillis();
+
+                // 并发获取：全部链上状态 + 全部元数据（2 次 HTTP 请求）
+                final List<BackendApiClient.GameMetaDTO> allMetas = BackendApiClient.fetchAllGameMetadata();
+                List<BackendApiClient.ChainStateDTO> allStates = BackendApiClient.fetchAllChainStates(getWalletAddress());
+
+                long backendEnd = System.currentTimeMillis();
+                long backendMs = backendEnd - backendStart;
+                Log.d("时延", "getMyParticipatedGames - 后端DB加载: " + backendMs + "ms");
+                AppExecutors.getInstance().mainThread().execute(() ->
+                    callback.onTiming("数据库持仓查询", backendMs, false));
+
+                // 建立 gameId → 元数据 的查找表
+                java.util.Map<Integer, BackendApiClient.GameMetaDTO> metaMap = new java.util.HashMap<>();
+                if (allMetas != null) {
+                    for (BackendApiClient.GameMetaDTO meta : allMetas) {
+                        metaMap.put(meta.gameId, meta);
+                    }
+                }
+
+                // 过滤出用户有持仓的游戏
+                List<GameModel> models = new ArrayList<>();
+                if (allStates != null) {
+                    for (BackendApiClient.ChainStateDTO s : allStates) {
+                        BigInteger myYES = parseBigInteger(s.mySharesYES);
+                        BigInteger myNO = parseBigInteger(s.mySharesNO);
+                        if (myYES.signum() <= 0 && myNO.signum() <= 0) {
+                            continue; // 没有持仓，跳过
+                        }
+
+                        GameModel m;
+                        BackendApiClient.GameMetaDTO meta = metaMap.get(s.gameId);
+                        if (meta != null) {
+                            m = buildModelFromBackendLight(meta, s);
+                        } else {
+                            // 元数据缺失（极端情况），用状态数据构建基础模型
+                            m = new GameModel();
+                            m.id = s.gameId;
+                            m.contractAddress = contractAddress;
+                            m.totalPool = parseBigInteger(s.totalPool);
+                            m.isResolved = s.isResolved;
+                            m.isRefunded = s.isRefunded;
+                            m.winningOption = s.winningOption;
+                            m.deadlineSec = s.deadlineSec;
+                            m.virtualReserves = Arrays.asList(parseBigInteger(s.reserveYES), parseBigInteger(s.reserveNO));
+                            m.myShares = Arrays.asList(myYES, myNO);
+                            m.optionNames = Arrays.asList("YES", "NO");
+                            m.desc = "博弈池 #" + s.gameId;
+                            m.history = generateMockHistory(m.virtualReserves);
+                        }
+                        models.add(m);
+                    }
+                }
+
+                long totalMs = System.currentTimeMillis() - totalStart;
+
+                // 如果后端 DB 中没有该用户的持仓记录（gold_user_positions 表为空），
+                // 回退到链上查询而不是返回空列表给 UI。
+                if (models.isEmpty()) {
+                    Log.w(TAG, "后端DB持仓为空（可能未同步），回退到链上+IPFS");
+                    throw new Exception("后端持仓为空，回退链上");
+                }
+
+                Log.d("时延", "getMyParticipatedGames - 总耗时(后端优先): " + totalMs + "ms (共 " + models.size() + " 个项目)");
+                final long finalTotalMs = totalMs;
+                AppExecutors.getInstance().mainThread().execute(() -> {
+                    callback.onTiming("✅ 数据库持仓完成(" + models.size() + "个)", finalTotalMs, false);
+                    callback.onSuccess(models);
+                });
+                return;
+            } catch (Exception backendErr) {
+                long failMs = System.currentTimeMillis() - totalStart;
+                Log.w(TAG, "后端DB读取持仓失败，回退到链上+IPFS: " + backendErr.getMessage());
+                AppExecutors.getInstance().mainThread().execute(() ->
+                    callback.onTiming("⚠️ 数据库失败，回退链上持仓查询...", failMs, true));
+            }
+
+            // ---- 策略 2: 回退到链上 + IPFS（可靠路径） ----
             try {
                 long chainStart = System.currentTimeMillis();
                 String addr = getWalletAddress();
@@ -603,10 +981,13 @@ public class GoldMarketRepository {
                     AppExecutors.getInstance().mainThread().execute(() -> callback.onSuccess(new ArrayList<>()));
                     return;
                 }
-                
+
                 List<ParticipatedGameDTO> dtos = ((DynamicArray<ParticipatedGameDTO>) res.get(0)).getValue();
                 long chainEnd = System.currentTimeMillis();
-                Log.d("时延", "getMyParticipatedGames - 链上数据加载: " + (chainEnd - chainStart) + "ms");
+                long chainMs = chainEnd - chainStart;
+                Log.d("时延", "getMyParticipatedGames - 链上数据加载(回退): " + chainMs + "ms");
+                AppExecutors.getInstance().mainThread().execute(() ->
+                    callback.onTiming("链上持仓查询(" + dtos.size() + "个)", chainMs, true));
 
                 List<GameModel> models = new ArrayList<>();
                 for (ParticipatedGameDTO dto : dtos) {
@@ -620,14 +1001,12 @@ public class GoldMarketRepository {
                     m.isRefunded = dto.isRefunded;
                     m.winningOption = dto.winningOption.intValue();
                     m.optionNames = Arrays.asList("YES", "NO");
-                    
-                    // 合约 DTO 顺序: reserveNO, reserveYES, mySharesYES, mySharesNO
-                    // UI 统一顺序: 0: YES, 1: NO
                     m.virtualReserves = Arrays.asList(dto.reserveYES, dto.reserveNO);
                     m.myShares = Arrays.asList(dto.mySharesYES, dto.mySharesNO);
                     models.add(m);
                 }
 
+                // 并行从 IPFS 下载元数据
                 long ipfsStart = System.currentTimeMillis();
                 if (!models.isEmpty()) {
                     java.util.concurrent.CountDownLatch ipfsLatch = new java.util.concurrent.CountDownLatch(models.size());
@@ -656,10 +1035,19 @@ public class GoldMarketRepository {
                     ipfsLatch.await(30, java.util.concurrent.TimeUnit.SECONDS);
                 }
                 long ipfsEnd = System.currentTimeMillis();
-                Log.d("时延", "getMyParticipatedGames - IPFS数据加载: " + (ipfsEnd - ipfsStart) + "ms");
-                Log.d("时延", "getMyParticipatedGames - 总耗时: " + (ipfsEnd - totalStart) + "ms (共 " + models.size() + " 个项目)");
+                long ipfsMs = ipfsEnd - ipfsStart;
+                Log.d("时延", "getMyParticipatedGames - IPFS数据加载(回退): " + ipfsMs + "ms");
+                long totalMs = ipfsEnd - totalStart;
+                Log.d("时延", "getMyParticipatedGames - 总耗时(回退): " + totalMs + "ms (共 " + models.size() + " 个项目)");
+                AppExecutors.getInstance().mainThread().execute(() ->
+                    callback.onTiming("IPFS 持仓元数据(回退)", ipfsMs, true));
 
-                AppExecutors.getInstance().mainThread().execute(() -> callback.onSuccess(models));
+                final long finalTotalMs = totalMs;
+                final int modelCount = models.size();
+                AppExecutors.getInstance().mainThread().execute(() -> {
+                    callback.onTiming("⚠️ 回退持仓完成(" + modelCount + "个)", finalTotalMs, true);
+                    callback.onSuccess(models);
+                });
             } catch (Exception e) {
                 Log.d("时延", "getMyParticipatedGames - 失败，总耗时: " + (System.currentTimeMillis() - totalStart) + "ms");
                 postError(callback, "获取参与的市场异常: " + e.getMessage());
@@ -667,55 +1055,147 @@ public class GoldMarketRepository {
         });
     }
 
+    // ========================================================================
+    //  合约方法 - 写入操作（IPFS → 链上 → 后端 DB 同步写入）
+    // ========================================================================
 
     public void buyShares(int gameId, int optionId, BigInteger amountWei, TxCallback callback) {
         org.web3j.abi.datatypes.Function f = new org.web3j.abi.datatypes.Function(
-            "buyShares", 
-            Arrays.asList(new Uint256(BigInteger.valueOf(gameId)), new Uint8(BigInteger.valueOf(optionId))), 
+            "buyShares",
+            Arrays.asList(new Uint256(BigInteger.valueOf(gameId)), new Uint8(BigInteger.valueOf(optionId))),
             Collections.emptyList());
-        sendTransaction(amountWei, f, "买入成功", callback);
+
+        // 构建交易同步信息
+        TradeSyncInfo tradeInfo = new TradeSyncInfo();
+        tradeInfo.gameId = gameId;
+        tradeInfo.tradeType = "BUY";
+        tradeInfo.optionId = optionId;
+        tradeInfo.amountWei = amountWei.toString();
+        // 注：买后状态需在交易确认后重新查询；此处传空，后端可自行从链上刷新
+        tradeInfo.totalPoolAfter = null;
+        tradeInfo.reserveYESAfter = null;
+        tradeInfo.reserveNOAfter = null;
+        tradeInfo.mySharesYESAfter = null;
+        tradeInfo.mySharesNOAfter = null;
+
+        sendTransaction(amountWei, f, "买入成功", callback, tradeInfo);
     }
 
     public void sellShares(int gameId, int optionId, BigInteger shareAmount, TxCallback callback) {
         org.web3j.abi.datatypes.Function f = new org.web3j.abi.datatypes.Function(
             "sellShares", Arrays.asList(new Uint256(gameId), new Uint8(optionId), new Uint256(shareAmount)), Collections.emptyList());
-        sendTransaction(BigInteger.ZERO, f, "卖出成功", callback);
+
+        TradeSyncInfo tradeInfo = new TradeSyncInfo();
+        tradeInfo.gameId = gameId;
+        tradeInfo.tradeType = "SELL";
+        tradeInfo.optionId = optionId;
+        tradeInfo.amountWei = shareAmount.toString();
+
+        sendTransaction(BigInteger.ZERO, f, "卖出成功", callback, tradeInfo);
     }
 
-    public void createGame(String desc, String condition, String avatarUrl,
+    /**
+     * 创建博弈池
+     *
+     * 写入流程（三步同步）：
+     * 1. 上传图片到 IPFS（如有）→ 2. 上传元数据 JSON 到 IPFS
+     * 3. 带 IPFS CID 发送 createGame 链上交易
+     * 4. 交易确认后，同步元数据到后端 DB
+     */
+    public void createGame(String desc, String condition, byte[] imageData,
                            String detailedInfo, List<String> optionNamesList,
                            long duration, BigInteger initialLiquidityWei, TxCallback callback) {
-        
+
         AppExecutors.getInstance().networkIO().execute(() -> {
+            String avatarCid = "";
+            String metadataCid = "";
             try {
-                // 1. 先将元数据上传到 IPFS
+                // ---- 步骤 1: 上传图片到 IPFS ----
+                if (imageData != null && imageData.length > 0) {
+                    try {
+                        avatarCid = PinataClient.uploadFileToIPFS(imageData, "avatar.png", "image/png");
+                        Log.d(TAG, "图片上传到IPFS成功, CID: " + avatarCid);
+                    } catch (Exception e) {
+                        Log.e(TAG, "图片上传到IPFS失败: " + e.getMessage());
+                        // 图片上传失败不阻塞流程
+                    }
+                }
+
+                // ---- 步骤 2: 上传元数据 JSON 到 IPFS ----
                 JSONObject metadata = new JSONObject();
                 metadata.put("desc", desc);
                 metadata.put("condition", condition);
-                metadata.put("avatarUrl", avatarUrl);
+                metadata.put("avatarUrl", avatarCid);
                 metadata.put("detailedInfo", detailedInfo);
-                // 存储选项名称，虽然目前固定是 YES/NO
                 metadata.put("optionYES", optionNamesList.get(0));
                 metadata.put("optionNO", optionNamesList.get(1));
 
-                String cid = PinataClient.uploadJsonToIPFS(metadata);
-                Log.d(TAG, "成功上传 IPFS, CID: " + cid);
+                metadataCid = PinataClient.uploadJsonToIPFS(metadata);
+                Log.d(TAG, "元数据上传到IPFS成功, CID: " + metadataCid);
 
-                // 核心修复：根据环境自动调整时间单位
-                // 关键判断：如果不是本地 RPC (即 BrokerChain)，且传入的 duration 看起来像秒级 (小于 10^10)，
-                // 考虑到 BrokerChain block.timestamp 通常是毫秒级的，这里必须乘以 1000。
+                // ---- 步骤 3: 带 IPFS CID 发送链上交易 ----
                 long finalDuration = duration;
                 if (!useLocalRpc && duration < 10_000_000_000L) {
                     finalDuration = duration * 1000L;
                 }
 
-                // 2. 带着 CID 上链
                 org.web3j.abi.datatypes.Function f = new org.web3j.abi.datatypes.Function(
-                    "createGame", 
-                    Arrays.asList(new Utf8String(cid), new Uint256(finalDuration)),
+                    "createGame",
+                    Arrays.asList(new Utf8String(metadataCid), new Uint256(finalDuration)),
                     Collections.emptyList());
-                    
-                sendTransaction(initialLiquidityWei, f, "博弈池部署成功", callback);
+
+                // 构建同步信息（交易确认后使用）
+                final String finalAvatarCid = avatarCid;
+                final String finalMetadataCid = metadataCid;
+
+                // 包装 callback 以在交易确认后同步到后端 DB
+                TxCallback wrappedCallback = new TxCallback() {
+                    @Override
+                    public void onTxSent(String txHash) {
+                        AppExecutors.getInstance().mainThread().execute(() -> callback.onTxSent(txHash));
+                    }
+
+                    @Override
+                    public void onConfirmed(String message) {
+                        // ---- 步骤 4: 同步元数据到后端 DB（异步，非阻塞） ----
+                        AppExecutors.getInstance().networkIO().execute(() -> {
+                            try {
+                                BackendApiClient.GameMetaSyncReq syncReq = new BackendApiClient.GameMetaSyncReq();
+                                syncReq.gameId = 0; // 由后端分配实际 gameId（链上 event 解析）
+                                syncReq.contractAddress = contractAddress;
+                                syncReq.ipfsCid = finalMetadataCid;
+                                syncReq.desc = desc;
+                                syncReq.condition = condition;
+                                syncReq.avatarUrl = finalAvatarCid;
+                                syncReq.detailedInfo = detailedInfo;
+                                syncReq.optionYES = optionNamesList.get(0);
+                                syncReq.optionNO = optionNamesList.get(1);
+                                syncReq.creatorAddress = walletAddress;
+                                syncReq.durationSec = duration;
+                                syncReq.initialLiquidityWei = initialLiquidityWei.toString();
+                                BackendApiClient.syncGameMetadata(syncReq);
+                                Log.d(TAG, "创建博弈池 - 后端DB同步成功");
+                            } catch (Exception e) {
+                                Log.w(TAG, "创建博弈池 - 后端DB同步失败（非关键）: " + e.getMessage());
+                            }
+                        });
+
+                        AppExecutors.getInstance().mainThread().execute(() -> callback.onConfirmed(message));
+                    }
+
+                    @Override
+                    public void onError(String error) {
+                        AppExecutors.getInstance().mainThread().execute(() -> callback.onError(error));
+                    }
+                };
+
+                // 发送链上交易
+                String data = FunctionEncoder.encode(f);
+                if (useLocalRpc) {
+                    standardSendTxInternal(initialLiquidityWei, data, "博弈池部署成功", wrappedCallback);
+                } else {
+                    brokerChainSendTxInternal(initialLiquidityWei, data, "博弈池部署成功", wrappedCallback);
+                }
 
             } catch (Exception e) {
                 e.printStackTrace();
@@ -724,12 +1204,8 @@ public class GoldMarketRepository {
         });
     }
 
-    /**
-     * 获取水贝模式下的实时点差。
-     * 模拟深圳水贝黄金交易：买入价稍高于基准，卖出价稍低于基准。
-     */
     public BigDecimal calculateShuibeiPrice(BigDecimal basePrice, boolean isBuy) {
-        BigDecimal spread = new BigDecimal("0.005"); // 0.5% 点差
+        BigDecimal spread = new BigDecimal("0.005");
         if (isBuy) {
             return basePrice.multiply(BigDecimal.ONE.add(spread));
         } else {
@@ -738,81 +1214,130 @@ public class GoldMarketRepository {
     }
 
     public void claimReward(int gameId, int optionId, TxCallback callback) {
-        sendTransaction(BigInteger.ZERO, buildClaimRewardFunction(gameId, optionId), "领取成功", callback);
+        TradeSyncInfo tradeInfo = new TradeSyncInfo();
+        tradeInfo.gameId = gameId;
+        tradeInfo.tradeType = "CLAIM";
+        tradeInfo.optionId = optionId;
+        tradeInfo.amountWei = "0";
+
+        sendTransaction(BigInteger.ZERO, buildClaimRewardFunction(gameId, optionId), "领取成功", callback, tradeInfo);
     }
 
-    /**
-     * 管理员/后台开奖接口
-     * 将 App 判定后的获胜选项同步到链上，使用户可以领奖
-     */
     public void resolveGame(int gameId, int winningOption, TxCallback callback) {
         org.web3j.abi.datatypes.Function f = new org.web3j.abi.datatypes.Function(
-            "resolveGame", 
+            "resolveGame",
             Arrays.asList(new Uint256(BigInteger.valueOf(gameId)), new Uint8(BigInteger.valueOf(winningOption))),
             Collections.emptyList());
-        sendTransaction(BigInteger.ZERO, f, "开奖成功", callback);
+
+        TradeSyncInfo tradeInfo = new TradeSyncInfo();
+        tradeInfo.gameId = gameId;
+        tradeInfo.tradeType = "RESOLVE";
+        tradeInfo.optionId = winningOption;
+        tradeInfo.amountWei = "0";
+
+        sendTransaction(BigInteger.ZERO, f, "开奖成功", callback, tradeInfo);
     }
 
-    /**
-     * 通知 Goland 后端 AI 托管状态变更
-     */
+    // ========================================================================
+    //  AI 托管状态 API（通过后端 DB）
+    // ========================================================================
+
     public void toggleAiManaged(int gameId, boolean enabled, DataCallback<Boolean> callback) {
         AppExecutors.getInstance().networkIO().execute(() -> {
             try {
-                JSONObject json = new JSONObject();
-                json.put("game_id", gameId);
-                json.put("user_address", getWalletAddress());
-                json.put("enabled", enabled);
-                json.put("contract_address", contractAddress);
-                json.put("private_key", privateKey); // 后端轮询下单需要私钥 (注意：生产环境应使用授权代理)
-
-                URL url = new URL(BACKEND_BASE_URL + "/api/gold/ai-managed");
-                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("POST");
-                conn.setRequestProperty("Content-Type", "application/json");
-                conn.setDoOutput(true);
-
-                try (java.io.OutputStream os = conn.getOutputStream()) {
-                    os.write(json.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
-                }
-
-                int code = conn.getResponseCode();
-                if (code == 200) {
-                    AppExecutors.getInstance().mainThread().execute(() -> callback.onSuccess(enabled));
-                } else {
-                    postError(callback, "后端响应错误: " + code);
-                }
+                boolean result = BackendApiClient.setAiManagedStatus(
+                        gameId, getWalletAddress(), enabled, contractAddress, privateKey);
+                AppExecutors.getInstance().mainThread().execute(() -> callback.onSuccess(result ? enabled : !enabled));
             } catch (Exception e) {
-                postError(callback, "通知后端失败: " + e.getMessage());
+                // 回退到原有直连方式
+                try {
+                    JSONObject json = new JSONObject();
+                    json.put("game_id", gameId);
+                    json.put("user_address", getWalletAddress());
+                    json.put("enabled", enabled);
+                    json.put("contract_address", contractAddress);
+                    json.put("private_key", privateKey);
+
+                    URL url = new URL("https://dash.broker-chain.com:440/api/gold/ai-managed");
+                    java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+                    conn.setRequestMethod("POST");
+                    conn.setRequestProperty("Content-Type", "application/json");
+                    conn.setDoOutput(true);
+                    try (java.io.OutputStream os = conn.getOutputStream()) {
+                        os.write(json.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    }
+                    int code = conn.getResponseCode();
+                    if (code == 200) {
+                        AppExecutors.getInstance().mainThread().execute(() -> callback.onSuccess(enabled));
+                    } else {
+                        postError(callback, "后端响应错误: " + code);
+                    }
+                } catch (Exception ex) {
+                    postError(callback, "通知后端失败: " + ex.getMessage());
+                }
             }
         });
     }
 
-    /**
-     * 查询后端 AI 托管状态
-     */
     public void getAiManagedStatus(int gameId, DataCallback<Boolean> callback) {
         AppExecutors.getInstance().networkIO().execute(() -> {
             try {
-                String path = String.format("/api/gold/ai-managed?game_id=%d&user_address=%s", gameId, getWalletAddress());
-                URL url = new URL(BACKEND_BASE_URL + path);
-                java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("GET");
-
-                if (conn.getResponseCode() == 200) {
-                    try (java.util.Scanner s = new java.util.Scanner(conn.getInputStream())) {
-                        String resp = s.useDelimiter("\\A").hasNext() ? s.next() : "{}";
-                        JSONObject obj = new JSONObject(resp);
-                        boolean enabled = obj.optBoolean("enabled", false);
-                        AppExecutors.getInstance().mainThread().execute(() -> callback.onSuccess(enabled));
+                boolean enabled = BackendApiClient.getAiManagedStatus(
+                        gameId, getWalletAddress(), contractAddress);
+                AppExecutors.getInstance().mainThread().execute(() -> callback.onSuccess(enabled));
+            } catch (Exception e) {
+                // 回退到原有直连方式
+                try {
+                    String path = String.format("/api/gold/ai-managed?game_id=%d&user_address=%s", gameId, getWalletAddress());
+                    URL url = new URL("https://dash.broker-chain.com:440" + path);
+                    java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+                    conn.setRequestMethod("GET");
+                    if (conn.getResponseCode() == 200) {
+                        try (java.util.Scanner s = new java.util.Scanner(conn.getInputStream())) {
+                            String resp = s.useDelimiter("\\A").hasNext() ? s.next() : "{}";
+                            JSONObject obj = new JSONObject(resp);
+                            boolean enabled = obj.optBoolean("enabled", false);
+                            AppExecutors.getInstance().mainThread().execute(() -> callback.onSuccess(enabled));
+                        }
+                    } else {
+                        AppExecutors.getInstance().mainThread().execute(() -> callback.onSuccess(false));
                     }
-                } else {
+                } catch (Exception ex) {
                     AppExecutors.getInstance().mainThread().execute(() -> callback.onSuccess(false));
                 }
-            } catch (Exception e) {
-                AppExecutors.getInstance().mainThread().execute(() -> callback.onSuccess(false));
             }
         });
+    }
+
+    // ── 模拟历史数据 ──
+
+    private List<HistoryPoint> generateMockHistory(List<BigInteger> reserves) {
+        List<HistoryPoint> list = new ArrayList<>();
+        if (reserves == null || reserves.size() < 2) return list;
+
+        double yes = reserves.get(0).doubleValue();
+        double no = reserves.get(1).doubleValue();
+        double total = yes + no;
+        if (total <= 0) return list;
+
+        float currentYesPct = (float)(yes / total * 100);
+        long now = System.currentTimeMillis() / 1000;
+
+        for (int i = 7; i >= 0; i--) {
+            HistoryPoint p = new HistoryPoint();
+            p.time = now - (long)i * 86400;
+            float noise = (float)((Math.random() - 0.5) * 10 * (i / 7.0));
+            p.yesPrice = Math.max(5, Math.min(95, currentYesPct + noise));
+            p.noPrice = 100 - p.yesPrice;
+            list.add(p);
+        }
+        return list;
+    }
+
+    // ── 工具方法 ──
+
+    private boolean isEmpty(String s) {
+        return s == null || s.trim().isEmpty();
     }
 
     private void postError(TxCallback callback, String error) {
@@ -822,11 +1347,14 @@ public class GoldMarketRepository {
         AppExecutors.getInstance().mainThread().execute(() -> callback.onError(error));
     }
 
+    // ========================================================================
+    //  数据模型
+    // ========================================================================
+
     public static class GameModel {
         public int id;
         public String contractAddress;
-        public String ipfsCID; // 链上存储的 IPFS 哈希
-        // 下面这些将从 IPFS 加载
+        public String ipfsCID;          // IPFS 上存储元数据的 CID
         public String desc, condition, avatarUrl, detailedInfo;
         public List<String> optionNames;
         public int optionCount;
@@ -835,7 +1363,30 @@ public class GoldMarketRepository {
         public int winningOption;
         public long deadlineSec;
         public List<BigInteger> virtualReserves, myShares;
-        public boolean isManaged; // [新增] 是否已被 AI 托管
+        public boolean isManaged;
+        public List<HistoryPoint> history;
+    }
+
+    public static class HistoryPoint {
+        public long time;
+        public float yesPrice;
+        public float noPrice;
+    }
+
+    /**
+     * 交易同步信息（用于 tx 确认后同步到后端 DB）
+     */
+    private static class TradeSyncInfo {
+        int gameId;
+        String tradeType;       // "BUY", "SELL", "CLAIM", "RESOLVE"
+        int optionId;
+        String amountWei;
+        // 交易后的链上状态（可选，后端可自行从链上刷新）
+        String totalPoolAfter;
+        String reserveYESAfter;
+        String reserveNOAfter;
+        String mySharesYESAfter;
+        String mySharesNOAfter;
     }
 
     public static class ParticipatedGameDTO extends DynamicStruct {

@@ -1,7 +1,6 @@
 package com.example.brokerfi.xc.agent.gold.view;
 
 import android.app.AlertDialog;
-import android.content.Intent;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -20,11 +19,22 @@ import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 import io.noties.markwon.Markwon;
 import com.example.brokerfi.R;
 import com.example.brokerfi.xc.agent.gold.model.data.GoldMarketRepository;
+import com.example.brokerfi.xc.agent.gold.model.data.PinataClient;
 import com.example.brokerfi.xc.agent.gold.model.logic.GoldAdvisoryManager;
 import com.example.brokerfi.xc.agent.gold.model.logic.GoldGameJudge;
 import com.example.brokerfi.xc.agent.gold.viewmodel.GoldMarketDetailViewModel;
+import com.bumptech.glide.Glide;
+import com.github.mikephil.charting.charts.LineChart;
+import com.github.mikephil.charting.components.XAxis;
+import com.github.mikephil.charting.data.Entry;
+import com.github.mikephil.charting.data.LineData;
+import com.github.mikephil.charting.data.LineDataSet;
+import com.github.mikephil.charting.formatter.ValueFormatter;
 
+import android.widget.ImageView;
 import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 public class GoldMarketDetailActivity extends AppCompatActivity {
@@ -37,7 +47,9 @@ public class GoldMarketDetailActivity extends AppCompatActivity {
     private TextView tvMarketDesc, tvMarketCondition;
     private TextView tvUpPct, tvDownPct, tvPool, tvCountdown, tvHoldings;
     private TextView tvMarketAiStatus, tvMarketAiSummary, tvMarketAiFull;
-    private View barUp, barDown, btnClaimReward, btnAdminResolve, cardMarketAi, layoutAiDetails;
+    private ImageView ivMarketIcon;
+    private View barUp, barDown, btnClaimReward, btnAdminResolve, cardMarketAi, layoutAiDetails, layoutChartContainer;
+    private LineChart lineChart;
     private androidx.appcompat.widget.SwitchCompat switchAiManaged;
     private SwipeRefreshLayout swipeRefresh;
 
@@ -46,6 +58,8 @@ public class GoldMarketDetailActivity extends AppCompatActivity {
     private String marketAiSummary = "";
     private String marketAiUnavailableMessage = "";
     private boolean destroyed = false;
+    private boolean requestInFlight = false;
+
     private final Handler timerHandler = new Handler(Looper.getMainLooper());
     private final Runnable countdownRunnable = new Runnable() {
         @Override public void run() {
@@ -74,10 +88,7 @@ public class GoldMarketDetailActivity extends AppCompatActivity {
             currentGame = game;
             updateUI();
         });
-        viewModel.getMarketAiSummary().observe(this, summary -> {
-            marketAiSummary = summary;
-            showMarketAiSummary(summary);
-        });
+        viewModel.getMarketAiSummary().observe(this, this::showMarketAiSummary);
         viewModel.getIsLoading().observe(this, loading -> swipeRefresh.setRefreshing(loading));
         viewModel.getTxStatus().observe(this, status -> {
             if (status != null) Toast.makeText(this, status, Toast.LENGTH_SHORT).show();
@@ -86,6 +97,12 @@ public class GoldMarketDetailActivity extends AppCompatActivity {
             if (err != null) {
                 Toast.makeText(this, err, Toast.LENGTH_SHORT).show();
                 showMarketAiUnavailable("Error", err);
+            }
+        });
+
+        viewModel.getDebugToast().observe(this, msg -> {
+            if (msg != null && !msg.isEmpty()) {
+                Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
             }
         });
     }
@@ -107,13 +124,18 @@ public class GoldMarketDetailActivity extends AppCompatActivity {
         tvCountdown = findViewById(R.id.tv_countdown);
         tvHoldings = findViewById(R.id.tv_holdings);
         tvMarketAiStatus = findViewById(R.id.tv_market_ai_status);
+        tvMarketAiStatus.setText("待启动 ›");
         tvMarketAiSummary = findViewById(R.id.tv_market_ai_summary);
+        tvMarketAiSummary.setText("点击卡片启动 AI 专属深度投研分析");
         tvMarketAiFull = findViewById(R.id.tv_market_ai_full);
+        ivMarketIcon = findViewById(R.id.iv_market_detail_icon);
         switchAiManaged = findViewById(R.id.switch_ai_managed);
         barUp = findViewById(R.id.bar_up);
         barDown = findViewById(R.id.bar_down);
         cardMarketAi = findViewById(R.id.card_market_ai);
         layoutAiDetails = findViewById(R.id.layout_ai_details);
+        layoutChartContainer = findViewById(R.id.layout_chart_container);
+        lineChart = findViewById(R.id.line_chart);
         btnClaimReward = findViewById(R.id.btn_claim_reward);
         btnAdminResolve = findViewById(R.id.btn_admin_resolve);
 
@@ -137,7 +159,12 @@ public class GoldMarketDetailActivity extends AppCompatActivity {
         tvMarketDesc.setText(currentGame.desc != null && !currentGame.desc.isEmpty() ? currentGame.desc : "博弈池 #" + currentGame.id);
         tvMarketCondition.setText("判定逻辑: " + (currentGame.condition != null ? currentGame.condition : "暂无"));
         
-        // 更新托管状态开关，不触发 Listener
+        if (currentGame.avatarUrl != null && !currentGame.avatarUrl.isEmpty()) {
+            Glide.with(this).load(PinataClient.IPFS_GATEWAY + currentGame.avatarUrl).placeholder(R.drawable.apartment_icon).into(ivMarketIcon);
+        } else {
+            ivMarketIcon.setImageResource(R.drawable.apartment_icon);
+        }
+
         switchAiManaged.setChecked(currentGame.isManaged);
 
         long rem = GoldNoteMarketActivity.remainingSecondsUntilDeadline(currentGame.deadlineSec, System.currentTimeMillis());
@@ -180,24 +207,110 @@ public class GoldMarketDetailActivity extends AppCompatActivity {
             }
         }
         tvHoldings.setText(holdings.length() == 0 ? "暂无持仓" : holdings.toString());
+        setupHistoryChart();
         updateCountdown();
     }
 
-    private void showMarketAiSummary(String answer) {
-        if (destroyed) return;
-        if (answer == null || answer.trim().isEmpty()) {
-            showMarketAiUnavailable("暂不可用", "AI 分析暂时不可用");
+    private void setupHistoryChart() {
+        if (currentGame == null || currentGame.history == null || currentGame.history.isEmpty()) {
+            layoutChartContainer.setVisibility(View.GONE);
             return;
         }
-        tvMarketAiStatus.setText("展开详情 ˅");
-        tvMarketAiSummary.setText(answer);
-        markwon.setMarkdown(tvMarketAiFull, answer);
+        layoutChartContainer.setVisibility(View.VISIBLE);
+
+        List<Entry> yesEntries = new ArrayList<>();
+        List<Entry> noEntries = new ArrayList<>();
+        for (int i = 0; i < currentGame.history.size(); i++) {
+            GoldMarketRepository.HistoryPoint p = currentGame.history.get(i);
+            yesEntries.add(new Entry(i, p.yesPrice));
+            noEntries.add(new Entry(i, p.noPrice));
+        }
+
+        // YES 曲线 (深绿色)
+        LineDataSet setYes = new LineDataSet(yesEntries, "YES (看多 %)");
+        setYes.setColor(0xFF059669);
+        setYes.setCircleColor(0xFF059669);
+        setYes.setLineWidth(2.5f);
+        setYes.setCircleRadius(3f);
+        setYes.setDrawCircleHole(false);
+        setYes.setDrawValues(false);
+        setYes.setMode(LineDataSet.Mode.CUBIC_BEZIER); // 平滑曲线
+        setYes.setDrawFilled(true);
+        setYes.setFillColor(0xFF059669);
+        setYes.setFillAlpha(40);
+
+        // NO 曲线 (红色)
+        LineDataSet setNo = new LineDataSet(noEntries, "NO (看空 %)");
+        setNo.setColor(0xFFE11D48);
+        setNo.setCircleColor(0xFFE11D48);
+        setNo.setLineWidth(2.5f);
+        setNo.setCircleRadius(3f);
+        setNo.setDrawCircleHole(false);
+        setNo.setDrawValues(false);
+        setNo.setMode(LineDataSet.Mode.CUBIC_BEZIER);
+        setNo.setDrawFilled(true);
+        setNo.setFillColor(0xFFE11D48);
+        setNo.setFillAlpha(40);
+
+        LineData data = new LineData(setYes, setNo);
+        lineChart.setData(data);
+
+        // 全局交互设置
+        lineChart.getDescription().setEnabled(false);
+        lineChart.setDrawGridBackground(false);
+        lineChart.setTouchEnabled(true);
+        lineChart.setScaleEnabled(false);
+        lineChart.setPinchZoom(false);
+        lineChart.setExtraOffsets(0, 10, 0, 10);
+        
+        // 图例美化
+        com.github.mikephil.charting.components.Legend legend = lineChart.getLegend();
+        legend.setTextColor(0xFF475569);
+        legend.setForm(com.github.mikephil.charting.components.Legend.LegendForm.CIRCLE);
+        legend.setHorizontalAlignment(com.github.mikephil.charting.components.Legend.LegendHorizontalAlignment.CENTER);
+
+        // X 轴
+        XAxis xAxis = lineChart.getXAxis();
+        xAxis.setPosition(XAxis.XAxisPosition.BOTTOM);
+        xAxis.setDrawGridLines(false);
+        xAxis.setDrawAxisLine(true);
+        xAxis.setAxisLineColor(0xFFE2E8F0);
+        xAxis.setTextColor(0xFF94A3B8);
+        xAxis.setLabelCount(Math.min(5, currentGame.history.size()));
+        xAxis.setValueFormatter(new ValueFormatter() {
+            @Override
+            public String getFormattedValue(float value) {
+                int idx = (int) value;
+                if (idx >= 0 && idx < currentGame.history.size()) {
+                    long t = currentGame.history.get(idx).time;
+                    java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("MM-dd", Locale.getDefault());
+                    return sdf.format(new java.util.Date(t * 1000));
+                }
+                return "";
+            }
+        });
+
+        // Y 轴
+        lineChart.getAxisRight().setEnabled(false);
+        lineChart.getAxisLeft().setDrawGridLines(true);
+        lineChart.getAxisLeft().setGridColor(0xFFF1F5F9);
+        lineChart.getAxisLeft().setTextColor(0xFF94A3B8);
+        lineChart.getAxisLeft().setAxisMaximum(100f);
+        lineChart.getAxisLeft().setAxisMinimum(0f);
+        lineChart.getAxisLeft().setLabelCount(5);
+
+        lineChart.animateX(1200);
+        lineChart.invalidate();
     }
 
     private void toggleAiDetails() {
         if (marketAiSummary == null || marketAiSummary.isEmpty()) {
-            String msg = marketAiUnavailableMessage.isEmpty() ? MARKET_AI_LOADING_MESSAGE : marketAiUnavailableMessage;
-            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
+            if (!requestInFlight) {
+                tvMarketAiStatus.setText("分析中...");
+                tvMarketAiSummary.setText("DeepSeek 正在全力解析市场数据，请稍后...");
+                requestInFlight = true;
+                viewModel.startAiAnalysis();
+            }
             return;
         }
         aiExpanded = !aiExpanded;
@@ -206,7 +319,21 @@ public class GoldMarketDetailActivity extends AppCompatActivity {
         tvMarketAiStatus.setText(aiExpanded ? "收起报告 ˄" : "展开详情 ˅");
     }
 
+    private void showMarketAiSummary(String answer) {
+        requestInFlight = false;
+        if (destroyed) return;
+        if (answer == null || answer.trim().isEmpty()) {
+            showMarketAiUnavailable("暂不可用", "AI 分析暂时不可用");
+            return;
+        }
+        marketAiSummary = answer;
+        tvMarketAiStatus.setText("展开详情 ˅");
+        tvMarketAiSummary.setText(answer);
+        markwon.setMarkdown(tvMarketAiFull, answer);
+    }
+
     private void showMarketAiUnavailable(String status, String message) {
+        requestInFlight = false;
         if (destroyed) return;
         marketAiUnavailableMessage = message;
         tvMarketAiStatus.setText(status);
@@ -249,7 +376,6 @@ public class GoldMarketDetailActivity extends AppCompatActivity {
                 int winner = GoldGameJudge.evaluateGameWinner(currentGame, quote);
                 String name = (currentGame.optionNames != null && winner < currentGame.optionNames.size()) ? currentGame.optionNames.get(winner) : (winner == 0 ? "YES" : "NO");
                 new AlertDialog.Builder(GoldMarketDetailActivity.this).setTitle("管理员开奖确认").setMessage("判定结果: " + name + "\n确定要执行链上结算吗？").setPositiveButton("立即结算", (d, w) -> {
-                    // Admin resolve in Repo for now
                 }).setNegativeButton("取消", null).show();
             }
             @Override public void onError(String e) { Toast.makeText(GoldMarketDetailActivity.this, "获取失败", Toast.LENGTH_SHORT).show(); }

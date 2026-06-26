@@ -18,6 +18,7 @@ import (
 
 const samplerTestABI = `[
 {"constant":true,"inputs":[],"name":"getAllGames","outputs":[{"name":"ids","type":"uint256[]"},{"name":"cids","type":"string[]"},{"name":"pools","type":"uint256[]"},{"name":"deadlines","type":"uint256[]"},{"name":"resolved","type":"bool[]"},{"name":"refunded","type":"bool[]"},{"name":"winners","type":"uint8[]"}],"payable":false,"stateMutability":"view","type":"function"},
+{"constant":true,"inputs":[{"name":"user","type":"address"}],"name":"getAllGamesExtraData","outputs":[{"name":"resNO","type":"uint256[]"},{"name":"resYES","type":"uint256[]"},{"name":"myYES","type":"uint256[]"},{"name":"myNO","type":"uint256[]"}],"payable":false,"stateMutability":"view","type":"function"},
 {"constant":true,"inputs":[{"name":"id","type":"uint256"},{"name":"user","type":"address"}],"name":"getGameExtraData","outputs":[{"name":"virtualReserves","type":"uint256[]"},{"name":"myShares","type":"uint256[]"}],"payable":false,"stateMutability":"view","type":"function"}
 ]`
 
@@ -71,11 +72,45 @@ func encodeGetGameExtraDataResult(extra *chain.GameExtraData) string {
 	return "0x" + hex.EncodeToString(packed)
 }
 
+// encodeGetAllGamesExtraDataResult encodes the batch reserves response.
+// Each parallel array must have the same length (one entry per game).
+func encodeGetAllGamesExtraDataResult(extra *chain.AllGamesExtraData) string {
+	method, ok := samplerParsedABI.Methods["getAllGamesExtraData"]
+	if !ok {
+		panic("getAllGamesExtraData not found in test ABI")
+	}
+	packed, err := method.Outputs.Pack(extra.ResNO, extra.ResYES, extra.MySharesYES, extra.MySharesNO)
+	if err != nil {
+		panic("encode getAllGamesExtraData: " + err.Error())
+	}
+	return "0x" + hex.EncodeToString(packed)
+}
+
+// isGetGameExtraDataCall reports whether the encoded data is for a per-game
+// getGameExtraData call (as opposed to getAllGamesExtraData or getAllGames).
+func isGetGameExtraDataCall(data string) bool {
+	// Encoded data lengths (with "0x" prefix):
+	//   getAllGames():             4 bytes → 10 hex chars
+	//   getAllGamesExtraData(addr): 4+32 = 36 bytes → 74 hex chars
+	//   getGameExtraData(id, addr): 4+32+32 = 68 bytes → 138 hex chars
+	return len(data) > 120
+}
+
+// isGetAllGamesExtraDataCall reports whether the encoded data is for a
+// getAllGamesExtraData call (as opposed to getGameExtraData or getAllGames).
+func isGetAllGamesExtraDataCall(data string) bool {
+	// Longer than getAllGames but shorter than getGameExtraData.
+	return len(data) > 20 && len(data) <= 120
+}
+
 // ---------- mocks ----------
 
 type mockSamplerChain struct {
 	wallet    string
 	ethCallFn func(ctx context.Context, data string) (string, error)
+	// Fallback handler for getAllGamesExtraData. When nil, the batch call
+	// returns an empty string (causing fallback to per-game calls).
+	batchExtraFn func(ctx context.Context, data string) (string, error)
 	// record calls for assertions
 	mu    sync.Mutex
 	calls []string
@@ -85,6 +120,12 @@ func (m *mockSamplerChain) EthCall(ctx context.Context, data string) (string, er
 	m.mu.Lock()
 	m.calls = append(m.calls, data)
 	m.mu.Unlock()
+
+	// Route getAllGamesExtraData calls to the batch handler when set.
+	if m.batchExtraFn != nil && isGetAllGamesExtraDataCall(data) {
+		return m.batchExtraFn(ctx, data)
+	}
+
 	if m.ethCallFn != nil {
 		return m.ethCallFn(ctx, data)
 	}
@@ -219,6 +260,11 @@ func TestSamplerSkipsResolvedRefundedAndPastDeadlineGames(t *testing.T) {
 			// getAllGames call
 			return encodeGetAllGamesResult(games), nil
 		},
+		// Return error for the batch call so the sampler falls back to
+		// per-game getGameExtraData calls (which is what this test expects).
+		batchExtraFn: func(ctx context.Context, data string) (string, error) {
+			return "", nil
+		},
 	}
 	histories := &mockSamplerHistory{}
 	sampler := NewMarketHistorySampler(chainMock, histories, "0xContract", time.Minute, 256)
@@ -232,9 +278,9 @@ func TestSamplerSkipsResolvedRefundedAndPastDeadlineGames(t *testing.T) {
 	if histories.calls[0].market.GameID != 1 {
 		t.Fatalf("expected game 1 to be sampled, got game %d", histories.calls[0].market.GameID)
 	}
-	// getAllGames (1) + getGameExtraData for game 1 only (1) = 2
-	if c := chainMock.callCount(); c != 2 {
-		t.Fatalf("expected 2 eth_call invocations, got %d", c)
+	// getAllGames (1) + getAllGamesExtraData (1, fails) + getGameExtraData for game 1 only (1) = 3
+	if c := chainMock.callCount(); c != 3 {
+		t.Fatalf("expected 3 eth_call invocations, got %d", c)
 	}
 }
 
@@ -251,6 +297,10 @@ func TestSamplerCalculatesYesNoPercentFromReserves(t *testing.T) {
 				return encodeGetGameExtraDataResult(extra), nil
 			}
 			return encodeGetAllGamesResult([]chain.GameOnChain{activeGame(1)}), nil
+		},
+		// Return error for the batch call so the sampler falls back to per-game.
+		batchExtraFn: func(ctx context.Context, data string) (string, error) {
+			return "", nil
 		},
 	}
 	histories := &mockSamplerHistory{}
@@ -293,6 +343,10 @@ func TestSamplerContinuesOnGameFailure(t *testing.T) {
 			}
 			return encodeGetAllGamesResult(games), nil
 		},
+		// Return error for the batch call so the sampler falls back to per-game.
+		batchExtraFn: func(ctx context.Context, data string) (string, error) {
+			return "", nil
+		},
 	}
 	histories := &mockSamplerHistory{}
 	sampler := NewMarketHistorySampler(chainMock, histories, "0xContract", time.Minute, 256)
@@ -309,6 +363,9 @@ func TestSamplerDoesNotCrashWhenGetAllGamesFails(t *testing.T) {
 	chainMock := &mockSamplerChain{
 		wallet: "0x1111111111111111111111111111111111111111",
 		ethCallFn: func(ctx context.Context, data string) (string, error) {
+			return "", nil
+		},
+		batchExtraFn: func(ctx context.Context, data string) (string, error) {
 			return "", nil
 		},
 	}
@@ -328,6 +385,9 @@ func TestSamplerStopsOnContextCancellation(t *testing.T) {
 		wallet: "0x1111111111111111111111111111111111111111",
 		ethCallFn: func(ctx context.Context, data string) (string, error) {
 			return encodeGetAllGamesResult([]chain.GameOnChain{activeGame(1)}), nil
+		},
+		batchExtraFn: func(ctx context.Context, data string) (string, error) {
+			return "", nil
 		},
 	}
 	histories := &mockSamplerHistory{}

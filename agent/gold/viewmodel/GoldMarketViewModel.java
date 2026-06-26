@@ -18,6 +18,7 @@ public class GoldMarketViewModel extends AndroidViewModel {
     private final MutableLiveData<GoldAdvisoryManager.Advisory> aiAdvisory = new MutableLiveData<>();
     private final MutableLiveData<String> error = new MutableLiveData<>();
     private final MutableLiveData<Boolean> isLoading = new MutableLiveData<>(false);
+    private final MutableLiveData<String> debugToast = new MutableLiveData<>();
 
     public GoldMarketViewModel(@NonNull Application application) {
         super(application);
@@ -29,6 +30,7 @@ public class GoldMarketViewModel extends AndroidViewModel {
     public LiveData<GoldAdvisoryManager.Advisory> getAiAdvisory() { return aiAdvisory; }
     public LiveData<String> getError() { return error; }
     public LiveData<Boolean> getIsLoading() { return isLoading; }
+    public LiveData<String> getDebugToast() { return debugToast; }
 
     public void loadData() {
         if (Boolean.TRUE.equals(isLoading.getValue())) return;
@@ -43,6 +45,12 @@ public class GoldMarketViewModel extends AndroidViewModel {
             public void onError(String err) {
                 isLoading.postValue(false);
                 error.postValue(err);
+            }
+            @Override
+            public void onTiming(String source, long durationMs, boolean isFallback) {
+                String msg = source + " | " + String.format(java.util.Locale.getDefault(), "%.2f秒", durationMs / 1000.0);
+                if (isFallback) msg = "🔄 " + msg;
+                debugToast.postValue(msg);
             }
         });
         updateAiAdvice();

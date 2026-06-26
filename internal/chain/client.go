@@ -380,6 +380,16 @@ type GameExtraData struct {
 	MySharesYESNO        []*big.Int
 }
 
+// AllGamesExtraData holds the decoded result of getAllGamesExtraData(address).
+// The contract returns four parallel arrays indexed by the same order as
+// getAllGames. resNO[i] and resYES[i] belong to the i-th game from getAllGames.
+type AllGamesExtraData struct {
+	ResNO       []*big.Int
+	ResYES      []*big.Int
+	MySharesYES []*big.Int
+	MySharesNO  []*big.Int
+}
+
 func RemainingSecondsUntilDeadline(rawDeadline int64, nowMillis int64) int64 {
 	if rawDeadline <= 0 {
 		return 0

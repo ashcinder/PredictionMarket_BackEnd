@@ -25,9 +25,12 @@ import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 import com.example.brokerfi.R;
 import com.example.brokerfi.xc.agent.ai.DeepSeekClient;
 import com.example.brokerfi.xc.agent.gold.model.data.GoldMarketRepository;
+import com.example.brokerfi.xc.agent.gold.model.data.PinataClient;
 import com.example.brokerfi.xc.agent.gold.model.logic.GoldAdvisoryManager;
 import com.example.brokerfi.xc.agent.gold.viewmodel.GoldMarketViewModel;
+import com.bumptech.glide.Glide;
 
+import android.widget.ImageView;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -80,6 +83,12 @@ public class GoldMarketListFragment extends Fragment {
         viewModel.getError().observe(getViewLifecycleOwner(), err -> {
             if (err != null) Toast.makeText(requireContext(), "Error: " + err, Toast.LENGTH_SHORT).show();
         });
+
+        viewModel.getDebugToast().observe(getViewLifecycleOwner(), msg -> {
+            if (msg != null && !msg.isEmpty()) {
+                Toast.makeText(requireContext(), msg, Toast.LENGTH_SHORT).show();
+            }
+        });
     }
 
     private void renderMarketList() {
@@ -88,8 +97,16 @@ public class GoldMarketListFragment extends Fragment {
         for (GoldMarketRepository.GameModel game : availableGames) {
             View card = inflater.inflate(R.layout.item_gold_market_card, marketListContainer, false);
             TextView tvTitle = card.findViewById(R.id.tv_market_title);
+            ImageView ivIcon = card.findViewById(R.id.iv_market_icon);
             String rawTitle = game.desc != null && !game.desc.isEmpty() ? game.desc : "博弈池 #" + game.id;
             tvTitle.setText(styleMarketTitle(rawTitle));
+
+            if (game.avatarUrl != null && !game.avatarUrl.isEmpty()) {
+                Glide.with(this).load(PinataClient.IPFS_GATEWAY + game.avatarUrl).placeholder(R.drawable.apartment_icon).into(ivIcon);
+            } else {
+                ivIcon.setImageResource(R.drawable.apartment_icon);
+            }
+
             ((TextView) card.findViewById(R.id.tv_total_pool)).setText(GoldNoteMarketActivity.formatBkc(game.totalPool) + " BKC");
             long remaining = GoldNoteMarketActivity.remainingSecondsUntilDeadline(game.deadlineSec, System.currentTimeMillis());
             String status = remaining > 0 ? "进行中" : "已到期";
@@ -140,7 +157,7 @@ public class GoldMarketListFragment extends Fragment {
             if (start >= 0) {
                 ssb.setSpan(new ForegroundColorSpan(Color.BLACK), start, start + sub.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
                 ssb.setSpan(new StyleSpan(Typeface.BOLD), start, start + sub.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-                ssb.setSpan(new AbsoluteSizeSpan(15, true), start, start + sub.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                ssb.setSpan(new AbsoluteSizeSpan(14, true), start, start + sub.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
             }
         }
         String[] ups = {"上涨", "剧烈", "高于", "跑赢", "Touched", "触及", "达标", "YES", "Price Up"};
@@ -149,7 +166,7 @@ public class GoldMarketListFragment extends Fragment {
             if (start >= 0) {
                 ssb.setSpan(new ForegroundColorSpan(0xFF047857), start, start + kw.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
                 ssb.setSpan(new StyleSpan(Typeface.BOLD), start, start + kw.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-                ssb.setSpan(new AbsoluteSizeSpan(18, true), start, start + kw.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                ssb.setSpan(new AbsoluteSizeSpan(16, true), start, start + kw.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
             }
         }
         String[] downs = {"下跌", "Price Down", "平稳", "低于", "跑输", "NO", "未达标"};
@@ -158,7 +175,7 @@ public class GoldMarketListFragment extends Fragment {
             if (start >= 0) {
                 ssb.setSpan(new ForegroundColorSpan(Color.RED), start, start + kw.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
                 ssb.setSpan(new StyleSpan(Typeface.BOLD), start, start + kw.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-                ssb.setSpan(new AbsoluteSizeSpan(18, true), start, start + kw.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                ssb.setSpan(new AbsoluteSizeSpan(16, true), start, start + kw.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
             }
         }
         return ssb;

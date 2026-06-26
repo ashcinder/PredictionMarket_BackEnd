@@ -26,9 +26,12 @@ import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
 import com.example.brokerfi.R;
 import com.example.brokerfi.xc.agent.gold.model.data.GoldMarketRepository;
+import com.example.brokerfi.xc.agent.gold.model.data.PinataClient;
 import com.example.brokerfi.xc.agent.gold.model.logic.GoldPositionValuation;
 import com.example.brokerfi.xc.agent.gold.viewmodel.GoldMyPositionsViewModel;
+import com.bumptech.glide.Glide;
 
+import android.widget.ImageView;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
@@ -80,6 +83,12 @@ public class GoldMyPositionsFragment extends Fragment {
         viewModel.getError().observe(getViewLifecycleOwner(), err -> {
             if (err != null) Toast.makeText(requireContext(), "Error: " + err, Toast.LENGTH_SHORT).show();
         });
+
+        viewModel.getDebugToast().observe(getViewLifecycleOwner(), msg -> {
+            if (msg != null && !msg.isEmpty()) {
+                Toast.makeText(requireContext(), msg, Toast.LENGTH_SHORT).show();
+            }
+        });
     }
 
     private void renderPositions() {
@@ -88,8 +97,16 @@ public class GoldMyPositionsFragment extends Fragment {
         for (GoldMarketRepository.GameModel game : myPositions) {
             View card = inflater.inflate(R.layout.item_gold_position_card, positionsContainer, false);
             TextView tvTitle = card.findViewById(R.id.tv_position_title);
+            ImageView ivIcon = card.findViewById(R.id.iv_position_icon);
             String rawTitle = game.desc != null && !game.desc.isEmpty() ? game.desc : "博弈池 #" + game.id;
             tvTitle.setText(styleMarketTitle(rawTitle));
+
+            if (game.avatarUrl != null && !game.avatarUrl.isEmpty()) {
+                Glide.with(this).load(PinataClient.IPFS_GATEWAY + game.avatarUrl).placeholder(R.drawable.apartment_icon).into(ivIcon);
+            } else {
+                ivIcon.setImageResource(R.drawable.apartment_icon);
+            }
+
             TextView tvSide = card.findViewById(R.id.tv_position_side);
             TextView tvShares = card.findViewById(R.id.tv_shares);
             TextView tvCurrentValue = card.findViewById(R.id.tv_current_value);

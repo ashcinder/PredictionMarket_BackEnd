@@ -2,7 +2,9 @@ package aimanaged
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"math/big"
 	"sync"
 	"time"
 
@@ -17,6 +19,18 @@ type samplerChain interface {
 	WalletAddress() string
 }
 
+// SamplerCacheExt is an optional extension that the MarketHistorySampler
+// calls after each successful chain sample. Implementations can write the
+// data to additional cache tables (e.g. the v1 API gold_chain_states and
+// gold_price_history tables).
+type SamplerCacheExt interface {
+	// OnSample is called after successfully reading reserves for an active game.
+	OnSample(ctx context.Context, game chain.GameOnChain, reserves []*big.Int, totalPool *big.Int, yesPct, noPct float64, observedAt time.Time)
+	// OnDiscover is called for every game returned by getAllGames (active or
+	// not) so the cache layer can ensure a stub row exists.
+	OnDiscover(ctx context.Context, game chain.GameOnChain)
+}
+
 // MarketHistorySampler periodically reads reserves from all active games on
 // chain and persists a snapshot to market_history. It runs independently of
 // user activity so the chart history is always continuous.
@@ -26,6 +40,7 @@ type MarketHistorySampler struct {
 	contractAddress string
 	interval        time.Duration
 	historyMax      int
+	cacheExt        SamplerCacheExt
 }
 
 // NewMarketHistorySampler creates a sampler that records a data point for
@@ -44,6 +59,12 @@ func NewMarketHistorySampler(
 		interval:        interval,
 		historyMax:      historyMax,
 	}
+}
+
+// SetCacheExt attaches an optional cache extension that is notified after
+// each successful chain sample. May be nil (the default).
+func (s *MarketHistorySampler) SetCacheExt(ext SamplerCacheExt) {
+	s.cacheExt = ext
 }
 
 // Run starts the sampling loop. It blocks until ctx is cancelled.
@@ -78,10 +99,29 @@ func (s *MarketHistorySampler) Run(ctx context.Context) error {
 }
 
 func (s *MarketHistorySampler) sampleOnce(ctx context.Context) {
-	data := chain.EncodeGetAllGames()
-	hexResult, err := s.chain.EthCall(ctx, data)
+	// Step 1: Fetch all games' metadata (one eth_call).
+	allGamesData := chain.EncodeGetAllGames()
+
+	var hexResult string
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		hexResult, err = s.chain.EthCall(ctx, allGamesData)
+		if err == nil {
+			break
+		}
+		if attempt < 2 {
+			backoff := time.Duration(attempt+1) * 3 * time.Second
+			slog.Warn("sampler: eth_call getAllGames failed, retrying",
+				"attempt", attempt+1, "backoff", backoff, "error", err)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
 	if err != nil {
-		slog.Warn("sampler: eth_call getAllGames failed", "error", err)
+		slog.Warn("sampler: eth_call getAllGames failed after retries", "error", err)
 		return
 	}
 	games, err := chain.DecodeGetAllGames(hexResult)
@@ -94,38 +134,69 @@ func (s *MarketHistorySampler) sampleOnce(ctx context.Context) {
 	nowMillis := now.UnixMilli()
 	wallet := s.chain.WalletAddress()
 
+	// Step 2: Fetch ALL games' reserves in a single batch call.
+	// This avoids N per-game getGameExtraData calls and dramatically
+	// reduces chain round-trips. Falls back to per-game calls if the
+	// batch endpoint is unavailable (e.g. contract doesn't support it).
+	var allReserves *chain.AllGamesExtraData
+	extraEncoded, extraErr := chain.EncodeGetAllGamesExtraData(wallet)
+	if extraErr == nil {
+		extraHex, ethErr := s.chain.EthCall(ctx, extraEncoded)
+		if ethErr == nil {
+			allReserves, err = chain.DecodeGetAllGamesExtraData(extraHex)
+			if err != nil {
+				slog.Warn("sampler: decode getAllGamesExtraData failed, falling back to per-game calls", "error", err)
+			}
+		} else {
+			slog.Warn("sampler: eth_call getAllGamesExtraData failed, falling back to per-game calls", "error", ethErr)
+		}
+	}
+
+	// Notify the cache extension about every game so stub rows are created
+	// even for inactive/resolved games the frontend still needs to list.
+	if s.cacheExt != nil {
+		for _, game := range games {
+			s.cacheExt.OnDiscover(ctx, game)
+		}
+	}
+
+	// Step 3: Process active games.
+	// When the batch call succeeded, compute prices directly from the
+	// parallel arrays (O(active) without any extra chain calls).
+	// Otherwise fall back to per-game getGameExtraData with limited concurrency.
 	var (
 		active  int
 		success int
 		failed  int
 		mu      sync.Mutex
 	)
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, maxSamplerConcurrency)
 
-	for _, game := range games {
-		if game.IsResolved || game.IsRefunded {
-			continue
-		}
-		if chain.IsDeadlinePassed(game.DeadlineRaw, nowMillis) {
-			continue
-		}
-		active++
-		game := game
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				return
+	if allReserves != nil {
+		// Fast path: batch reserves available, no more chain calls needed.
+		for i, game := range games {
+			if game.IsResolved || game.IsRefunded {
+				continue
 			}
-			// Each game gets its own deadline so one slow call cannot
-			// block the goroutine pool indefinitely.
-			gameCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-			defer cancel()
-			if err := s.sampleGame(gameCtx, game, wallet, now); err != nil {
+			if chain.IsDeadlinePassed(game.DeadlineRaw, nowMillis) {
+				continue
+			}
+			active++
+			if i >= len(allReserves.ResNO) || i >= len(allReserves.ResYES) {
+				mu.Lock()
+				failed++
+				mu.Unlock()
+				slog.Warn("sampler: batch reserves index out of range", "game_id", game.ID, "index", i)
+				continue
+			}
+			resNO := allReserves.ResNO[i]
+			resYES := allReserves.ResYES[i]
+			if resNO == nil || resYES == nil {
+				mu.Lock()
+				failed++
+				mu.Unlock()
+				continue
+			}
+			if err := s.processGameSample(ctx, game, wallet, now, resNO, resYES); err != nil {
 				mu.Lock()
 				failed++
 				mu.Unlock()
@@ -134,15 +205,52 @@ func (s *MarketHistorySampler) sampleOnce(ctx context.Context) {
 				success++
 				mu.Unlock()
 			}
-		}()
+		}
+	} else {
+		// Slow path: per-game getGameExtraData calls (up to 4 concurrent).
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, maxSamplerConcurrency)
+
+		for _, game := range games {
+			if game.IsResolved || game.IsRefunded {
+				continue
+			}
+			if chain.IsDeadlinePassed(game.DeadlineRaw, nowMillis) {
+				continue
+			}
+			active++
+			game := game
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				select {
+				case sem <- struct{}{}:
+					defer func() { <-sem }()
+				case <-ctx.Done():
+					return
+				}
+				gameCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+				defer cancel()
+				if err := s.sampleGame(gameCtx, game, wallet, now); err != nil {
+					mu.Lock()
+					failed++
+					mu.Unlock()
+				} else {
+					mu.Lock()
+					success++
+					mu.Unlock()
+				}
+			}()
+		}
+		wg.Wait()
 	}
-	wg.Wait()
 
 	slog.Info("sampler: cycle complete",
 		"total_games", len(games),
 		"active", active,
 		"success", success,
 		"failed", failed,
+		"batch_reserves", allReserves != nil,
 	)
 }
 
@@ -152,11 +260,32 @@ func (s *MarketHistorySampler) sampleGame(ctx context.Context, game chain.GameOn
 		slog.Warn("sampler: encode getGameExtraData failed", "game_id", game.ID, "error", err)
 		return err
 	}
-	hexResult, err := s.chain.EthCall(ctx, encoded)
+
+	// Retry transient errors (504, deadline exceeded) up to 2 extra attempts
+	// with a short backoff so a single slow BrokerChain cycle doesn't skip
+	// every game.
+	var hexResult string
+	for attempt := 0; attempt < 3; attempt++ {
+		hexResult, err = s.chain.EthCall(ctx, encoded)
+		if err == nil {
+			break
+		}
+		if attempt < 2 {
+			backoff := time.Duration(attempt+1) * 2 * time.Second
+			slog.Warn("sampler: eth_call getGameExtraData failed, retrying",
+				"game_id", game.ID, "attempt", attempt+1, "backoff", backoff, "error", err)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
 	if err != nil {
-		slog.Warn("sampler: eth_call getGameExtraData failed", "game_id", game.ID, "error", err)
+		slog.Warn("sampler: eth_call getGameExtraData failed after retries", "game_id", game.ID, "error", err)
 		return err
 	}
+
 	extra, err := chain.DecodeGetGameExtraData(hexResult)
 	if err != nil {
 		slog.Warn("sampler: decode getGameExtraData failed", "game_id", game.ID, "error", err)
@@ -180,5 +309,66 @@ func (s *MarketHistorySampler) sampleGame(ctx context.Context, game chain.GameOn
 		slog.Warn("sampler: persist history failed", "game_id", game.ID, "error", err)
 		return err
 	}
+
+	// Notify the optional v1 cache extension.
+	if s.cacheExt != nil {
+		totalPool := new(big.Int).Add(obs.ReserveNO, obs.ReserveYES)
+		s.cacheExt.OnSample(ctx, game, extra.VirtualReservesNOYES, totalPool, obs.YesPercent, obs.NoPercent, now)
+	}
+
+	return nil
+}
+
+// processGameSample is the fast-path variant that uses pre-fetched reserves
+// from getAllGamesExtraData. Unlike sampleGame, it does NOT make any chain
+// calls — it computes prices from the already-available resNO/resYES values
+// and persists them directly.
+func (s *MarketHistorySampler) processGameSample(
+	ctx context.Context,
+	game chain.GameOnChain,
+	wallet string,
+	now time.Time,
+	resNO, resYES *big.Int,
+) error {
+	if resNO == nil || resYES == nil {
+		return fmt.Errorf("nil reserves for game %d", game.ID)
+	}
+
+	total := new(big.Int).Add(resNO, resYES)
+	if total.Sign() <= 0 {
+		return fmt.Errorf("zero total reserves for game %d", game.ID)
+	}
+
+	yesRat := new(big.Rat).SetFrac(resYES, total)
+	noRat := new(big.Rat).SetFrac(resNO, total)
+	hundred := new(big.Rat).SetInt64(100)
+	yesRat.Mul(yesRat, hundred)
+	noRat.Mul(noRat, hundred)
+	yesPct, _ := yesRat.Float64()
+	noPct, _ := noRat.Float64()
+
+	obs := HistoryObservation{
+		Time:       bucketTimestamp(now.Unix(), s.interval),
+		YesPercent: yesPct,
+		NoPercent:  noPct,
+		ReserveNO:  new(big.Int).Set(resNO),
+		ReserveYES: new(big.Int).Set(resYES),
+		Source:     historySourceChain,
+	}
+
+	market := MarketIdentity{
+		ContractAddress: s.contractAddress,
+		GameID:          game.ID,
+	}
+	if _, err := s.histories.MergeAndList(ctx, market, nil, obs, s.historyMax); err != nil {
+		slog.Warn("sampler: persist history failed (batch)", "game_id", game.ID, "error", err)
+		return err
+	}
+
+	// Notify the optional v1 cache extension.
+	if s.cacheExt != nil {
+		s.cacheExt.OnSample(ctx, game, []*big.Int{resNO, resYES}, total, yesPct, noPct, now)
+	}
+
 	return nil
 }
