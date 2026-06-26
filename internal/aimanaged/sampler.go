@@ -206,6 +206,16 @@ func (s *MarketHistorySampler) sampleOnce(ctx context.Context) {
 				mu.Unlock()
 			}
 		}
+
+		// Populate user positions for the signer wallet from the already-
+		// fetched batch data. Uses a type assertion so the SamplerCacheExt
+		// interface stays clean.
+		type userSharePopulator interface {
+			PopulateUserShares(ctx context.Context, data *chain.AllGamesExtraData, games []chain.GameOnChain, signerAddr string)
+		}
+		if pop, ok := s.cacheExt.(userSharePopulator); ok {
+			pop.PopulateUserShares(ctx, allReserves, games, wallet)
+		}
 	} else {
 		// Slow path: per-game getGameExtraData calls (up to 4 concurrent).
 		var wg sync.WaitGroup

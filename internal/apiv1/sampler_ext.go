@@ -20,24 +20,27 @@ import (
 // inserts always succeed. Full metadata (desc, condition, etc.) is filled in
 // later when the DApp calls POST /api/v1/gold/games/sync.
 type samplerCacheExt struct {
-	games       GameMetadataRepository
-	chainStates ChainStateRepository
-	history     PriceHistoryRepository
+	games        GameMetadataRepository
+	chainStates  ChainStateRepository
+	history      PriceHistoryRepository
+	positions    UserPositionRepository
 	contractAddr string
 }
 
 // NewSamplerCacheExt creates a SamplerCacheExt that writes to the v1 cache
-// tables. Pass the same *MySQLRepository for all three arguments.
+// tables. Pass the same *MySQLRepository for all four arguments.
 func NewSamplerCacheExt(
 	games GameMetadataRepository,
 	chainStates ChainStateRepository,
 	history PriceHistoryRepository,
+	positions UserPositionRepository,
 	contractAddr string,
 ) aimanaged.SamplerCacheExt {
 	return &samplerCacheExt{
-		games:       games,
-		chainStates: chainStates,
-		history:     history,
+		games:        games,
+		chainStates:  chainStates,
+		history:      history,
+		positions:    positions,
 		contractAddr: contractAddr,
 	}
 }
@@ -121,4 +124,47 @@ func getReserve(reserves []*big.Int, idx int) *big.Int {
 		return new(big.Int).Set(reserves[idx])
 	}
 	return nil
+}
+
+// PopulateUserShares persists the signer's shares from getAllGamesExtraData
+// to gold_user_positions. Called by the sampler after a successful batch
+// cycle so the personal positions page can read from DB.
+// This is NOT part of SamplerCacheExt — the sampler calls it via type assertion.
+func (e *samplerCacheExt) PopulateUserShares(ctx context.Context, data *chain.AllGamesExtraData, games []chain.GameOnChain, signerAddr string) {
+	if e.positions == nil || signerAddr == "" {
+		return
+	}
+
+	upserted := 0
+	for i, game := range games {
+		if i >= len(data.MySharesYES) || i >= len(data.MySharesNO) {
+			break
+		}
+		sharesYes := data.MySharesYES[i]
+		sharesNo := data.MySharesNO[i]
+		if sharesYes == nil {
+			sharesYes = big.NewInt(0)
+		}
+		if sharesNo == nil {
+			sharesNo = big.NewInt(0)
+		}
+		if sharesYes.Sign() == 0 && sharesNo.Sign() == 0 {
+			continue
+		}
+
+		row := &userPositionRow{
+			UserAddress: signerAddr,
+			GameID:      game.ID,
+			MySharesYes:  sharesYes,
+			MySharesNo:   sharesNo,
+		}
+		if err := e.positions.UpsertUserPosition(ctx, row); err != nil {
+			slog.Warn("apiv1: sampler populate user shares failed", "game_id", game.ID, "error", err)
+		} else {
+			upserted++
+		}
+	}
+	if upserted > 0 {
+		slog.Info("apiv1: sampler populated user positions", "user", signerAddr, "games", upserted)
+	}
 }

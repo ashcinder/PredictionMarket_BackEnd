@@ -148,7 +148,13 @@ public class GoldMarketDetailViewModel extends AndroidViewModel {
     public void buyShares(int gameId, int optionId, BigInteger amountWei) {
         repository.buyShares(gameId, optionId, amountWei, new GoldMarketRepository.TxCallback() {
             @Override public void onTxSent(String txHash) { txStatus.postValue("Sent: " + txHash); }
-            @Override public void onConfirmed(String msg) { txStatus.postValue("Confirmed: " + msg); loadGameInfo(gameId); }
+            @Override public void onConfirmed(String msg) {
+                txStatus.postValue("Confirmed: " + msg);
+                // 延迟 2 秒再刷新，确保后端 DB 同步完成 + 链上状态已更新
+                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                    loadGameInfo(gameId);
+                }, 2000);
+            }
             @Override public void onError(String err) { error.postValue("Failed: " + err); }
         });
     }
@@ -156,7 +162,12 @@ public class GoldMarketDetailViewModel extends AndroidViewModel {
     public void claimReward(int gameId, int optionId) {
         repository.claimReward(gameId, optionId, new GoldMarketRepository.TxCallback() {
             @Override public void onTxSent(String txHash) { txStatus.postValue("Claim Sent"); }
-            @Override public void onConfirmed(String msg) { txStatus.postValue("Claim Success"); loadGameInfo(gameId); }
+            @Override public void onConfirmed(String msg) {
+                txStatus.postValue("Claim Success");
+                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                    loadGameInfo(gameId);
+                }, 2000);
+            }
             @Override public void onError(String err) { error.postValue("Claim Failed: " + err); }
         });
     }

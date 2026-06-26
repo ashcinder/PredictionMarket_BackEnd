@@ -358,10 +358,17 @@ public class GoldMarketDetailActivity extends AppCompatActivity {
         if (dialog.getWindow() != null) dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
         btn.setOnClickListener(view -> {
             String val = et.getText().toString().trim();
-            if (val.isEmpty()) return;
+            if (val.isEmpty()) {
+                Toast.makeText(GoldMarketDetailActivity.this, "请输入下注金额", Toast.LENGTH_SHORT).show();
+                return;
+            }
             BigInteger wei = GoldMarketRepository.parseTokenAmountToWei(val);
-            if (wei == null) return;
+            if (wei == null) {
+                Toast.makeText(GoldMarketDetailActivity.this, "金额格式无效，请输入有效数字（如 100）", Toast.LENGTH_SHORT).show();
+                return;
+            }
             dialog.dismiss();
+            Toast.makeText(GoldMarketDetailActivity.this, "正在发送交易...", Toast.LENGTH_SHORT).show();
             viewModel.buyShares(gameId, optionId, wei);
         });
         v.findViewById(R.id.btn_buy_cancel).setOnClickListener(view -> dialog.dismiss());

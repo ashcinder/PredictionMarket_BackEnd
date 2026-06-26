@@ -40,3 +40,48 @@ ai:
   confidence_min: 0.70
   history_min_points: 3
   history_max_points: 256
+
+# ---------------------------------------------------------------------------
+# AI Oracle — multi-model consensus for verifying real-world events.
+# Completely optional. Remove or comment out to disable.
+# ---------------------------------------------------------------------------
+# aioracle:
+#   poll_interval_seconds: 300
+#
+#   consensus:
+#     min_consensus_ratio: 0.66
+#     min_confidence: 0.60
+#     min_models_required: 1
+#
+#   news:
+#     rss_feeds:
+#       - "https://cointelegraph.com/rss"
+#       - "https://feeds.bbci.co.uk/news/business/rss.xml"
+#     max_articles: 10
+#     lookback_hours: 72
+#     request_timeout_seconds: 30
+#
+#   providers:
+#     - name: "deepseek"
+#       model: "deepseek-chat"
+#       api_key: "replace-with-deepseek-api-key"
+#       base_url: "https://api.deepseek.com/chat/completions"
+#       provider: "deepseek"
+#       weight: 1.0
+#       timeout_seconds: 60
+#
+#     - name: "claude"
+#       model: "claude-sonnet-4-20250514"
+#       api_key: "replace-with-anthropic-api-key"
+#       base_url: "https://api.anthropic.com/v1/messages"
+#       provider: "anthropic"
+#       weight: 1.2
+#       timeout_seconds: 60
+#
+#     - name: "openai"
+#       model: "gpt-4o"
+#       api_key: "replace-with-openai-api-key"
+#       base_url: "https://api.openai.com/v1/chat/completions"
+#       provider: "openai"
+#       weight: 1.0
+#       timeout_seconds: 60

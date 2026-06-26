@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"PredictionMarket/internal/chain"
 
@@ -87,12 +88,15 @@ func (s *Server) handleSyncGame(w http.ResponseWriter, r *http.Request) {
 	// When the DApp creates a new game it does not know the contract-assigned
 	// game ID yet — it sends game_id=0. We resolve the real ID by scanning
 	// the chain for a game whose IPFS CID matches.
+	// Uses a detached context so a client timeout doesn't kill the chain call.
 	if gameID == 0 {
 		if s.chain == nil {
 			writeJSONError(w, http.StatusBadRequest, "game_id is 0 but chain client is not available for lookup")
 			return
 		}
-		resolved, err := s.resolveGameIDByCID(r.Context(), req.IPFSCID)
+		bgCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		resolved, err := s.resolveGameIDByCID(bgCtx, req.IPFSCID)
 		if err != nil {
 			slog.Warn("apiv1: resolve game_id by CID failed", "cid", req.IPFSCID, "error", err)
 			writeJSONError(w, http.StatusServiceUnavailable, "failed to resolve game_id from chain")

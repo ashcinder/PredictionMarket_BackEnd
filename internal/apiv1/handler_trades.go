@@ -7,8 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"PredictionMarket/internal/chain"
-
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -52,7 +50,10 @@ func (s *Server) handleSyncTrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Record the trade.
+	// 1. Record the trade (best-effort, non-fatal).
+	// Chain state and user position updates below are more important for
+	// the read path — a missing trade record is a minor audit gap, but
+	// missing chain state breaks the entire cache layer.
 	trade := &tradeRow{
 		GameID:          req.GameID,
 		ContractAddress: req.ContractAddr,
@@ -64,12 +65,12 @@ func (s *Server) handleSyncTrade(w http.ResponseWriter, r *http.Request) {
 		IsSuccess:       req.IsSuccess,
 	}
 	if err := s.trades.RecordTrade(r.Context(), trade); err != nil {
-		slog.Warn("apiv1: record trade failed", "game_id", req.GameID, "error", err)
-		writeJSONError(w, http.StatusServiceUnavailable, "failed to record trade")
-		return
+		slog.Warn("apiv1: record trade failed (non-fatal, continuing with state updates)", "game_id", req.GameID, "error", err)
+		// Non-fatal — don't return, still update chain state and positions below.
 	}
 
-	// 2. If post-trade state fields are present, update the chain state cache.
+	// 2. Update chain state cache from post-trade fields.
+	// The DApp sends these after every buy/sell/claim/resolve.
 	if req.TotalPoolAfter != "" || req.ReserveYesAfter != "" || req.ReserveNoAfter != "" {
 		state := &chainStateRow{
 			GameID:     req.GameID,
@@ -80,40 +81,22 @@ func (s *Server) handleSyncTrade(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := s.chainStates.UpsertChainState(r.Context(), state); err != nil {
 			slog.Warn("apiv1: cascade update chain state failed", "game_id", req.GameID, "error", err)
-			// Non-fatal: the trade was recorded successfully.
 		}
 	}
 
-	// 3. Update the user position cache.
-	// When the DApp provides post-trade shares, use them directly.
-	// Otherwise auto-fetch from chain so gold_user_positions stays populated.
-	pos := &userPositionRow{
-		UserAddress: req.UserAddress,
-		GameID:      req.GameID,
-		MySharesYes:  parseBigIntStr(req.MySharesYesAfter),
-		MySharesNo:   parseBigIntStr(req.MySharesNoAfter),
-	}
-	if pos.MySharesYes == nil && pos.MySharesNo == nil && s.chain != nil {
-		// DApp didn't provide post-trade state — fetch from chain.
-		encoded, err := chain.EncodeGetGameExtraData(req.GameID, req.UserAddress)
-		if err == nil {
-			hexResult, ethErr := s.chain.EthCall(r.Context(), encoded)
-			if ethErr == nil {
-				extra, decErr := chain.DecodeGetGameExtraData(hexResult)
-				if decErr == nil && len(extra.MySharesYESNO) >= 2 {
-					pos.MySharesYes = extra.MySharesYESNO[0]
-					pos.MySharesNo = extra.MySharesYESNO[1]
-				}
-			}
+	// 3. Update user position cache from post-trade shares.
+	if req.MySharesYesAfter != "" || req.MySharesNoAfter != "" {
+		pos := &userPositionRow{
+			UserAddress: req.UserAddress,
+			GameID:      req.GameID,
+			MySharesYes:  parseBigIntStr(req.MySharesYesAfter),
+			MySharesNo:   parseBigIntStr(req.MySharesNoAfter),
 		}
-	}
-	if pos.MySharesYes != nil || pos.MySharesNo != nil {
 		if err := s.positions.UpsertUserPosition(r.Context(), pos); err != nil {
 			slog.Warn("apiv1: cascade update user position failed", "game_id", req.GameID, "user", req.UserAddress, "error", err)
-			// Non-fatal.
 		}
 	}
 
-	slog.Info("apiv1: trade synced", "game_id", req.GameID, "type", tradeType, "tx", req.TxHash)
+	slog.Info("apiv1: trade synced", "game_id", req.GameID, "type", tradeType)
 	writeJSON(w, http.StatusCreated, map[string]bool{"success": true})
 }

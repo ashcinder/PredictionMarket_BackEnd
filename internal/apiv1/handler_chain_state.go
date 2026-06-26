@@ -133,11 +133,18 @@ func (s *Server) handleSyncChainState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Also update user position if shares are provided.
-	if req.MySharesYes != "" || req.MySharesNo != "" {
-		// NOTE: the sync-chain-state endpoint does not include user_address.
-		// This is by design — user positions are primarily synced via
-		// /trades/sync which includes the user_address field.
+	// Also update user position if shares and user_address are provided.
+	if (req.MySharesYes != "" || req.MySharesNo != "") && common.IsHexAddress(req.UserAddress) {
+		pos := &userPositionRow{
+			UserAddress: req.UserAddress,
+			GameID:      gameID,
+			MySharesYes:  parseBigIntStr(req.MySharesYes),
+			MySharesNo:   parseBigIntStr(req.MySharesNo),
+		}
+		if err := s.positions.UpsertUserPosition(r.Context(), pos); err != nil {
+			slog.Warn("apiv1: sync chain state upsert position failed", "game_id", gameID, "user", req.UserAddress, "error", err)
+			// Non-fatal.
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"success": true})

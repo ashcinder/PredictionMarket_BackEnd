@@ -80,7 +80,7 @@ func main() {
 	)
 
 	// Extend the sampler to also keep the v1 cache tables fresh.
-	samplerExt := apiv1.NewSamplerCacheExt(v1Repo, v1Repo, v1Repo, cfg.ContractAddress)
+	samplerExt := apiv1.NewSamplerCacheExt(v1Repo, v1Repo, v1Repo, v1Repo, cfg.ContractAddress)
 	sampler.SetCacheExt(samplerExt)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

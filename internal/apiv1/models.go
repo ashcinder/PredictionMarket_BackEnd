@@ -80,6 +80,7 @@ type SyncChainStateRequest struct {
 	ReserveNo     string `json:"reserve_no"`
 	MySharesYes   string `json:"my_shares_yes"`
 	MySharesNo    string `json:"my_shares_no"`
+	UserAddress   string `json:"user_address"`
 }
 
 // PricePointDTO is the JSON shape for GET /api/v1/gold/games/{id}/history.
