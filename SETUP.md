@@ -57,12 +57,12 @@ prediction:prediction-dev-password@tcp(127.0.0.1:3306)/prediction_market?charset
 | `oracle` | `sina_referer` | 新浪接口要求的 Referer 地址 |
 | `oracle` | `user_agent` | 行情请求 User-Agent |
 | `oracle` | `request_timeout_seconds` | 行情请求超时，必须大于 0 |
-| `sentinel` | `poll_interval_seconds` | 开奖扫描间隔，必须大于 0 |
+| `sentinel` | `poll_interval_seconds` | 开奖扫描间隔，必须大于 0；BrokerChain 容易 504 时建议 120 秒或更高 |
 | `sentinel` | `resolve_delay_seconds` | 开奖前延迟，不能为负数 |
 | `ai` | `api_key` | 必填，模型服务 API Key |
 | `ai` | `base_url` | 模型 Chat Completions HTTP(S) 地址 |
 | `ai` | `model` | 模型名称 |
-| `ai` | `poll_interval_seconds` | AI 托管扫描间隔，必须大于 0 |
+| `ai` | `poll_interval_seconds` | AI 托管扫描间隔，必须大于 0；后端会按市场分组并对链请求限流 |
 | `ai` | `buy_amount_bkc` | 单次自动买入 BKC 数量，必须大于 0 |
 | `ai` | `confidence_min` | 自动交易最低置信度，范围为 0 到 1 |
 | `ai` | `history_min_points` | 调用模型前要求的真实历史点数，推荐为 3，必须大于 0 |

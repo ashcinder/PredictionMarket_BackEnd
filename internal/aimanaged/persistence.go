@@ -3,11 +3,14 @@ package aimanaged
 import (
 	"context"
 	"math/big"
+	"time"
 )
 
 const (
 	historySourceChain = "chain"
 	historySourceIPFS  = "ipfs"
+	syncStatusOK       = "ok"
+	syncStatusFailed   = "failed"
 )
 
 type MarketIdentity struct {
@@ -53,4 +56,30 @@ type DecisionRepository interface {
 	RecordRule(context.Context, RuleDecisionRecord) error
 	CreatePending(context.Context, ModelDecisionRecord) (int64, error)
 	Finalize(context.Context, int64, string, string, string) error
+}
+
+type MarketSyncState struct {
+	Market         MarketIdentity
+	LastSuccessAt  time.Time
+	LastObservedAt int64
+	FailCount      int
+	NextPollAt     time.Time
+	LastError      string
+	Status         string
+}
+
+type SyncStateRepository interface {
+	GetSyncState(context.Context, MarketIdentity) (MarketSyncState, error)
+	RecordSyncSuccess(context.Context, MarketIdentity, int64, time.Time) error
+	RecordSyncFailure(context.Context, MarketIdentity, time.Time, error) (MarketSyncState, error)
+}
+
+func nextSyncPollTime(failedAt time.Time, failCount int) time.Time {
+	if failCount <= 1 {
+		return failedAt.Add(30 * time.Second)
+	}
+	if failCount == 2 {
+		return failedAt.Add(2 * time.Minute)
+	}
+	return failedAt.Add(5 * time.Minute)
 }

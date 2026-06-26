@@ -8,11 +8,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/crypto"
@@ -22,6 +25,11 @@ import (
 const (
 	localCallGasLimit  = 5_000_000
 	localWriteGasLimit = 8_000_000
+)
+
+var (
+	defaultBrokerLimiter = newBrokerRequestLimiter(1, time.Second)
+	brokerRetryBackoff   = []time.Duration{2 * time.Second, 10 * time.Second}
 )
 
 type Client struct {
@@ -237,6 +245,33 @@ func (c *Client) brokerSendTransaction(ctx context.Context, data string, value *
 }
 
 func (c *Client) post(ctx context.Context, endpoint string, body []byte) (string, error) {
+	attempts := len(brokerRetryBackoff) + 1
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			if err := sleepWithContext(ctx, brokerRetryBackoff[attempt-1]); err != nil {
+				return "", err
+			}
+		}
+		resp, err := c.postOnce(ctx, endpoint, body)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if !isRetryableBrokerError(err) {
+			return "", err
+		}
+	}
+	return "", lastErr
+}
+
+func (c *Client) postOnce(ctx context.Context, endpoint string, body []byte) (string, error) {
+	release, err := defaultBrokerLimiter.acquire(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.brokerBaseURL+endpoint, bytes.NewReader(body))
 	if err != nil {
 		return "", err
@@ -253,9 +288,94 @@ func (c *Client) post(ctx context.Context, endpoint string, body []byte) (string
 		return "", err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("broker chain %s: HTTP %d %s", endpoint, resp.StatusCode, string(raw))
+		return "", &BrokerHTTPError{Endpoint: endpoint, StatusCode: resp.StatusCode, Body: string(raw)}
 	}
 	return string(raw), nil
+}
+
+type BrokerHTTPError struct {
+	Endpoint   string
+	StatusCode int
+	Body       string
+}
+
+func (e *BrokerHTTPError) Error() string {
+	return fmt.Sprintf("broker chain %s: HTTP %d %s", e.Endpoint, e.StatusCode, e.Body)
+}
+
+func isRetryableBrokerError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var brokerErr *BrokerHTTPError
+	if errors.As(err, &brokerErr) {
+		switch brokerErr.StatusCode {
+		case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return true
+		default:
+			return false
+		}
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+func sleepWithContext(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+type brokerRequestLimiter struct {
+	sem         chan struct{}
+	mu          sync.Mutex
+	next        time.Time
+	minInterval time.Duration
+}
+
+func newBrokerRequestLimiter(maxConcurrent int, minInterval time.Duration) *brokerRequestLimiter {
+	if maxConcurrent <= 0 {
+		maxConcurrent = 1
+	}
+	return &brokerRequestLimiter{
+		sem:         make(chan struct{}, maxConcurrent),
+		minInterval: minInterval,
+	}
+}
+
+func (l *brokerRequestLimiter) acquire(ctx context.Context) (func(), error) {
+	select {
+	case l.sem <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	release := func() { <-l.sem }
+
+	l.mu.Lock()
+	now := time.Now()
+	wait := l.next.Sub(now)
+	if wait > 0 {
+		l.mu.Unlock()
+		if err := sleepWithContext(ctx, wait); err != nil {
+			release()
+			return nil, err
+		}
+		l.mu.Lock()
+		now = time.Now()
+	}
+	if l.minInterval > 0 {
+		l.next = now.Add(l.minInterval)
+	}
+	l.mu.Unlock()
+	return release, nil
 }
 
 type callReq struct {

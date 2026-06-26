@@ -100,15 +100,16 @@ type decisionSource interface {
 type managedChainFactory func(privateKey, contractAddress string) (managedChain, error)
 
 type Engine struct {
-	cfg       *config.Config
-	store     *Store
-	newChain  managedChainFactory
-	metadata  metadataSource
-	quotes    quoteSource
-	decisions decisionSource
-	histories HistoryRepository
-	audits    DecisionRepository
-	now       func() time.Time
+	cfg        *config.Config
+	store      *Store
+	newChain   managedChainFactory
+	metadata   metadataSource
+	quotes     quoteSource
+	decisions  decisionSource
+	histories  HistoryRepository
+	audits     DecisionRepository
+	syncStates SyncStateRepository
+	now        func() time.Time
 }
 
 type productionManagedChain struct {
@@ -174,6 +175,7 @@ func NewServer(store *Store) *Server {
 }
 
 func NewEngine(cfg *config.Config, store *Store, ipfsClient *ipfs.Client, goldOracle *oracle.GoldOracle, histories HistoryRepository, audits DecisionRepository) *Engine {
+	syncStates, _ := histories.(SyncStateRepository)
 	return &Engine{
 		cfg:   cfg,
 		store: store,
@@ -184,12 +186,13 @@ func NewEngine(cfg *config.Config, store *Store, ipfsClient *ipfs.Client, goldOr
 			}
 			return &productionManagedChain{client: client}, nil
 		},
-		metadata:  ipfsClient,
-		quotes:    goldOracle,
-		decisions: NewAIClient(cfg),
-		histories: histories,
-		audits:    audits,
-		now:       time.Now,
+		metadata:   ipfsClient,
+		quotes:     goldOracle,
+		decisions:  NewAIClient(cfg),
+		histories:  histories,
+		audits:     audits,
+		syncStates: syncStates,
+		now:        time.Now,
 	}
 }
 
@@ -393,10 +396,20 @@ func (e *Engine) scanOnce(ctx context.Context) {
 		return
 	}
 
+	groups := make(map[string][]EntrySnapshot)
+	order := make([]string, 0, len(entries))
+	for _, snapshot := range entries {
+		key := marketKey(snapshot.ContractAddress, snapshot.GameID)
+		if _, ok := groups[key]; !ok {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], snapshot)
+	}
+
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, maxWorkerConcurrency)
-	for _, snapshot := range entries {
-		snapshot := snapshot
+	for _, key := range order {
+		snapshots := append([]EntrySnapshot(nil), groups[key]...)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -409,9 +422,12 @@ func (e *Engine) scanOnce(ctx context.Context) {
 
 			childCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 			defer cancel()
-			if err := e.process(childCtx, snapshot); err != nil {
-				e.store.RecordError(snapshot.GameID, snapshot.UserAddress, err)
-				slog.Warn("ai-managed task failed", "game_id", snapshot.GameID, "user", snapshot.UserAddress, "error", err)
+			if err := e.processMarket(childCtx, snapshots); err != nil {
+				for _, snapshot := range snapshots {
+					e.store.RecordError(snapshot.GameID, snapshot.UserAddress, err)
+				}
+				first := snapshots[0]
+				slog.Warn("ai-managed market task failed", "game_id", first.GameID, "contract", first.ContractAddress, "error", err)
 			}
 		}()
 	}
@@ -419,59 +435,75 @@ func (e *Engine) scanOnce(ctx context.Context) {
 }
 
 func (e *Engine) process(ctx context.Context, snapshot EntrySnapshot) error {
-	now := time.Now()
-	if e.now != nil {
-		now = e.now()
+	return e.processMarket(ctx, []EntrySnapshot{snapshot})
+}
+
+func (e *Engine) processMarket(ctx context.Context, snapshots []EntrySnapshot) error {
+	if len(snapshots) == 0 {
+		return nil
 	}
-	privateKey, err := e.store.DecryptPrivateKey(snapshot)
-	if err != nil {
-		return fmt.Errorf("decrypt private key: %w", err)
-	}
-	client, err := e.newChain(privateKey, snapshot.ContractAddress)
-	if err != nil {
-		return fmt.Errorf("init user chain client: %w", err)
-	}
-	defer client.Close()
-	if !strings.EqualFold(client.WalletAddress(), snapshot.UserAddress) {
-		e.store.Disable(snapshot.GameID, snapshot.UserAddress)
-		return errors.New("private key no longer matches managed user")
+	now := e.currentTime()
+	first := snapshots[0]
+	market := MarketIdentity{ContractAddress: first.ContractAddress, GameID: first.GameID}
+
+	if e.syncStates != nil {
+		state, err := e.syncStates.GetSyncState(ctx, market)
+		if err != nil {
+			return fmt.Errorf("query market sync state: %w", err)
+		}
+		if state.Status == syncStatusFailed && !state.NextPollAt.IsZero() && now.Before(state.NextPollAt) {
+			reason := fmt.Sprintf("market sync cooling down until %s after %d failed attempt(s)", state.NextPollAt.Format(time.RFC3339), state.FailCount)
+			return e.recordRuleForSnapshots(ctx, snapshots, market, now.Unix(), "sync_cooldown", reason, 0)
+		}
 	}
 
-	info, err := client.GetGameInfo(ctx, snapshot.GameID)
+	client, readSnapshot, err := e.openReadClient(snapshots)
 	if err != nil {
-		return fmt.Errorf("get game info: %w", err)
+		return e.recordSyncFailureAndHold(ctx, snapshots, market, now, err)
+	}
+	defer client.Close()
+
+	info, err := client.GetGameInfo(ctx, first.GameID)
+	if err != nil {
+		return e.recordSyncFailureAndHold(ctx, snapshots, market, now, fmt.Errorf("get game info: %w", err))
 	}
 	if info.IsResolved || info.IsRefunded || chain.IsDeadlinePassed(info.DeadlineRaw, now.UnixMilli()) {
-		e.store.Disable(snapshot.GameID, snapshot.UserAddress)
-		slog.Info("ai-managed task removed inactive game", "game_id", snapshot.GameID, "user", snapshot.UserAddress)
+		for _, snapshot := range snapshots {
+			e.store.Disable(snapshot.GameID, snapshot.UserAddress)
+		}
+		slog.Info("ai-managed task removed inactive game", "game_id", first.GameID, "contract", first.ContractAddress)
 		return nil
 	}
 
 	meta, err := e.metadata.DownloadMetadata(info.IPFSCID)
 	if err != nil {
-		slog.Warn("ai-managed metadata unavailable", "game_id", snapshot.GameID, "cid", info.IPFSCID, "error", err)
+		slog.Warn("ai-managed metadata unavailable", "game_id", first.GameID, "cid", info.IPFSCID, "error", err)
+		return e.recordMetadataFailureAndHold(ctx, snapshots, market, now, err)
+	}
+	if meta == nil {
 		meta = &ipfs.Metadata{}
 	}
 
-	extra, err := client.GetGameExtraData(ctx, snapshot.GameID, snapshot.UserAddress)
+	extra, err := client.GetGameExtraData(ctx, first.GameID, readSnapshot.UserAddress)
 	if err != nil {
-		return fmt.Errorf("get game extra data: %w", err)
+		return e.recordSyncFailureAndHold(ctx, snapshots, market, now, fmt.Errorf("get game extra data: %w", err))
 	}
 	if extra == nil {
-		return errors.New("get game extra data: empty response")
+		return e.recordSyncFailureAndHold(ctx, snapshots, market, now, errors.New("get game extra data: empty response"))
 	}
-	market := MarketIdentity{ContractAddress: snapshot.ContractAddress, GameID: snapshot.GameID}
 	current, err := observationFromReserves(extra, now)
 	if err != nil {
-		if auditErr := e.audits.RecordRule(ctx, RuleDecisionRecord{
-			Market: market, UserAddress: snapshot.UserAddress, ObservedAt: now.Unix(),
-			Action: "hold", Reason: err.Error(), Outcome: "invalid_reserves",
-		}); auditErr != nil {
+		if e.syncStates != nil {
+			if _, syncErr := e.syncStates.RecordSyncFailure(ctx, market, now, err); syncErr != nil {
+				return fmt.Errorf("record invalid-reserves sync failure: %w", syncErr)
+			}
+		}
+		if auditErr := e.recordRuleForSnapshots(ctx, snapshots, market, now.Unix(), "invalid_reserves", err.Error(), 0); auditErr != nil {
 			return fmt.Errorf("record invalid-reserves hold: %w", auditErr)
 		}
 		slog.Info("ai-managed forced hold for invalid market reserves",
-			"game_id", snapshot.GameID,
-			"contract", snapshot.ContractAddress,
+			"game_id", first.GameID,
+			"contract", first.ContractAddress,
 			"decision", "hold",
 			"error", err,
 		)
@@ -482,17 +514,18 @@ func (e *Engine) process(ctx context.Context, snapshot EntrySnapshot) error {
 	if err != nil {
 		return fmt.Errorf("persist market history: %w", err)
 	}
+	if e.syncStates != nil {
+		if err := e.syncStates.RecordSyncSuccess(ctx, market, current.Time, now); err != nil {
+			return fmt.Errorf("record market sync success: %w", err)
+		}
+	}
 	if len(history) < e.cfg.AIHistoryMinPoints {
-		if err := e.audits.RecordRule(ctx, RuleDecisionRecord{
-			Market: market, UserAddress: snapshot.UserAddress, ObservedAt: current.Time,
-			Action: "hold", Reason: "insufficient market history",
-			HistoryPoints: len(history), Outcome: "history_insufficient",
-		}); err != nil {
+		if err := e.recordRuleForSnapshots(ctx, snapshots, market, current.Time, "history_insufficient", "insufficient market history", len(history)); err != nil {
 			return fmt.Errorf("record insufficient-history hold: %w", err)
 		}
 		slog.Info("ai-managed forced hold for insufficient market history",
-			"game_id", snapshot.GameID,
-			"contract", snapshot.ContractAddress,
+			"game_id", first.GameID,
+			"contract", first.ContractAddress,
 			"points", len(history),
 			"required", e.cfg.AIHistoryMinPoints,
 			"decision", "hold",
@@ -502,7 +535,11 @@ func (e *Engine) process(ctx context.Context, snapshot EntrySnapshot) error {
 
 	quote, err := e.quotes.FetchQuote()
 	if err != nil {
-		return fmt.Errorf("fetch gold quote: %w", err)
+		if auditErr := e.recordRuleForSnapshots(ctx, snapshots, market, current.Time, "quote_unavailable", err.Error(), len(history)); auditErr != nil {
+			return fmt.Errorf("record quote-unavailable hold: %w", auditErr)
+		}
+		slog.Warn("ai-managed forced hold because quote is unavailable", "game_id", first.GameID, "contract", first.ContractAddress, "error", err)
+		return nil
 	}
 
 	researchHistory := make([]ipfs.HistoryPoint, len(history))
@@ -521,6 +558,15 @@ func (e *Engine) process(ctx context.Context, snapshot EntrySnapshot) error {
 	if err != nil {
 		return fmt.Errorf("ai decide: %w", err)
 	}
+	for _, snapshot := range snapshots {
+		if err := e.applyDecision(ctx, snapshot, market, current.Time, len(history), decision, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *Engine) applyDecision(ctx context.Context, snapshot EntrySnapshot, market MarketIdentity, observedAt int64, historyPoints int, decision *Decision, now time.Time) error {
 	option, ok := decision.Option()
 	action := "hold"
 	if ok && option == 0 {
@@ -529,9 +575,9 @@ func (e *Engine) process(ctx context.Context, snapshot EntrySnapshot) error {
 		action = "buy_no"
 	}
 	auditID, err := e.audits.CreatePending(ctx, ModelDecisionRecord{
-		Market: market, UserAddress: snapshot.UserAddress, ObservedAt: current.Time,
+		Market: market, UserAddress: snapshot.UserAddress, ObservedAt: observedAt,
 		Action: action, Confidence: decision.Confidence, Reason: decision.Reason,
-		HistoryPoints: len(history),
+		HistoryPoints: historyPoints,
 	})
 	if err != nil {
 		return fmt.Errorf("record pending AI decision: %w", err)
@@ -571,6 +617,14 @@ func (e *Engine) process(ctx context.Context, snapshot EntrySnapshot) error {
 	if err != nil {
 		return fmt.Errorf("invalid ai buy amount: %w", err)
 	}
+	client, err := e.openValidatedClient(snapshot)
+	if err != nil {
+		if auditErr := e.audits.Finalize(ctx, auditID, "trade_failed", "", err.Error()); auditErr != nil {
+			return fmt.Errorf("init trade client: %v; finalize failed trade: %w", err, auditErr)
+		}
+		return fmt.Errorf("init trade client: %w", err)
+	}
+	defer client.Close()
 	tx, err := client.BuyShares(ctx, snapshot.GameID, option, value)
 	if err != nil {
 		if auditErr := e.audits.Finalize(ctx, auditID, "trade_failed", "", err.Error()); auditErr != nil {
@@ -590,6 +644,77 @@ func (e *Engine) process(ctx context.Context, snapshot EntrySnapshot) error {
 		"confidence", decision.Confidence,
 		"tx", tx,
 	)
+	return nil
+}
+
+func (e *Engine) currentTime() time.Time {
+	if e.now != nil {
+		return e.now()
+	}
+	return time.Now()
+}
+
+func (e *Engine) openReadClient(snapshots []EntrySnapshot) (managedChain, EntrySnapshot, error) {
+	var lastErr error
+	for _, snapshot := range snapshots {
+		client, err := e.openValidatedClient(snapshot)
+		if err == nil {
+			return client, snapshot, nil
+		}
+		lastErr = err
+		e.store.RecordError(snapshot.GameID, snapshot.UserAddress, err)
+		slog.Warn("ai-managed skipped invalid managed entry", "game_id", snapshot.GameID, "user", snapshot.UserAddress, "error", err)
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no managed entries")
+	}
+	return nil, EntrySnapshot{}, lastErr
+}
+
+func (e *Engine) openValidatedClient(snapshot EntrySnapshot) (managedChain, error) {
+	privateKey, err := e.store.DecryptPrivateKey(snapshot)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt private key: %w", err)
+	}
+	client, err := e.newChain(privateKey, snapshot.ContractAddress)
+	if err != nil {
+		return nil, fmt.Errorf("init user chain client: %w", err)
+	}
+	if !strings.EqualFold(client.WalletAddress(), snapshot.UserAddress) {
+		client.Close()
+		e.store.Disable(snapshot.GameID, snapshot.UserAddress)
+		return nil, errors.New("private key no longer matches managed user")
+	}
+	return client, nil
+}
+
+func (e *Engine) recordSyncFailureAndHold(ctx context.Context, snapshots []EntrySnapshot, market MarketIdentity, observedAt time.Time, err error) error {
+	if e.syncStates != nil {
+		if _, syncErr := e.syncStates.RecordSyncFailure(ctx, market, observedAt, err); syncErr != nil {
+			return fmt.Errorf("record market sync failure: %w", syncErr)
+		}
+	}
+	return e.recordRuleForSnapshots(ctx, snapshots, market, observedAt.Unix(), "sync_failed", err.Error(), 0)
+}
+
+func (e *Engine) recordMetadataFailureAndHold(ctx context.Context, snapshots []EntrySnapshot, market MarketIdentity, observedAt time.Time, err error) error {
+	if e.syncStates != nil {
+		if _, syncErr := e.syncStates.RecordSyncFailure(ctx, market, observedAt, err); syncErr != nil {
+			return fmt.Errorf("record metadata sync failure: %w", syncErr)
+		}
+	}
+	return e.recordRuleForSnapshots(ctx, snapshots, market, observedAt.Unix(), "metadata_unavailable", err.Error(), 0)
+}
+
+func (e *Engine) recordRuleForSnapshots(ctx context.Context, snapshots []EntrySnapshot, market MarketIdentity, observedAt int64, outcome, reason string, historyPoints int) error {
+	for _, snapshot := range snapshots {
+		if err := e.audits.RecordRule(ctx, RuleDecisionRecord{
+			Market: market, UserAddress: snapshot.UserAddress, ObservedAt: observedAt,
+			Action: "hold", Reason: reason, HistoryPoints: historyPoints, Outcome: outcome,
+		}); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

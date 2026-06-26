@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -196,22 +197,31 @@ func TestAIManagedEndpointEnablesQueriesAndDisables(t *testing.T) {
 }
 
 type fakeManagedChain struct {
-	wallet    string
-	info      *chain.GameInfo
-	extra     *chain.GameExtraData
-	extraErr  error
-	sendCount int
-	option    int
-	value     *big.Int
-	buyErr    error
+	wallet     string
+	info       *chain.GameInfo
+	infoErr    error
+	extra      *chain.GameExtraData
+	extraErr   error
+	sendCount  int
+	option     int
+	value      *big.Int
+	buyErr     error
+	onGetInfo  func()
+	onGetExtra func()
 }
 
 func (f *fakeManagedChain) WalletAddress() string { return f.wallet }
 func (f *fakeManagedChain) Close()                {}
 func (f *fakeManagedChain) GetGameInfo(context.Context, int) (*chain.GameInfo, error) {
-	return f.info, nil
+	if f.onGetInfo != nil {
+		f.onGetInfo()
+	}
+	return f.info, f.infoErr
 }
 func (f *fakeManagedChain) GetGameExtraData(context.Context, int, string) (*chain.GameExtraData, error) {
+	if f.onGetExtra != nil {
+		f.onGetExtra()
+	}
 	return f.extra, f.extraErr
 }
 func (f *fakeManagedChain) BuyShares(_ context.Context, _ int, option int, value *big.Int) (string, error) {
@@ -244,6 +254,44 @@ type staticDecision struct {
 	research *ResearchContext
 }
 
+type countingQuote struct {
+	mu    sync.Mutex
+	value *oracle.Quote
+	calls int
+}
+
+func (q *countingQuote) FetchQuote() (*oracle.Quote, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.calls++
+	return q.value, nil
+}
+
+func (q *countingQuote) Count() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.calls
+}
+
+type countingDecision struct {
+	mu    sync.Mutex
+	value *Decision
+	calls int
+}
+
+func (d *countingDecision) Decide(context.Context, *chain.GameInfo, *chain.GameExtraData, *ipfs.Metadata, *oracle.Quote, *ResearchContext) (*Decision, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.calls++
+	return d.value, nil
+}
+
+func (d *countingDecision) Count() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.calls
+}
+
 type recordingDecisionRepository struct {
 	rules       []RuleDecisionRecord
 	pending     []ModelDecisionRecord
@@ -251,6 +299,46 @@ type recordingDecisionRepository struct {
 	recordErr   error
 	createErr   error
 	finalizeErr error
+}
+
+type recordingSyncStateRepository struct {
+	mu        sync.Mutex
+	state     MarketSyncState
+	failures  int
+	successes int
+}
+
+func (r *recordingSyncStateRepository) GetSyncState(_ context.Context, _ MarketIdentity) (MarketSyncState, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.state, nil
+}
+
+func (r *recordingSyncStateRepository) RecordSyncSuccess(_ context.Context, market MarketIdentity, observedAt int64, syncedAt time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.successes++
+	r.state = MarketSyncState{
+		Market:         market,
+		LastSuccessAt:  syncedAt,
+		LastObservedAt: observedAt,
+		Status:         syncStatusOK,
+	}
+	return nil
+}
+
+func (r *recordingSyncStateRepository) RecordSyncFailure(_ context.Context, market MarketIdentity, failedAt time.Time, err error) (MarketSyncState, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.failures++
+	r.state = MarketSyncState{
+		Market:     market,
+		FailCount:  r.failures,
+		NextPollAt: nextSyncPollTime(failedAt, r.failures),
+		LastError:  err.Error(),
+		Status:     syncStatusFailed,
+	}
+	return r.state, nil
 }
 
 type decisionFinalization struct {
@@ -491,13 +579,22 @@ func TestEngineReturnsGameExtraDataErrorsBeforeDownstreamCalls(t *testing.T) {
 		extraErr: errors.New("chain unavailable"),
 	}
 	engine := newTestEngine(store, client, &Decision{Action: "buy_yes", Confidence: 1})
-	err := engine.process(context.Background(), snapshot)
-	if err == nil || !strings.Contains(err.Error(), "get game extra data") {
-		t.Fatalf("unexpected error: %v", err)
+	syncStates := &recordingSyncStateRepository{}
+	engine.syncStates = syncStates
+
+	if err := engine.process(context.Background(), snapshot); err != nil {
+		t.Fatal(err)
 	}
 	if engine.quotes.(*staticQuote).calls != 0 || engine.decisions.(*staticDecision).calls != 0 || client.sendCount != 0 {
 		t.Fatalf("failed chain read reached downstream services: quote=%d decision=%d sends=%d",
 			engine.quotes.(*staticQuote).calls, engine.decisions.(*staticDecision).calls, client.sendCount)
+	}
+	rules := engine.audits.(*recordingDecisionRepository).rules
+	if len(rules) != 1 || rules[0].Outcome != "sync_failed" || rules[0].Action != "hold" {
+		t.Fatalf("chain read failure was not converted to rule HOLD: %+v", rules)
+	}
+	if syncStates.failures != 1 || syncStates.state.FailCount != 1 || !strings.Contains(syncStates.state.LastError, "chain unavailable") {
+		t.Fatalf("sync failure state was not recorded: %+v", syncStates.state)
 	}
 }
 
@@ -601,6 +698,83 @@ func TestEngineSharesOnePollPointAcrossUsersOfSameMarket(t *testing.T) {
 	}
 	if engine.decisions.(*staticDecision).calls != 0 {
 		t.Fatal("shared single point unexpectedly passed the history gate")
+	}
+}
+
+func TestEngineScanOnceSharesMarketResearchAcrossManagedUsers(t *testing.T) {
+	store, err := NewStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const contract = "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
+	for i := 0; i < 2; i++ {
+		key, err := crypto.GenerateKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		user := crypto.PubkeyToAddress(key.PublicKey).Hex()
+		if err := store.Enable(SetRequest{
+			GameID:          1,
+			UserAddress:     user,
+			Enabled:         true,
+			ContractAddress: contract,
+			PrivateKey:      hexutil.Encode(crypto.FromECDSA(key)),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var mu sync.Mutex
+	infoCalls := 0
+	extraCalls := 0
+	decisions := &countingDecision{value: &Decision{Action: "hold", Confidence: 1, Reason: "shared"}}
+	quotes := &countingQuote{value: &oracle.Quote{PriceUSD: 2300, QuoteSource: "test"}}
+	engine := newTestEngine(store, &fakeManagedChain{}, &Decision{Action: "hold", Confidence: 1})
+	engine.cfg.AIHistoryMinPoints = 1
+	engine.metadata = staticMetadata{value: &ipfs.Metadata{}}
+	engine.quotes = quotes
+	engine.decisions = decisions
+	engine.newChain = func(privateKey, _ string) (managedChain, error) {
+		wallet, err := walletAddressFromPrivateKey(privateKey)
+		if err != nil {
+			return nil, err
+		}
+		return &fakeManagedChain{
+			wallet: wallet,
+			info: &chain.GameInfo{ID: 1, TotalPool: big.NewInt(100),
+				DeadlineRaw: time.Now().Add(time.Hour).UnixMilli()},
+			extra: &chain.GameExtraData{VirtualReservesNOYES: []*big.Int{big.NewInt(40), big.NewInt(60)}},
+			onGetInfo: func() {
+				mu.Lock()
+				defer mu.Unlock()
+				infoCalls++
+			},
+			onGetExtra: func() {
+				mu.Lock()
+				defer mu.Unlock()
+				extraCalls++
+			},
+		}, nil
+	}
+
+	engine.scanOnce(context.Background())
+
+	mu.Lock()
+	gotInfoCalls := infoCalls
+	gotExtraCalls := extraCalls
+	mu.Unlock()
+	if gotInfoCalls != 1 || gotExtraCalls != 1 {
+		t.Fatalf("market data was not shared across users: info=%d extra=%d", gotInfoCalls, gotExtraCalls)
+	}
+	if quotes.Count() != 1 || decisions.Count() != 1 {
+		t.Fatalf("research was not shared across users: quote=%d decision=%d", quotes.Count(), decisions.Count())
+	}
+	history, err := engine.histories.List(context.Background(), MarketIdentity{ContractAddress: contract, GameID: 1}, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("market history should be written once per scan: %+v", history)
 	}
 }
 

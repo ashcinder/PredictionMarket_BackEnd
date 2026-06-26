@@ -38,7 +38,7 @@ const (
 	confidence, reason, history_points, outcome)
 	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	finalizeDecisionSQL = `UPDATE ai_decisions SET outcome=?, tx_hash=?, error_summary=? WHERE id=?`
-	pruneHistorySQL = `DELETE FROM market_history
+	pruneHistorySQL     = `DELETE FROM market_history
 	WHERE contract_address = ? AND game_id = ?
 	AND observed_at NOT IN (
 		SELECT * FROM (
@@ -47,6 +47,19 @@ const (
 			ORDER BY observed_at DESC LIMIT ?
 		) keep
 	)`
+	selectSyncStateSQL = `SELECT last_success_at, last_observed_at, fail_count, next_poll_at, last_error, status
+FROM market_sync_state WHERE contract_address=? AND game_id=?`
+	upsertSyncSuccessSQL = `INSERT INTO market_sync_state
+(contract_address, game_id, last_success_at, last_observed_at, fail_count, next_poll_at, last_error, status)
+VALUES (?, ?, ?, ?, 0, ?, '', ?)
+ON DUPLICATE KEY UPDATE last_success_at=VALUES(last_success_at),
+last_observed_at=VALUES(last_observed_at), fail_count=0, next_poll_at=VALUES(next_poll_at),
+last_error='', status=VALUES(status)`
+	upsertSyncFailureSQL = `INSERT INTO market_sync_state
+(contract_address, game_id, last_success_at, last_observed_at, fail_count, next_poll_at, last_error, status)
+VALUES (?, ?, NULL, 0, ?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE fail_count=VALUES(fail_count), next_poll_at=VALUES(next_poll_at),
+last_error=VALUES(last_error), status=VALUES(status)`
 )
 
 type MySQLRepository struct {
@@ -164,6 +177,83 @@ func (r *MySQLRepository) list(ctx context.Context, market MarketIdentity, limit
 	ctx, cancel := context.WithTimeout(ctx, repositoryOperationTimeout)
 	defer cancel()
 	return queryHistory(ctx, r.db, normalizeAddress(market.ContractAddress), market.GameID, limit)
+}
+
+func (r *MySQLRepository) GetSyncState(ctx context.Context, market MarketIdentity) (MarketSyncState, error) {
+	if err := validateMarketAndLimit(market, 1); err != nil {
+		return MarketSyncState{}, err
+	}
+	contract := normalizeAddress(market.ContractAddress)
+	ctx, cancel := context.WithTimeout(ctx, repositoryOperationTimeout)
+	defer cancel()
+	var lastSuccess sql.NullTime
+	var lastObserved sql.NullInt64
+	var nextPoll sql.NullTime
+	state := MarketSyncState{Market: MarketIdentity{ContractAddress: contract, GameID: market.GameID}}
+	err := r.db.QueryRowContext(ctx, selectSyncStateSQL, contract, market.GameID).Scan(
+		&lastSuccess, &lastObserved, &state.FailCount, &nextPoll, &state.LastError, &state.Status,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return state, nil
+	}
+	if err != nil {
+		return MarketSyncState{}, fmt.Errorf("query market sync state: %w", err)
+	}
+	if lastSuccess.Valid {
+		state.LastSuccessAt = lastSuccess.Time
+	}
+	if lastObserved.Valid {
+		state.LastObservedAt = lastObserved.Int64
+	}
+	if nextPoll.Valid {
+		state.NextPollAt = nextPoll.Time
+	}
+	return state, nil
+}
+
+func (r *MySQLRepository) RecordSyncSuccess(ctx context.Context, market MarketIdentity, observedAt int64, syncedAt time.Time) error {
+	if err := validateMarketAndLimit(market, 1); err != nil {
+		return err
+	}
+	if observedAt <= 0 {
+		return errors.New("observed_at must be positive")
+	}
+	contract := normalizeAddress(market.ContractAddress)
+	ctx, cancel := context.WithTimeout(ctx, repositoryOperationTimeout)
+	defer cancel()
+	if _, err := r.db.ExecContext(ctx, upsertSyncSuccessSQL,
+		contract, market.GameID, syncedAt.UTC(), observedAt, syncedAt.UTC(), syncStatusOK,
+	); err != nil {
+		return fmt.Errorf("record market sync success: %w", err)
+	}
+	return nil
+}
+
+func (r *MySQLRepository) RecordSyncFailure(ctx context.Context, market MarketIdentity, failedAt time.Time, syncErr error) (MarketSyncState, error) {
+	if err := validateMarketAndLimit(market, 1); err != nil {
+		return MarketSyncState{}, err
+	}
+	if syncErr == nil {
+		syncErr = errors.New("sync failed")
+	}
+	state, err := r.GetSyncState(ctx, market)
+	if err != nil {
+		return MarketSyncState{}, err
+	}
+	state.FailCount++
+	state.Status = syncStatusFailed
+	state.NextPollAt = nextSyncPollTime(failedAt.UTC(), state.FailCount)
+	state.LastError = sanitizeErrorSummary(syncErr.Error())
+	state.Market = MarketIdentity{ContractAddress: normalizeAddress(market.ContractAddress), GameID: market.GameID}
+
+	ctx, cancel := context.WithTimeout(ctx, repositoryOperationTimeout)
+	defer cancel()
+	if _, err := r.db.ExecContext(ctx, upsertSyncFailureSQL,
+		state.Market.ContractAddress, state.Market.GameID, state.FailCount, state.NextPollAt.UTC(), state.LastError, syncStatusFailed,
+	); err != nil {
+		return MarketSyncState{}, fmt.Errorf("record market sync failure: %w", err)
+	}
+	return state, nil
 }
 
 type historyQueryer interface {
