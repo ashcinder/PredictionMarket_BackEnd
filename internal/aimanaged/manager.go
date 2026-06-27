@@ -243,17 +243,9 @@ func (s *Server) handleSet(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, "invalid contract_address")
 			return
 		}
-		wallet, err := walletAddressFromPrivateKey(req.PrivateKey)
-		if err != nil {
-			writeJSONError(w, http.StatusBadRequest, "invalid private_key")
-			return
-		}
-		if !strings.EqualFold(wallet, req.UserAddress) {
-			writeJSONError(w, http.StatusBadRequest, "private_key does not match user_address")
-			return
-		}
+		// Store.Enable validates the private key format and address match.
 		if err := s.store.Enable(req); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	} else {
@@ -273,7 +265,18 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]bool{"enabled": enabled})
 }
 
+// Enable validates the private key, confirms it derives the claimed user address,
+// and encrypts the key into the in-memory store. Both the legacy /api/gold/ai-managed
+// and v1 /api/v1/gold/ai-managed endpoints share this single validation path.
 func (s *Store) Enable(req SetRequest) error {
+	wallet, err := walletAddressFromPrivateKey(req.PrivateKey)
+	if err != nil {
+		return fmt.Errorf("invalid private_key: %w", err)
+	}
+	if !strings.EqualFold(wallet, req.UserAddress) {
+		return fmt.Errorf("private_key does not match user_address")
+	}
+
 	nonce := make([]byte, s.aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
 		return err
@@ -477,8 +480,7 @@ func (e *Engine) processMarket(ctx context.Context, snapshots []EntrySnapshot) e
 
 	meta, err := e.metadata.DownloadMetadata(info.IPFSCID)
 	if err != nil {
-		slog.Warn("ai-managed metadata unavailable", "game_id", first.GameID, "cid", info.IPFSCID, "error", err)
-		return e.recordMetadataFailureAndHold(ctx, snapshots, market, now, err)
+		slog.Warn("ai-managed metadata unavailable, continuing with empty metadata", "game_id", first.GameID, "cid", info.IPFSCID, "error", err)
 	}
 	if meta == nil {
 		meta = &ipfs.Metadata{}
@@ -560,7 +562,9 @@ func (e *Engine) processMarket(ctx context.Context, snapshots []EntrySnapshot) e
 	}
 	for _, snapshot := range snapshots {
 		if err := e.applyDecision(ctx, snapshot, market, current.Time, len(history), decision, now); err != nil {
-			return err
+			e.store.RecordError(snapshot.GameID, snapshot.UserAddress, err)
+			slog.Warn("ai-managed apply decision failed for user, continuing with remaining users",
+				"game_id", snapshot.GameID, "user", snapshot.UserAddress, "error", err)
 		}
 	}
 	return nil
