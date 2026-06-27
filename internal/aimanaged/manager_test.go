@@ -816,11 +816,17 @@ func TestEnginePendingAuditFailurePreventsTrade(t *testing.T) {
 	engine := newTestEngine(store, client, &Decision{Action: "buy_yes", Confidence: 1})
 	engine.audits = &recordingDecisionRepository{createErr: errors.New("audit unavailable")}
 	err := engine.process(context.Background(), snapshot)
-	if err == nil || !strings.Contains(err.Error(), "record pending AI decision") {
-		t.Fatalf("unexpected error: %v", err)
+	// Per-user errors (including audit failures) are recorded in the store
+	// and do not propagate as processMarket errors.
+	if err != nil {
+		t.Fatalf("per-user audit failure should not propagate: %v", err)
 	}
 	if client.sendCount != 0 {
 		t.Fatalf("trade was sent without audit record: %d", client.sendCount)
+	}
+	entries := store.Entries()
+	if len(entries) != 1 || !strings.Contains(entries[0].LastError, "record pending AI decision") {
+		t.Fatalf("audit failure was not recorded in store: %+v", entries)
 	}
 }
 
@@ -835,8 +841,14 @@ func TestEngineTradeFailureIsAudited(t *testing.T) {
 	}
 	engine := newTestEngine(store, client, &Decision{Action: "buy_yes", Confidence: 1})
 	err := engine.process(context.Background(), snapshot)
-	if err == nil || !strings.Contains(err.Error(), "broadcast failed") {
-		t.Fatalf("unexpected error: %v", err)
+	// Per-user trade failure no longer propagates as a processMarket error;
+	// the error is recorded per-user in the store and audited.
+	if err != nil {
+		t.Fatalf("per-user trade failure should not propagate: %v", err)
+	}
+	entries := store.Entries()
+	if len(entries) != 1 || !strings.Contains(entries[0].LastError, "broadcast failed") {
+		t.Fatalf("trade failure was not recorded in store: %+v", entries)
 	}
 	finalized := engine.audits.(*recordingDecisionRepository).finalized
 	if client.sendCount != 1 || len(finalized) != 1 || finalized[0].outcome != "trade_failed" ||
@@ -856,7 +868,16 @@ func TestEngineAuditFailureAfterSuccessfulBroadcastDoesNotResend(t *testing.T) {
 	engine := newTestEngine(store, client, &Decision{Action: "buy_yes", Confidence: 1})
 	engine.audits = &recordingDecisionRepository{finalizeErr: errors.New("audit update failed")}
 	err := engine.process(context.Background(), snapshot)
-	if err == nil || !strings.Contains(err.Error(), "audit update failed") || client.sendCount != 1 {
-		t.Fatalf("error=%v sends=%d", err, client.sendCount)
+	// Per-user audit finalization failure is recorded but does not propagate.
+	if err != nil {
+		t.Fatalf("audit finalization failure should not propagate: %v", err)
+	}
+	// Trade was sent exactly once — it was NOT resent.
+	if client.sendCount != 1 {
+		t.Fatalf("expected 1 send, got sends=%d", client.sendCount)
+	}
+	entries := store.Entries()
+	if len(entries) != 1 || !strings.Contains(entries[0].LastError, "audit update failed") {
+		t.Fatalf("audit finalization failure was not recorded in store: %+v", entries)
 	}
 }
