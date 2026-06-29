@@ -3,6 +3,7 @@ package apiv1
 import (
 	"encoding/json"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"strings"
 	"time"
@@ -92,10 +93,38 @@ func (s *Server) handleSyncTrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Record the trade (best-effort, non-fatal).
-	// Chain state and user position updates below are more important for
-	// the read path — a missing trade record is a minor audit gap, but
-	// missing chain state breaks the entire cache layer.
+	// 1. Validate and parse post-trade pool fields BEFORE any DB writes.
+	//    Contract: if any pool field is present, all three must be present AND
+	//    parse to valid decimal integers. Rejection must happen here so that
+	//    partial/illegal requests produce zero DB side effects (no trade record,
+	//    no chain-state write).
+	var poolTotal, poolYes, poolNo *big.Int
+	hasPool := req.TotalPoolAfter != "" || req.ReserveYesAfter != "" || req.ReserveNoAfter != ""
+	if hasPool {
+		if req.TotalPoolAfter == "" || req.ReserveYesAfter == "" || req.ReserveNoAfter == "" {
+			writeJSONError(w, http.StatusBadRequest,
+				"all three pool fields (total_pool_after, reserve_yes_after, reserve_no_after) are required when any is present")
+			return
+		}
+		var ok bool
+		poolTotal, ok = parseBigIntStrChecked(req.TotalPoolAfter)
+		if !ok {
+			writeJSONError(w, http.StatusBadRequest, "total_pool_after is not a valid decimal integer")
+			return
+		}
+		poolYes, ok = parseBigIntStrChecked(req.ReserveYesAfter)
+		if !ok {
+			writeJSONError(w, http.StatusBadRequest, "reserve_yes_after is not a valid decimal integer")
+			return
+		}
+		poolNo, ok = parseBigIntStrChecked(req.ReserveNoAfter)
+		if !ok {
+			writeJSONError(w, http.StatusBadRequest, "reserve_no_after is not a valid decimal integer")
+			return
+		}
+	}
+
+	// 2. Record the trade (best-effort, non-fatal).
 	trade := &tradeRow{
 		GameID:          req.GameID,
 		ContractAddress: req.ContractAddr,
@@ -115,18 +144,12 @@ func (s *Server) handleSyncTrade(w http.ResponseWriter, r *http.Request) {
 		// Non-fatal — don't return, still update chain state and positions below.
 	}
 
-	// 2. Update chain state cache from post-trade fields.
-	// The DApp sends these after every buy/sell/claim/resolve.
-	if req.TotalPoolAfter != "" || req.ReserveYesAfter != "" || req.ReserveNoAfter != "" {
-		state := &chainStateRow{
-			GameID:     req.GameID,
-			TotalPool:  parseBigIntStr(req.TotalPoolAfter),
-			ReserveYes: parseBigIntStr(req.ReserveYesAfter),
-			ReserveNo:  parseBigIntStr(req.ReserveNoAfter),
-			UpdatedAt:  time.Now().UTC().Format(time.RFC3339),
-		}
-		if err := s.chainStates.UpsertChainState(r.Context(), state); err != nil {
-			slog.Warn("apiv1: cascade update chain state failed", "game_id", req.GameID, "error", err)
+	// 3. Update chain state cache from post-trade pool fields.
+	//    Uses pre-validated pool values — UpsertChainStatePool is guaranteed
+	//    to receive non-nil *big.Int values here.
+	if hasPool {
+		if err := s.chainStates.UpsertChainStatePool(r.Context(), req.GameID, poolTotal, poolYes, poolNo); err != nil {
+			slog.Warn("apiv1: cascade update chain state pool failed", "game_id", req.GameID, "error", err)
 		}
 	}
 
@@ -135,8 +158,8 @@ func (s *Server) handleSyncTrade(w http.ResponseWriter, r *http.Request) {
 		pos := &userPositionRow{
 			UserAddress: req.UserAddress,
 			GameID:      req.GameID,
-			MySharesYes:  parseBigIntStr(req.MySharesYesAfter),
-			MySharesNo:   parseBigIntStr(req.MySharesNoAfter),
+			MySharesYes: parseBigIntStr(req.MySharesYesAfter),
+			MySharesNo:  parseBigIntStr(req.MySharesNoAfter),
 		}
 		if err := s.positions.UpsertUserPosition(r.Context(), pos); err != nil {
 			slog.Warn("apiv1: cascade update user position failed", "game_id", req.GameID, "user", req.UserAddress, "error", err)

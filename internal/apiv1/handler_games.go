@@ -139,13 +139,11 @@ func (s *Server) handleSyncGame(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Also upsert deadline_sec into gold_chain_states when explicitly provided.
+	// Uses UpsertChainStateDeadline (sparse deadline-only UPSERT) so that
+	// pool reserves and status fields already written by the sampler or
+	// /chain-state/sync are preserved — no read-merge-write needed.
 	if deadlineSec > 0 {
-		state := &chainStateRow{
-			GameID:      gameID,
-			DeadlineSec: deadlineSec,
-			UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
-		}
-		if err := s.chainStates.UpsertChainState(r.Context(), state); err != nil {
+		if err := s.chainStates.UpsertChainStateDeadline(r.Context(), gameID, deadlineSec); err != nil {
 			slog.Warn("apiv1: sync game - upsert chain state deadline failed", "game_id", gameID, "error", err)
 		}
 	}

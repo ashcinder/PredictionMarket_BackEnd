@@ -139,8 +139,8 @@ func (s *Server) handleSyncChainState(w http.ResponseWriter, r *http.Request) {
 		pos := &userPositionRow{
 			UserAddress: req.UserAddress,
 			GameID:      gameID,
-			MySharesYes:  parseBigIntStr(req.MySharesYes),
-			MySharesNo:   parseBigIntStr(req.MySharesNo),
+			MySharesYes: parseBigIntStr(req.MySharesYes),
+			MySharesNo:  parseBigIntStr(req.MySharesNo),
 		}
 		if err := s.positions.UpsertUserPosition(r.Context(), pos); err != nil {
 			slog.Warn("apiv1: sync chain state upsert position failed", "game_id", gameID, "user", req.UserAddress, "error", err)
@@ -167,4 +167,3 @@ func (s *Server) buildChainStateDTO(state *chainStateRow) ChainStateDTO {
 		UpdatedAt:     state.UpdatedAt,
 	}
 }
-

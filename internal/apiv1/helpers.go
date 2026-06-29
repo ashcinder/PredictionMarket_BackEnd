@@ -115,6 +115,22 @@ func parseBigIntStr(s string) *big.Int {
 	return v
 }
 
+// parseBigIntStrChecked parses a non-empty decimal string into *big.Int.
+// Returns (nil, false) on empty or invalid input — used for pre-validating
+// pool fields before any DB writes so that illegal values are rejected with
+// a 400 before RecordTrade or UpsertChainState are called.
+func parseBigIntStrChecked(s string) (*big.Int, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, false
+	}
+	v, ok := new(big.Int).SetString(s, 10)
+	if !ok {
+		return nil, false
+	}
+	return v, true
+}
+
 // normalizeAddress returns a checksum-normalised lowercase hex address.
 func normalizeAddress(value string) string {
 	return strings.ToLower(common.HexToAddress(value).Hex())

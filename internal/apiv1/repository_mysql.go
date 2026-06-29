@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +60,20 @@ const (
 		is_refunded=VALUES(is_refunded), winning_option=VALUES(winning_option),
 		deadline_sec=VALUES(deadline_sec), reserve_yes=VALUES(reserve_yes),
 		reserve_no=VALUES(reserve_no)`
+	upsertChainStatePoolSQL = `INSERT INTO gold_chain_states
+		(game_id, total_pool, is_resolved, is_refunded, winning_option, deadline_sec,
+		reserve_yes, reserve_no)
+		VALUES (?, ?, 0, 0, 0, 0, ?, ?)
+		ON DUPLICATE KEY UPDATE
+		total_pool=VALUES(total_pool),
+		reserve_yes=VALUES(reserve_yes),
+		reserve_no=VALUES(reserve_no)`
+	upsertChainStateDeadlineSQL = `INSERT INTO gold_chain_states
+		(game_id, total_pool, is_resolved, is_refunded, winning_option, deadline_sec,
+		reserve_yes, reserve_no)
+		VALUES (?, 0, 0, 0, 0, ?, 0, 0)
+		ON DUPLICATE KEY UPDATE
+		deadline_sec=VALUES(deadline_sec)`
 
 	// gold_user_positions
 	selectUserPositionSQL = `SELECT user_address, game_id, my_shares_yes, my_shares_no, updated_at
@@ -264,7 +279,7 @@ func (r *MySQLRepository) upsertGame(ctx context.Context, game *gameRow) (int, e
 		game.AvatarURL, game.DetailedInfo,
 		game.OptionYes, game.OptionNo,
 		normalizeAddress(game.CreatorAddress),
-			game.DeadlineSec,
+		game.DeadlineSec,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("upsert game %d: %w", game.GameID, err)
@@ -370,6 +385,57 @@ func (r *MySQLRepository) upsertChainState(ctx context.Context, state *chainStat
 	)
 	if err != nil {
 		return fmt.Errorf("upsert chain state %d: %w", state.GameID, err)
+	}
+	return nil
+}
+
+// UpsertChainStatePool performs a sparse upsert that only writes pool reserves
+// (total_pool, reserve_yes, reserve_no). On INSERT (first-time row), deadline_sec
+// and status fields default to zero — the correct initial state. On DUPLICATE KEY
+// UPDATE, only the three pool columns are touched; deadline_sec, is_resolved,
+// is_refunded, and winning_option are left unchanged.
+func (r *MySQLRepository) UpsertChainStatePool(ctx context.Context, gameID int, totalPool, reserveYes, reserveNo *big.Int) error {
+	err := r.upsertChainStatePool(ctx, gameID, totalPool, reserveYes, reserveNo)
+	if err != nil && r.retryAfterRecover(err, "gold_chain_states") {
+		err = r.upsertChainStatePool(ctx, gameID, totalPool, reserveYes, reserveNo)
+	}
+	return err
+}
+
+func (r *MySQLRepository) upsertChainStatePool(ctx context.Context, gameID int, totalPool, reserveYes, reserveNo *big.Int) error {
+	ctx, cancel := context.WithTimeout(ctx, repoTimeout)
+	defer cancel()
+	_, err := r.db.ExecContext(ctx, upsertChainStatePoolSQL,
+		gameID,
+		bigIntToDBBytes(totalPool),
+		bigIntToDBBytes(reserveYes),
+		bigIntToDBBytes(reserveNo),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert chain state pool %d: %w", gameID, err)
+	}
+	return nil
+}
+
+// UpsertChainStateDeadline performs a sparse upsert that only writes deadline_sec.
+// On INSERT (first-time row), pool and status fields default to zero — the correct
+// initial state. On DUPLICATE KEY UPDATE, only deadline_sec is touched; all other
+// columns (total_pool, reserves, is_resolved, is_refunded, winning_option) are
+// left unchanged.
+func (r *MySQLRepository) UpsertChainStateDeadline(ctx context.Context, gameID int, deadlineSec int64) error {
+	err := r.upsertChainStateDeadline(ctx, gameID, deadlineSec)
+	if err != nil && r.retryAfterRecover(err, "gold_chain_states") {
+		err = r.upsertChainStateDeadline(ctx, gameID, deadlineSec)
+	}
+	return err
+}
+
+func (r *MySQLRepository) upsertChainStateDeadline(ctx context.Context, gameID int, deadlineSec int64) error {
+	ctx, cancel := context.WithTimeout(ctx, repoTimeout)
+	defer cancel()
+	_, err := r.db.ExecContext(ctx, upsertChainStateDeadlineSQL, gameID, deadlineSec)
+	if err != nil {
+		return fmt.Errorf("upsert chain state deadline %d: %w", gameID, err)
 	}
 	return nil
 }
