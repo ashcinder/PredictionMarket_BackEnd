@@ -123,6 +123,7 @@ func (s *Server) handleSyncChainState(w http.ResponseWriter, r *http.Request) {
 		IsResolved:    req.IsResolved,
 		IsRefunded:    req.IsRefunded,
 		WinningOption: req.WinningOption,
+		DeadlineSec:   req.DeadlineSec,
 		ReserveYes:    parseBigIntStr(req.ReserveYes),
 		ReserveNo:     parseBigIntStr(req.ReserveNo),
 		UpdatedAt:     time.Now().UTC().Format(time.RFC3339),

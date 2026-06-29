@@ -30,6 +30,8 @@ import com.example.brokerfi.R;
 import com.example.brokerfi.xc.agent.gold.model.data.GoldMarketRepository;
 import com.example.brokerfi.xc.agent.gold.viewmodel.GoldCreatePoolViewModel;
 
+import org.json.JSONObject;
+
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.text.SimpleDateFormat;
@@ -70,6 +72,13 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
         viewModel = new ViewModelProvider(this).get(GoldCreatePoolViewModel.class);
         initViews();
         setupTemplateUI();
+        
+        // Handle AI Parsed Data if available
+        String aiData = getIntent().getStringExtra("AI_PARSED_DATA");
+        if (aiData != null) {
+            applyAiParsedData(aiData);
+        }
+        
         observeViewModel();
     }
 
@@ -81,7 +90,7 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
         viewModel.getTxStatus().observe(this, status -> {
             if (status != null) {
                 Toast.makeText(this, status, Toast.LENGTH_LONG).show();
-                if (status.startsWith("Success")) finish();
+                if (status.startsWith("Success") || status.equals("Success")) finish();
             }
         });
         viewModel.getError().observe(this, err -> {
@@ -105,6 +114,7 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
         spinnerOperator = findViewById(R.id.spinner_operator);
         containerDirection = findViewById(R.id.container_direction);
         spinnerDirection = findViewById(R.id.spinner_direction);
+        
         btnSelectStartTime.setOnClickListener(v -> showDatePicker(true));
         btnSelectTime.setOnClickListener(v -> showDatePicker(false));
         btnSelectImage.setOnClickListener(v -> pickImage());
@@ -134,7 +144,7 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
         containerTechnical.setVisibility(View.GONE);
         containerDirection.setVisibility(View.GONE);
         etParam1.setVisibility(View.VISIBLE);
-        switch (templateType) {
+        switch (templateType != null ? templateType : "") {
             case "TYPE_PRICE":
                 tvTemplateDetail.setText("对比两个时间点的黄金价格。");
                 etParam1.setVisibility(View.GONE); containerDirection.setVisibility(View.VISIBLE);
@@ -142,16 +152,40 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
             case "TYPE_VOLATILITY": tvTemplateDetail.setText("博弈设定周期内的价格剧烈程度。"); etParam1.setHint("波动率门槛 (%)"); break;
             case "TYPE_VOLUME":
                 tvTemplateDetail.setText("博弈指定交易日的成交总量。");
-                containerTechnical.setVisibility(View.VISIBLE); findViewById(R.id.spinner_indicator).setVisibility(View.GONE);
+                containerTechnical.setVisibility(View.VISIBLE); spinnerIndicator.setVisibility(View.GONE);
                 updateOperatorSpinner(true); etParam1.setHint("目标成交量 (吨)"); btnSelectStartTime.setVisibility(View.GONE); btnSelectTime.setText("选择交易日: 未选择");
                 break;
             case "TYPE_TECHNICAL":
                 tvTemplateDetail.setText("博弈特定技术指标是否达到设定形态。");
-                containerTechnical.setVisibility(View.VISIBLE); findViewById(R.id.spinner_indicator).setVisibility(View.VISIBLE);
+                containerTechnical.setVisibility(View.VISIBLE); spinnerIndicator.setVisibility(View.VISIBLE);
                 updateOperatorSpinner(false); etParam1.setHint("触发数值 (如: 70)");
                 break;
             case "TYPE_TOUCH": tvTemplateDetail.setText("极值触碰博弈。"); etParam1.setHint("触碰价格 (USD)"); break;
             case "TYPE_RELATIVE": tvTemplateDetail.setText("博弈黄金相对于其他资产的收益率。"); etParam1.setHint("对比标的 (如: BTC)"); break;
+        }
+    }
+
+    private void applyAiParsedData(String jsonStr) {
+        try {
+            JSONObject json = new JSONObject(jsonStr);
+            // templateType already set from intent but can be overwritten
+            templateType = json.optString("type", templateType);
+            etParam1.setText(json.optString("param1", ""));
+            spinnerDirection.setSelection(json.optInt("directionIdx", 0));
+            spinnerIndicator.setSelection(json.optInt("indicatorIdx", 0));
+            spinnerOperator.setSelection(json.optInt("operatorIdx", 0));
+            etInitialLiquidity.setText(json.optString("liquidity", "100"));
+
+            int days = json.optInt("daysFromNow", 7);
+            endCalendar = Calendar.getInstance();
+            endCalendar.add(Calendar.DAY_OF_YEAR, days);
+            endSelected = true;
+            btnSelectTime.setText("截止: " + dateFormat.format(endCalendar.getTime()));
+
+            setupTemplateUI();
+            Toast.makeText(this, "✨ 已应用 AI 智能解析规则", Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            Log.e("GoldCreate", "Failed to apply AI data", e);
         }
     }
 
@@ -167,22 +201,6 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
         dialog.show();
     }
 
-    private void attemptShowSummary() {
-        String p1 = etParam1.getText().toString().trim();
-        if (p1.isEmpty() && !templateType.equals("TYPE_PRICE")) { Toast.makeText(this, "请输入定制参数", Toast.LENGTH_SHORT).show(); return; }
-        if (!endSelected) { Toast.makeText(this, "请选择日期", Toast.LENGTH_SHORT).show(); return; }
-        long now = System.currentTimeMillis(), start = startSelected ? startCalendar.getTimeInMillis() : now, end = endCalendar.getTimeInMillis();
-        if (end <= start) { Toast.makeText(this, "截止日期必须晚于开始日期", Toast.LENGTH_SHORT).show(); return; }
-        String cond = generateConditionString(p1), title = generateDescriptiveTitle(p1);
-        long dur = (end - now) / 1000;
-        Log.d("attemptShowSummary","开始时间"+String.valueOf(start));
-        Log.d("attemptShowSummary","结束时间"+String.valueOf(end));
-        Log.d("attemptShowSummary","博弈池持续时间"+String.valueOf(dur));
-
-        if (dur <= 0) { Toast.makeText(this, "截止时间必须晚于当前", Toast.LENGTH_SHORT).show(); return; }
-        showSummaryDialog(title, cond, start, end, dur);
-    }
-
     private void pickImage() {
         Intent intent = new Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
         imagePickerLauncher.launch(intent);
@@ -194,7 +212,6 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
             InputStream is = getContentResolver().openInputStream(uri);
             Bitmap bitmap = BitmapFactory.decodeStream(is);
             if (bitmap != null) {
-                // 压缩图片至合理大小
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
                 bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos);
                 selectedImageData = baos.toByteArray();
@@ -205,10 +222,28 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
         }
     }
 
+    private void attemptShowSummary() {
+        String p1 = etParam1.getText().toString().trim();
+        if (p1.isEmpty() && !"TYPE_PRICE".equals(templateType)) { 
+            Toast.makeText(this, "请输入定制参数", Toast.LENGTH_SHORT).show(); 
+            return; 
+        }
+        if (!endSelected) { Toast.makeText(this, "请选择日期", Toast.LENGTH_SHORT).show(); return; }
+        long now = System.currentTimeMillis(), start = startSelected ? startCalendar.getTimeInMillis() : now, end = endCalendar.getTimeInMillis();
+        if (end <= start) { Toast.makeText(this, "截止日期必须晚于开始日期", Toast.LENGTH_SHORT).show(); return; }
+        
+        String cond = generateConditionString(p1), title = generateDescriptiveTitle(p1);
+        long dur = (end - now) / 1000;
+
+        if (dur <= 0) { Toast.makeText(this, "截止时间必须晚于当前", Toast.LENGTH_SHORT).show(); return; }
+        showSummaryDialog(title, cond, start, end, dur);
+    }
+
     private void showSummaryDialog(String title, String condition, long start, long end, long dur) {
         String liqStr = etInitialLiquidity.getText().toString().trim();
         if (liqStr.isEmpty()) liqStr = "100";
         final java.math.BigInteger liqWei = GoldMarketRepository.parseTokenAmountToWei(liqStr);
+        
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
         View v = LayoutInflater.from(this).inflate(R.layout.dialog_gold_pool_summary, null);
         builder.setView(v);
@@ -217,6 +252,7 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
         ((TextView) v.findViewById(R.id.tv_summary_period)).setText((startSelected ? dateFormat.format(new Date(start)) : "当前") + " 至 " + dateFormat.format(new Date(end)));
         ((TextView) v.findViewById(R.id.tv_summary_creator)).setText(viewModel.getWalletAddress());
         ((TextView) v.findViewById(R.id.tv_summary_time)).setText(dateFormat.format(new Date()));
+        
         Button btn = v.findViewById(R.id.btn_summary_close);
         btn.setText("确认并部署");
         AlertDialog dialog = builder.create();
@@ -227,10 +263,9 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
         dialog.show();
     }
 
-
     private String generateDescriptiveTitle(String p1) {
         String startStr = dateFormat.format(startCalendar.getTime()), endStr = dateFormat.format(endCalendar.getTime());
-        switch (templateType) {
+        switch (templateType != null ? templateType : "") {
             case "TYPE_PRICE": return String.format("%s 至 %s 黄金价格 %s", startStr, endStr, spinnerDirection.getSelectedItem().toString().split(" ")[0]);
             case "TYPE_VOLATILITY": return String.format("%s 前黄金波幅超过 %s%%", endStr, p1);
             case "TYPE_VOLUME": return String.format("%s 当日成交量 %s %s 吨", endStr, spinnerOperator.getSelectedItem().toString().split(" ")[0], p1);
@@ -243,7 +278,7 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
 
     private String generateConditionString(String p1) {
         String period = (startSelected ? "从 " + dateFormat.format(startCalendar.getTime()) + " 到 " : "截至 ") + dateFormat.format(endCalendar.getTime());
-        switch (templateType) {
+        switch (templateType != null ? templateType : "") {
             case "TYPE_PRICE": return String.format("黄金价格在 %s 相对基准 %s", period, spinnerDirection.getSelectedItem());
             case "TYPE_VOLATILITY": return String.format("周期内波幅 >= %s%% (%s)", p1, period);
             case "TYPE_VOLUME": return String.format("指定日成交量 %s %s 吨 (%s)", spinnerOperator.getSelectedItem(), p1, dateFormat.format(endCalendar.getTime()));
@@ -253,5 +288,4 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
             default: return "自定义: " + p1;
         }
     }
-
 }

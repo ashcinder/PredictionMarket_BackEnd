@@ -45,6 +45,25 @@ func parsePositiveIntFromPath(r *http.Request, name string) (int, bool) {
 	return parsePositiveInt(raw)
 }
 
+// parsePositiveIntFromQuery extracts and validates an integer query parameter.
+func parsePositiveIntFromQuery(r *http.Request, name string) (int, bool) {
+	raw := r.URL.Query().Get(name)
+	if raw == "" {
+		return 0, false
+	}
+	return parsePositiveInt(raw)
+}
+
+// firstNonEmpty returns the first non-empty string. Returns "" if all are empty.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // parseBigIntFromDB parses a VARBINARY-stored decimal string back to *big.Int.
 func parseBigIntFromDB(data []byte) (*big.Int, error) {
 	if len(data) == 0 {

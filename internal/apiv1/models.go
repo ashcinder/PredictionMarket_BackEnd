@@ -26,6 +26,7 @@ type GameMetaDTO struct {
 	OptionYes       string `json:"option_yes"`
 	OptionNo        string `json:"option_no"`
 	CreatorAddress  string `json:"creator_address"`
+	DeadlineSec     int64  `json:"deadline_sec"`
 	CreatedAt       string `json:"created_at"`
 	UpdatedAt       string `json:"updated_at"`
 }
@@ -44,6 +45,7 @@ type SyncGameRequest struct {
 	OptionNo        string `json:"option_no"`
 	CreatorAddress  string `json:"creator_address"`
 	DurationSec     int64  `json:"duration_sec"`
+	DeadlineSec     int64  `json:"deadline_sec"`
 	InitialLiquidity string `json:"initial_liquidity_wei"`
 }
 
@@ -76,6 +78,7 @@ type SyncChainStateRequest struct {
 	IsResolved    bool   `json:"is_resolved"`
 	IsRefunded    bool   `json:"is_refunded"`
 	WinningOption int    `json:"winning_option"`
+	DeadlineSec   int64  `json:"deadline_sec"`
 	ReserveYes    string `json:"reserve_yes"`
 	ReserveNo     string `json:"reserve_no"`
 	MySharesYes   string `json:"my_shares_yes"`
@@ -118,6 +121,60 @@ type SyncTradeRequest struct {
 	ReserveNoAfter    string `json:"reserve_no_after"`
 	MySharesYesAfter  string `json:"my_shares_yes_after"`
 	MySharesNoAfter   string `json:"my_shares_no_after"`
+	// Trade detail fields (optional — stored for the position detail API).
+	SharesWei     string  `json:"shares_wei"`
+	PriceAtTrade  float64 `json:"price_at_trade"`
+	TimestampSec  int64   `json:"timestamp_sec"`
+	// v1.1 new fields.
+	ShareAmountWei string `json:"share_amount_wei"`
+	IsAiManaged    bool   `json:"is_ai_managed"`
+}
+
+// PositionDetailDTO is the response shape for
+// GET /api/v1/gold/games/{id}/positions?user_address=...
+type PositionDetailDTO struct {
+	GameID        int               `json:"game_id"`
+	Desc          string            `json:"desc"`
+	Condition     string            `json:"condition"`
+	AvatarURL     string            `json:"avatar_url"`
+	OptionNames   []string          `json:"option_names"`
+	IsResolved    bool              `json:"is_resolved"`
+	IsRefunded    bool              `json:"is_refunded"`
+	WinningOption int               `json:"winning_option"`
+	DeadlineSec   int64             `json:"deadline_sec"`
+	TotalPool     string            `json:"total_pool"`
+	ReserveYes    string            `json:"reserve_yes"`
+	ReserveNo     string            `json:"reserve_no"`
+	MySharesYes   string            `json:"my_shares_yes"`
+	MySharesNo    string            `json:"my_shares_no"`
+	Trades        []TradeRecordDTO  `json:"trades"`
+}
+
+// TradeRecordDTO represents a single trade record in the position detail response.
+type TradeRecordDTO struct {
+	TradeID      int64   `json:"trade_id"`
+	TradeType    string  `json:"trade_type"`
+	OptionID     int     `json:"option_id"`
+	OptionName   string  `json:"option_name"`
+	AmountWei    string  `json:"amount_wei"`
+	SharesWei    string  `json:"shares_wei"`
+	PriceAtTrade float64 `json:"price_at_trade"`
+	TxHash       string  `json:"tx_hash"`
+	TimestampSec int64   `json:"timestamp_sec"`
+	IsSuccess    bool    `json:"is_success"`
+	IsAiManaged  bool    `json:"is_ai_managed"`
+}
+
+// TradeHistoryItemDTO is the JSON shape returned by GET /api/v1/gold/trades.
+type TradeHistoryItemDTO struct {
+	TradeType      string `json:"trade_type"`
+	OptionID       int    `json:"option_id"`
+	AmountWei      string `json:"amount_wei"`
+	ShareAmountWei string `json:"share_amount_wei"`
+	IsSuccess      bool   `json:"is_success"`
+	IsAiManaged    bool   `json:"is_ai_managed"`
+	TxHash         string `json:"tx_hash"`
+	CreatedAt      string `json:"created_at"`
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +192,7 @@ type gameRow struct {
 	OptionYes       string
 	OptionNo        string
 	CreatorAddress  string
+	DeadlineSec     int64
 	CreatedAt       string
 	UpdatedAt       string
 }
@@ -176,8 +234,12 @@ type tradeRow struct {
 	TradeType       string
 	OptionID        int
 	AmountWei       *big.Int
+	SharesWei       *big.Int
+	PriceAtTrade    float64
+	TimestampSec    int64
 	TxHash          string
 	IsSuccess       bool
+	IsAiManaged     bool
 	CreatedAt       string
 }
 
@@ -224,4 +286,5 @@ type PriceHistoryRepository interface {
 // DApp after transaction confirmation.
 type TradeRepository interface {
 	RecordTrade(ctx context.Context, trade *tradeRow) error
+	ListTradesByGameAndUser(ctx context.Context, gameID int, userAddress string) ([]TradeRecordDTO, error)
 }

@@ -470,6 +470,9 @@ public class BackendApiClient {
         @SerializedName("winning_option")
         public int winningOption;
 
+        @SerializedName("deadline_sec")
+        public long deadlineSec;
+
         @SerializedName("reserve_yes")
         public String reserveYES;
 

@@ -76,11 +76,15 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/gold/games/{id}/chain-state", s.handleGetChainState)
 	mux.HandleFunc("POST /api/v1/gold/games/{id}/chain-state/sync", s.handleSyncChainState)
 
+	// Position detail (game info + user shares + trade history).
+	mux.HandleFunc("GET /api/v1/gold/games/{id}/positions", s.handleGetPositions)
+
 	// Price history
 	mux.HandleFunc("GET /api/v1/gold/games/{id}/history", s.handleGetHistory)
 	mux.HandleFunc("POST /api/v1/gold/games/{id}/history", s.handleAddHistory)
 
-	// Trade sync
+	// Trade history & sync
+	mux.HandleFunc("GET /api/v1/gold/trades", s.handleGetTrades)
 	mux.HandleFunc("POST /api/v1/gold/trades/sync", s.handleSyncTrade)
 
 	// AI-managed (delegates to existing aimanaged.Store)

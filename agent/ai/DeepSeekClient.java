@@ -61,6 +61,41 @@ public class DeepSeekClient {
 
     public static void chat(String systemPrompt, String userMessage, ChatCallback callback) {
         if (callback == null) return;
+        List<Message> messages = new ArrayList<>();
+        messages.add(new Message("system", systemPrompt));
+        messages.add(new Message("user", userMessage));
+
+        ChatRequest request = new ChatRequest();
+        request.model = "deepseek-chat";
+        request.messages = messages;
+        request.temperature = 0.7;
+        request.maxTokens = 1024;
+
+        executeChat(request, callback);
+    }
+
+    /**
+     * Optimized chat for structured parsing/classification tasks.
+     * Uses low temperature (0.1), larger token budget, and JSON mode
+     * to produce deterministic, machine-parseable output.
+     */
+    public static void chatForParsing(String systemPrompt, String userMessage, ChatCallback callback) {
+        if (callback == null) return;
+        List<Message> messages = new ArrayList<>();
+        messages.add(new Message("system", systemPrompt));
+        messages.add(new Message("user", userMessage));
+
+        ChatRequest request = new ChatRequest();
+        request.model = "deepseek-chat";
+        request.messages = messages;
+        request.temperature = 0.1;
+        request.maxTokens = 2048;
+        request.responseFormat = new ResponseFormat("json_object");
+
+        executeChat(request, callback);
+    }
+
+    private static void executeChat(ChatRequest request, ChatCallback callback) {
         String apiKey = getApiKey();
         if (!isValidApiKey(apiKey)) {
             callback.onError("NO_API_KEY");
@@ -70,16 +105,6 @@ public class DeepSeekClient {
         executor.execute(() -> {
             HttpURLConnection conn = null;
             try {
-                List<Message> messages = new ArrayList<>();
-                messages.add(new Message("system", systemPrompt));
-                messages.add(new Message("user", userMessage));
-
-                ChatRequest request = new ChatRequest();
-                request.model = "deepseek-chat";
-                request.messages = messages;
-                request.temperature = 0.7;
-                request.maxTokens = 1024;
-
                 String json = gson.toJson(request);
 
                 URL url = new URL(API_URL);
@@ -163,6 +188,13 @@ public class DeepSeekClient {
         double temperature;
         @SerializedName("max_tokens")
         int maxTokens;
+        @SerializedName("response_format")
+        ResponseFormat responseFormat;
+    }
+
+    static class ResponseFormat {
+        String type;
+        ResponseFormat(String type) { this.type = type; }
     }
 
     static class Message {

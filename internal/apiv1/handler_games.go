@@ -109,6 +109,15 @@ func (s *Server) handleSyncGame(w http.ResponseWriter, r *http.Request) {
 		gameID = resolved
 	}
 
+	var deadlineSec int64
+	if req.DeadlineSec > 0 {
+		// Absolute chain deadline timestamp (from frontend post-creation chain query).
+		deadlineSec = req.DeadlineSec
+	} else if req.DurationSec > 0 {
+		// Relative duration in seconds (legacy / fallback).
+		deadlineSec = time.Now().Unix() + req.DurationSec
+	}
+
 	row := &gameRow{
 		GameID:          gameID,
 		ContractAddress: req.ContractAddress,
@@ -120,12 +129,25 @@ func (s *Server) handleSyncGame(w http.ResponseWriter, r *http.Request) {
 		OptionYes:       req.OptionYes,
 		OptionNo:        req.OptionNo,
 		CreatorAddress:  req.CreatorAddress,
+		DeadlineSec:     deadlineSec,
 	}
 	id, err := s.games.UpsertGame(r.Context(), row)
 	if err != nil {
 		slog.Warn("apiv1: sync game failed", "game_id", gameID, "error", err)
 		writeJSONError(w, http.StatusServiceUnavailable, "failed to sync game metadata")
 		return
+	}
+
+	// Also upsert deadline_sec into gold_chain_states when explicitly provided.
+	if deadlineSec > 0 {
+		state := &chainStateRow{
+			GameID:      gameID,
+			DeadlineSec: deadlineSec,
+			UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
+		}
+		if err := s.chainStates.UpsertChainState(r.Context(), state); err != nil {
+			slog.Warn("apiv1: sync game - upsert chain state deadline failed", "game_id", gameID, "error", err)
+		}
 	}
 
 	slog.Info("apiv1: game synced", "game_id", id, "cid", req.IPFSCID)

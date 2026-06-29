@@ -200,10 +200,14 @@ public class GoldMarketRepository {
         }
     }
 
-    public static org.web3j.abi.datatypes.Function buildClaimRewardFunction(int gameId, int optionId) {
+    /**
+     * 构建 claimReward 合约调用（optionId 使用 UI 约定 0=YES, 1=NO，内部转换为合约约定）
+     */
+    public static org.web3j.abi.datatypes.Function buildClaimRewardFunction(int gameId, int uiOptionId) {
+        // UI (0=YES, 1=NO) 与合约约定一致 (0=YES, 1=NO)
         return new org.web3j.abi.datatypes.Function(
             "claimReward",
-            Arrays.asList(new Uint256(BigInteger.valueOf(gameId)), new Uint8(BigInteger.valueOf(optionId))),
+            Arrays.asList(new Uint256(BigInteger.valueOf(gameId)), new Uint8(BigInteger.valueOf(uiOptionId))),
             Collections.emptyList());
     }
 
@@ -369,6 +373,7 @@ public class GoldMarketRepository {
         boolean isResolved;
         boolean isRefunded;
         int winningOption;
+        long deadlineSec;       // 链上绝对截止时间戳（秒），同步到后端 DB 避免显示"已截止"
         String reserveYES;
         String reserveNO;
         String mySharesYES;
@@ -420,7 +425,9 @@ public class GoldMarketRepository {
             PostTxState state = new PostTxState();
             state.totalPool = ((Uint256) res.get(1)).getValue().toString();
             state.isResolved = ((Bool) res.get(2)).getValue();
+            // 合约约定与 UI 一致 (0=YES, 1=NO)
             state.winningOption = ((Uint8) res.get(3)).getValue().intValue();
+            state.deadlineSec = ((Uint256) res.get(4)).getValue().longValue();  // 链上绝对截止时间戳（秒）
             state.isRefunded = ((Bool) res.get(5)).getValue();
 
             if (hexExtra != null && !hexExtra.equals("0x")) {
@@ -447,6 +454,7 @@ public class GoldMarketRepository {
             Log.d(TAG, "queryPostTxState 成功: gameId=" + gameId
                     + " totalPool=" + state.totalPool
                     + " isResolved=" + state.isResolved
+                    + " deadlineSec=" + state.deadlineSec
                     + " mySharesYES=" + state.mySharesYES);
             return state;
         } catch (Exception e) {
@@ -535,6 +543,7 @@ public class GoldMarketRepository {
                 chainReq.isResolved = postState.isResolved;
                 chainReq.isRefunded = postState.isRefunded;
                 chainReq.winningOption = postState.winningOption;
+                chainReq.deadlineSec = postState.deadlineSec;
                 chainReq.reserveYES = postState.reserveYES;
                 chainReq.reserveNO = postState.reserveNO;
                 chainReq.mySharesYES = postState.mySharesYES;
@@ -544,6 +553,7 @@ public class GoldMarketRepository {
                 chainReq.isResolved = tradeInfo.isResolved;
                 chainReq.isRefunded = tradeInfo.isRefunded;
                 chainReq.winningOption = tradeInfo.winningOption;
+                chainReq.deadlineSec = tradeInfo.deadlineSec;
                 chainReq.reserveYES = tradeInfo.reserveYESAfter;
                 chainReq.reserveNO = tradeInfo.reserveNOAfter;
                 chainReq.mySharesYES = tradeInfo.mySharesYESAfter;
@@ -552,7 +562,8 @@ public class GoldMarketRepository {
             BackendApiClient.syncChainState(gameId, chainReq);
             Log.d(TAG, "✅ 后端链上状态同步成功: gameId=" + gameId
                     + " totalPool=" + chainReq.totalPool
-                    + " isResolved=" + chainReq.isResolved);
+                    + " isResolved=" + chainReq.isResolved
+                    + " deadlineSec=" + chainReq.deadlineSec);
         } catch (Exception e) {
             Log.w(TAG, "❌ 后端链上状态同步失败（非关键）: gameId=" + gameId + " - " + e.getMessage());
         }
@@ -615,14 +626,16 @@ public class GoldMarketRepository {
             m.totalPool = parseBigInteger(state.totalPool);
             m.isResolved = state.isResolved;
             m.isRefunded = state.isRefunded;
-            m.winningOption = state.winningOption;
+            // 合约约定与 UI 一致 (0=YES, 1=NO)
+            m.winningOption = toUiOption(state.winningOption);
             m.deadlineSec = state.deadlineSec;
             BigInteger resYES = parseBigInteger(state.reserveYES);
             BigInteger resNO = parseBigInteger(state.reserveNO);
-            m.virtualReserves = Arrays.asList(resYES, resNO);
+            // 核心修复：Java 索引 0 必须为 reserveNO，以匹配 UI 概率计算 (res0 / total)
+            m.virtualReserves = Arrays.asList(resNO, resYES);
             BigInteger myYES = parseBigInteger(state.mySharesYES);
-            BigInteger myNO = parseBigInteger(state.mySharesNO);
-            m.myShares = Arrays.asList(myYES, myNO);
+            BigInteger myNo = parseBigInteger(state.mySharesNO);
+            m.myShares = Arrays.asList(myYES, myNo);
         } else {
             m.totalPool = BigInteger.ZERO;
             m.virtualReserves = Arrays.asList(BigInteger.ZERO, BigInteger.ZERO);
@@ -821,7 +834,8 @@ public class GoldMarketRepository {
                 model.ipfsCID = ((Utf8String) res.get(0)).getValue();
                 model.totalPool = ((Uint256) res.get(1)).getValue();
                 model.isResolved = ((Bool) res.get(2)).getValue();
-                model.winningOption = ((Uint8) res.get(3)).getValue().intValue();
+                // 合约 winningOption: 0=NO, 1=YES → 转换为 UI 约定 0=YES, 1=NO
+                model.winningOption = toUiOption(((Uint8) res.get(3)).getValue().intValue());
                 model.deadlineSec = ((Uint256) res.get(4)).getValue().longValue();
                 model.isRefunded = ((Bool) res.get(5)).getValue();
 
@@ -836,9 +850,11 @@ public class GoldMarketRepository {
                             List<Uint256> reservesArray = ((DynamicArray<Uint256>) extraRes.get(0)).getValue();
                             List<Uint256> sharesArray = ((DynamicArray<Uint256>) extraRes.get(1)).getValue();
                             if (reservesArray.size() >= 2) {
-                                model.virtualReserves = Arrays.asList(reservesArray.get(1).getValue(), reservesArray.get(0).getValue());
+                                // 核心修复：合约返回 [reserveNO, reserveYES]。Java 索引 0 存放 reserveNO 供 UI 计算 YES 概率
+                                model.virtualReserves = Arrays.asList(reservesArray.get(0).getValue(), reservesArray.get(1).getValue());
                             }
                             if (sharesArray.size() >= 2) {
+                                // 合约返回 [mySharesYES, mySharesNO]。Java 索引 0 存放 YES 份额
                                 model.myShares = Arrays.asList(sharesArray.get(0).getValue(), sharesArray.get(1).getValue());
                             }
                         }
@@ -993,11 +1009,13 @@ public class GoldMarketRepository {
                     m.deadlineSec = deadlines.get(i).getValue().longValue();
                     m.isResolved = isResolveds.get(i).getValue();
                     m.isRefunded = isRefundeds.get(i).getValue();
-                    m.winningOption = winningOptions.get(i).getValue().intValue();
+                    // 合约 winningOption: 0=NO, 1=YES → 转换为 UI 约定 0=YES, 1=NO
+                    m.winningOption = toUiOption(winningOptions.get(i).getValue().intValue());
                     m.optionNames = Arrays.asList("YES", "NO");
 
                     if (resNO != null && i < resNO.size()) {
-                        m.virtualReserves = Arrays.asList(resYES.get(i).getValue(), resNO.get(i).getValue());
+                        // 核心修复：Java 索引 0 作为 YES 概率分子，需对应合约的 reserveNO
+                        m.virtualReserves = Arrays.asList(resNO.get(i).getValue(), resYES.get(i).getValue());
                         m.myShares = Arrays.asList(myYES.get(i).getValue(), myNO.get(i).getValue());
                     } else {
                         m.virtualReserves = Arrays.asList(BigInteger.ZERO, BigInteger.ZERO);
@@ -1099,9 +1117,11 @@ public class GoldMarketRepository {
                         m.totalPool = parseBigInteger(state.totalPool);
                         m.isResolved = state.isResolved;
                         m.isRefunded = state.isRefunded;
-                        m.winningOption = state.winningOption;
+                        // 后端 DB 存储合约约定 (0=NO, 1=YES)，转换为 UI 约定 (0=YES, 1=NO)
+                        m.winningOption = toUiOption(state.winningOption);
                         m.deadlineSec = state.deadlineSec;
-                        m.virtualReserves = Arrays.asList(parseBigInteger(state.reserveYES), parseBigInteger(state.reserveNO));
+                        // 核心修复：Java 索引 0 必须为 reserveNO，以匹配 UI 概率计算 (res0 / total)
+                        m.virtualReserves = Arrays.asList(parseBigInteger(state.reserveNO), parseBigInteger(state.reserveYES));
                         m.myShares = Arrays.asList(parseBigInteger(state.mySharesYES), parseBigInteger(state.mySharesNO));
                         m.optionNames = Arrays.asList("YES", "NO");
                         m.desc = "博弈池 #" + state.gameId;
@@ -1166,9 +1186,11 @@ public class GoldMarketRepository {
                     m.deadlineSec = dto.deadlineSec.longValue();
                     m.isResolved = dto.isResolved;
                     m.isRefunded = dto.isRefunded;
-                    m.winningOption = dto.winningOption.intValue();
+                    // 合约返回 winningOption: 0=NO, 1=YES → 转换为 UI 约定 0=YES, 1=NO
+                    m.winningOption = toUiOption(dto.winningOption.intValue());
                     m.optionNames = Arrays.asList("YES", "NO");
-                    m.virtualReserves = Arrays.asList(dto.reserveYES, dto.reserveNO);
+                    // 核心修复：Java 索引 0 对应 YES 概率源 (reserveNO) 和 YES 持仓 (mySharesYES)
+                    m.virtualReserves = Arrays.asList(dto.reserveNO, dto.reserveYES);
                     m.myShares = Arrays.asList(dto.mySharesYES, dto.mySharesNO);
                     models.add(m);
                 }
@@ -1226,12 +1248,29 @@ public class GoldMarketRepository {
     //  合约方法 - 写入操作
     //  流程：IPFS 上传 → 链上交易 → 等待确认 → eth_call 查询真实状态 → 后端 DB 同步写入 → 通知 UI
     //  设计原则：onConfirmed 回调时，后端 DB 已包含最新数据，UI 无需额外等待
+    //
+    //  ⚠️ 选项 ID 映射约定：
+    //  合约内部使用 0=NO, 1=YES（与 getGameExtraData 的 reserves=[NO,YES] 顺序一致）
+    //  Java/UI 层统一使用 0=YES, 1=NO（用户直觉：上=YES=0, 下=NO=1）
+    //  所有合约调用前通过 toContractOption() 转换，所有合约返回值通过 toUiOption() 转换
     // ========================================================================
 
+    /** UI → 合约：保持映射一致 (0=YES, 1=NO) */
+    private static int toContractOption(int uiOption) {
+        return uiOption;
+    }
+
+    /** 合约 → UI：保持映射一致 (0=YES, 1=NO) */
+    private static int toUiOption(int contractOption) {
+        return contractOption;
+    }
+
     public void buyShares(int gameId, int optionId, BigInteger amountWei, TxCallback callback) {
+        // optionId 是 UI 约定 (0=YES, 1=NO)，需转换为合约约定 (0=NO, 1=YES)
+        int contractOption = toContractOption(optionId);
         org.web3j.abi.datatypes.Function f = new org.web3j.abi.datatypes.Function(
             "buyShares",
-            Arrays.asList(new Uint256(BigInteger.valueOf(gameId)), new Uint8(BigInteger.valueOf(optionId))),
+            Arrays.asList(new Uint256(BigInteger.valueOf(gameId)), new Uint8(BigInteger.valueOf(contractOption))),
             Collections.emptyList());
 
         // 构建交易同步信息（链上状态由 sendTransaction 在交易确认后通过 eth_call 查询真实值）
@@ -1245,8 +1284,10 @@ public class GoldMarketRepository {
     }
 
     public void sellShares(int gameId, int optionId, BigInteger shareAmount, TxCallback callback) {
+        // optionId 是 UI 约定 (0=YES, 1=NO)，需转换为合约约定 (0=NO, 1=YES)
+        int contractOption = toContractOption(optionId);
         org.web3j.abi.datatypes.Function f = new org.web3j.abi.datatypes.Function(
-            "sellShares", Arrays.asList(new Uint256(gameId), new Uint8(optionId), new Uint256(shareAmount)), Collections.emptyList());
+            "sellShares", Arrays.asList(new Uint256(gameId), new Uint8(contractOption), new Uint256(shareAmount)), Collections.emptyList());
 
         // 构建交易同步信息（链上状态由 sendTransaction 在交易确认后通过 eth_call 查询真实值）
         TradeSyncInfo tradeInfo = new TradeSyncInfo();
@@ -1299,14 +1340,10 @@ public class GoldMarketRepository {
                 Log.d(TAG, "元数据上传到IPFS成功, CID: " + metadataCid);
 
                 // ---- 步骤 3: 发送 createGame 链上交易 ----
-                long finalDuration = duration;
-                if (!useLocalRpc && duration < 10_000_000_000L) {
-                    finalDuration = duration * 1000L;
-                }
-
+                // duration 已经是秒（由上层 (end - now) / 1000 计算），合约 createGame 的 _durationSec 参数期望秒
                 org.web3j.abi.datatypes.Function f = new org.web3j.abi.datatypes.Function(
                     "createGame",
-                    Arrays.asList(new Utf8String(metadataCid), new Uint256(finalDuration)),
+                    Arrays.asList(new Utf8String(metadataCid), new Uint256(duration)),
                     Collections.emptyList());
 
                 String data = FunctionEncoder.encode(f);
@@ -1372,12 +1409,14 @@ public class GoldMarketRepository {
                             chainReq.isResolved = false;
                             chainReq.isRefunded = false;
                             chainReq.winningOption = 0;
+                            chainReq.deadlineSec = postState.deadlineSec;
                             chainReq.reserveYES = postState.reserveYES;
                             chainReq.reserveNO = postState.reserveNO;
                             chainReq.mySharesYES = "0";
                             chainReq.mySharesNO = "0";
                             BackendApiClient.syncChainState(newGameId, chainReq);
-                            Log.d(TAG, "✅ 创建博弈池 - 后端初始链上状态同步成功: gameId=" + newGameId);
+                            Log.d(TAG, "✅ 创建博弈池 - 后端初始链上状态同步成功: gameId=" + newGameId
+                                    + " deadlineSec=" + postState.deadlineSec);
                         }
                     } catch (Exception e) {
                         Log.w(TAG, "❌ 创建博弈池 - 后端链上状态同步失败（非关键）: " + e.getMessage());
@@ -1429,19 +1468,21 @@ public class GoldMarketRepository {
     }
 
     public void resolveGame(int gameId, int winningOption, TxCallback callback) {
+        // winningOption 是 UI 约定 (0=YES, 1=NO)，需转换为合约约定 (0=NO, 1=YES)
+        int contractOption = toContractOption(winningOption);
         org.web3j.abi.datatypes.Function f = new org.web3j.abi.datatypes.Function(
             "resolveGame",
-            Arrays.asList(new Uint256(BigInteger.valueOf(gameId)), new Uint8(BigInteger.valueOf(winningOption))),
+            Arrays.asList(new Uint256(BigInteger.valueOf(gameId)), new Uint8(BigInteger.valueOf(contractOption))),
             Collections.emptyList());
 
         TradeSyncInfo tradeInfo = new TradeSyncInfo();
         tradeInfo.gameId = gameId;
         tradeInfo.tradeType = "RESOLVE";
-        tradeInfo.optionId = winningOption;
+        tradeInfo.optionId = winningOption;          // 交易记录用 UI 约定 (0=YES, 1=NO)
         tradeInfo.amountWei = "0";
-        // 结算操作：同步 isResolved 和 winningOption 到后端 DB
         tradeInfo.isResolved = true;
-        tradeInfo.winningOption = winningOption;
+        // 后端 DB 的 winning_option 使用合约约定 (0=NO, 1=YES)，与 syncChainState 一致
+        tradeInfo.winningOption = contractOption;
 
         sendTransaction(BigInteger.ZERO, f, "开奖成功", callback, tradeInfo);
     }
@@ -1595,6 +1636,7 @@ public class GoldMarketRepository {
         String reserveNOAfter;
         String mySharesYESAfter;
         String mySharesNOAfter;
+        long deadlineSec;       // 链上绝对截止时间戳（秒），确保后端 DB 不丢失截止时间
         // 结算状态（用于同步链上状态缓存到后端 DB）
         boolean isResolved;
         boolean isRefunded;

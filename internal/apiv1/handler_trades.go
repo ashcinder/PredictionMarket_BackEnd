@@ -18,6 +18,48 @@ var validTradeTypes = map[string]bool{
 	"RESOLVE": true,
 }
 
+// handleGetTrades handles GET /api/v1/gold/trades?game_id=X&user_address=Y
+func (s *Server) handleGetTrades(w http.ResponseWriter, r *http.Request) {
+	if setCORS(w, r, "GET,OPTIONS") {
+		return
+	}
+	logRequest(r)
+
+	gameID, ok := parsePositiveIntFromQuery(r, "game_id")
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "invalid or missing game_id")
+		return
+	}
+	userAddress := r.URL.Query().Get("user_address")
+	if !common.IsHexAddress(userAddress) {
+		writeJSONError(w, http.StatusBadRequest, "invalid or missing user_address")
+		return
+	}
+
+	records, err := s.trades.ListTradesByGameAndUser(r.Context(), gameID, userAddress)
+	if err != nil {
+		slog.Warn("apiv1: list trades failed", "game_id", gameID, "user", userAddress, "error", err)
+		records = []TradeRecordDTO{}
+	}
+
+	items := make([]TradeHistoryItemDTO, 0, len(records))
+	for _, r := range records {
+		items = append(items, TradeHistoryItemDTO{
+			TradeType:      r.TradeType,
+			OptionID:       r.OptionID,
+			AmountWei:      r.AmountWei,
+			ShareAmountWei: r.SharesWei,
+			IsSuccess:      r.IsSuccess,
+			IsAiManaged:    r.IsAiManaged,
+			TxHash:         r.TxHash,
+			CreatedAt:      time.Unix(r.TimestampSec, 0).UTC().Format("2006-01-02 15:04:05"),
+		})
+	}
+
+	slog.Info("apiv1: list trades response", "game_id", gameID, "user", userAddress, "count", len(items))
+	writeJSON(w, http.StatusOK, map[string]interface{}{"trades": items})
+}
+
 // handleSyncTrade handles POST /api/v1/gold/trades/sync
 func (s *Server) handleSyncTrade(w http.ResponseWriter, r *http.Request) {
 	if setCORS(w, r, "POST,OPTIONS") {
@@ -61,8 +103,12 @@ func (s *Server) handleSyncTrade(w http.ResponseWriter, r *http.Request) {
 		TradeType:       tradeType,
 		OptionID:        req.OptionID,
 		AmountWei:       parseBigIntStr(req.AmountWei),
+		SharesWei:       parseBigIntStr(firstNonEmpty(req.SharesWei, req.ShareAmountWei)),
+		PriceAtTrade:    req.PriceAtTrade,
+		TimestampSec:    req.TimestampSec,
 		TxHash:          req.TxHash,
 		IsSuccess:       req.IsSuccess,
+		IsAiManaged:     req.IsAiManaged,
 	}
 	if err := s.trades.RecordTrade(r.Context(), trade); err != nil {
 		slog.Warn("apiv1: record trade failed (non-fatal, continuing with state updates)", "game_id", req.GameID, "error", err)

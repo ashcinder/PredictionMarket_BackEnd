@@ -19,26 +19,29 @@ const (
 	// gold_games
 	selectAllGamesSQL = `SELECT game_id, contract_address, ipfs_cid, ` + "`desc`" + `, ` + "`condition`" + `,
 		avatar_url, detailed_info, option_yes, option_no, creator_address,
-		created_at, updated_at
+		deadline_sec, created_at, updated_at
 		FROM gold_games ORDER BY game_id`
 	selectGameByIDSQL = `SELECT game_id, contract_address, ipfs_cid, ` + "`desc`" + `, ` + "`condition`" + `,
 		avatar_url, detailed_info, option_yes, option_no, creator_address,
-		created_at, updated_at
+		deadline_sec, created_at, updated_at
 		FROM gold_games WHERE game_id = ?`
 	upsertGameSQL = `INSERT INTO gold_games
 		(game_id, contract_address, ipfs_cid, ` + "`desc`" + `, ` + "`condition`" + `,
-		avatar_url, detailed_info, option_yes, option_no, creator_address)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		avatar_url, detailed_info, option_yes, option_no, creator_address,
+		deadline_sec)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 		contract_address=VALUES(contract_address), ipfs_cid=VALUES(ipfs_cid),
 		` + "`desc`" + `=VALUES(` + "`desc`" + `), ` + "`condition`" + `=VALUES(` + "`condition`" + `),
 		avatar_url=VALUES(avatar_url), detailed_info=VALUES(detailed_info),
 		option_yes=VALUES(option_yes), option_no=VALUES(option_no),
-		creator_address=VALUES(creator_address)`
+		creator_address=VALUES(creator_address),
+		deadline_sec=VALUES(deadline_sec)`
 	insertGameIgnoreSQL = `INSERT IGNORE INTO gold_games
 		(game_id, contract_address, ipfs_cid, ` + "`desc`" + `, ` + "`condition`" + `,
-		avatar_url, detailed_info, option_yes, option_no, creator_address)
-		VALUES (?, ?, ?, '', '', '', '', 'YES', 'NO', '')`
+		avatar_url, detailed_info, option_yes, option_no, creator_address,
+		deadline_sec)
+		VALUES (?, ?, ?, '', '', '', '', 'YES', 'NO', '', 0)`
 
 	// gold_chain_states
 	selectChainStateSQL = `SELECT game_id, total_pool, is_resolved, is_refunded,
@@ -78,8 +81,13 @@ const (
 	// gold_trades
 	insertTradeSQL = `INSERT INTO gold_trades
 		(game_id, contract_address, user_address, trade_type, option_id, amount_wei,
-		tx_hash, is_success)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+		shares_wei, price_at_trade, timestamp_sec, tx_hash, is_success, is_ai_managed)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	listTradesByGameAndUserSQL = `SELECT id, game_id, trade_type, option_id, amount_wei,
+		shares_wei, price_at_trade, tx_hash, timestamp_sec, is_success, is_ai_managed
+		FROM gold_trades WHERE game_id = ? AND user_address = ?
+		ORDER BY timestamp_sec DESC, id DESC`
 )
 
 // MySQLRepository implements all five v1 repository interfaces on a single
@@ -194,6 +202,7 @@ func (r *MySQLRepository) getGameByID(ctx context.Context, gameID int) (*GameMet
 		&g.GameID, &g.ContractAddress, &g.IPFSCID,
 		&desc, &cond, &avatar, &detail,
 		&optYes, &optNo, &creator,
+		&g.DeadlineSec,
 		&g.CreatedAt, &g.UpdatedAt,
 	); err != nil {
 		if err == sql.ErrNoRows {
@@ -255,6 +264,7 @@ func (r *MySQLRepository) upsertGame(ctx context.Context, game *gameRow) (int, e
 		game.AvatarURL, game.DetailedInfo,
 		game.OptionYes, game.OptionNo,
 		normalizeAddress(game.CreatorAddress),
+			game.DeadlineSec,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("upsert game %d: %w", game.GameID, err)
@@ -541,13 +551,65 @@ func (r *MySQLRepository) recordTrade(ctx context.Context, trade *tradeRow) erro
 		trade.TradeType,
 		trade.OptionID,
 		bigIntToDBBytes(trade.AmountWei),
+		bigIntToDBBytes(trade.SharesWei),
+		trade.PriceAtTrade,
+		trade.TimestampSec,
 		trade.TxHash,
 		trade.IsSuccess,
+		trade.IsAiManaged,
 	)
 	if err != nil {
 		return fmt.Errorf("record trade %d: %w", trade.GameID, err)
 	}
 	return nil
+}
+
+// ListTradesByGameAndUser returns all trades for a given game and user, ordered
+// by timestamp_sec DESC (most recent first). Returns an empty slice when no
+// trades exist.
+func (r *MySQLRepository) ListTradesByGameAndUser(ctx context.Context, gameID int, userAddress string) ([]TradeRecordDTO, error) {
+	trades, err := r.listTradesByGameAndUser(ctx, gameID, userAddress)
+	if err != nil && r.retryAfterRecover(err, "gold_trades") {
+		trades, err = r.listTradesByGameAndUser(ctx, gameID, userAddress)
+	}
+	return trades, err
+}
+
+func (r *MySQLRepository) listTradesByGameAndUser(ctx context.Context, gameID int, userAddress string) ([]TradeRecordDTO, error) {
+	ctx, cancel := context.WithTimeout(ctx, repoTimeout)
+	defer cancel()
+	rows, err := r.db.QueryContext(ctx, listTradesByGameAndUserSQL, gameID, normalizeAddress(userAddress))
+	if err != nil {
+		return nil, fmt.Errorf("list trades %d/%s: %w", gameID, userAddress, err)
+	}
+	defer rows.Close()
+	var out []TradeRecordDTO
+	for rows.Next() {
+		var t TradeRecordDTO
+		var amountWei, sharesWei []byte
+		var priceAtTrade sql.NullFloat64
+		var scanGameID int
+		if err := rows.Scan(
+			&t.TradeID, &scanGameID, &t.TradeType, &t.OptionID,
+			&amountWei, &sharesWei, &priceAtTrade,
+			&t.TxHash, &t.TimestampSec, &t.IsSuccess, &t.IsAiManaged,
+		); err != nil {
+			return nil, fmt.Errorf("scan trade row: %w", err)
+		}
+		t.AmountWei = bigIntOrZero(parseBigIntStr(string(amountWei)))
+		t.SharesWei = bigIntOrZero(parseBigIntStr(string(sharesWei)))
+		if priceAtTrade.Valid {
+			t.PriceAtTrade = priceAtTrade.Float64
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate trades: %w", err)
+	}
+	if out == nil {
+		out = []TradeRecordDTO{}
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -563,6 +625,7 @@ func scanGames(rows *sql.Rows) ([]GameMetaDTO, error) {
 			&g.GameID, &g.ContractAddress, &g.IPFSCID,
 			&desc, &cond, &avatar, &detail,
 			&optYes, &optNo, &creator,
+			&g.DeadlineSec,
 			&g.CreatedAt, &g.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan game row: %w", err)

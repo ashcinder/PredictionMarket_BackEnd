@@ -121,12 +121,12 @@ public class GoldMyPositionsFragment extends Fragment {
                     String sideName = optionNameFor(game, i);
                     sideNames.add(sideName);
                     if (shareText.length() > 0) shareText.append('\n');
-                    shareText.append(sideName).append(' ').append(GoldNoteMarketActivity.formatShareAmount(shares)).append(" 份额");
+                    shareText.append(sideName).append(": ").append(GoldNoteMarketActivity.formatShareAmount(shares)).append(" 份额");
                 }
             }
             tvSide.setText(joinSideNames(sideNames));
             tvSide.setTextColor(resolveSideColor(sideNames));
-            tvShares.setText(shareText.length() == 0 ? "0 份额" : shareText.toString());
+            tvShares.setText(shareText.length() == 0 ? "暂无份额" : shareText.toString());
 
             GoldPositionValuation.MarketValue marketValue = GoldPositionValuation.calculateMarket(game);
             tvCurrentValue.setText(marketValue.isComplete() ? GoldNoteMarketActivity.formatBkc(marketValue.getValueWei()) + " BKC" : "暂不可估值");
