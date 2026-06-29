@@ -73,7 +73,7 @@ func main() {
 	sampler := aimanaged.NewMarketHistorySampler(chainClient, repository, cfg.ContractAddress, cfg.SamplerPollInterval, cfg.AIHistoryMaxPoints)
 
 	// v1 API cache layer (DApp reads from MySQL, writes sync to chain→IPFS→DB).
-	v1Repo := apiv1.NewMySQLRepository(db)
+	v1Repo := apiv1.NewMySQLRepository(db, cfg.ContractAddress)
 	v1Server := apiv1.NewServer(
 		v1Repo, v1Repo, v1Repo, v1Repo, v1Repo,
 		managedStore, chainClient, ipfsClient, cfg.ContractAddress, cfg.AIHistoryMaxPoints,

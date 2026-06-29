@@ -118,15 +118,16 @@ func (s *Server) handleSyncChainState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	row := &chainStateRow{
-		GameID:        gameID,
-		TotalPool:     parseBigIntStr(req.TotalPool),
-		IsResolved:    req.IsResolved,
-		IsRefunded:    req.IsRefunded,
-		WinningOption: req.WinningOption,
-		DeadlineSec:   req.DeadlineSec,
-		ReserveYes:    parseBigIntStr(req.ReserveYes),
-		ReserveNo:     parseBigIntStr(req.ReserveNo),
-		UpdatedAt:     time.Now().UTC().Format(time.RFC3339),
+		GameID:          gameID,
+		ContractAddress: firstNonEmpty(req.ContractAddr, s.contractAddr),
+		TotalPool:       parseBigIntStr(req.TotalPool),
+		IsResolved:      req.IsResolved,
+		IsRefunded:      req.IsRefunded,
+		WinningOption:   req.WinningOption,
+		DeadlineSec:     req.DeadlineSec,
+		ReserveYes:      parseBigIntStr(req.ReserveYes),
+		ReserveNo:       parseBigIntStr(req.ReserveNo),
+		UpdatedAt:       time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := s.chainStates.UpsertChainState(r.Context(), row); err != nil {
 		slog.Warn("apiv1: sync chain state failed", "game_id", gameID, "error", err)
@@ -155,6 +156,7 @@ func (s *Server) handleSyncChainState(w http.ResponseWriter, r *http.Request) {
 func (s *Server) buildChainStateDTO(state *chainStateRow) ChainStateDTO {
 	return ChainStateDTO{
 		GameID:        state.GameID,
+		ContractAddr:  state.ContractAddress,
 		TotalPool:     bigIntOrZero(state.TotalPool),
 		IsResolved:    state.IsResolved,
 		IsRefunded:    state.IsRefunded,

@@ -59,6 +59,7 @@ type SyncGameResponse struct {
 // GET .../chain-states. It merges on-chain data with user position data.
 type ChainStateDTO struct {
 	GameID        int    `json:"game_id"`
+	ContractAddr  string `json:"contract_address,omitempty"`
 	TotalPool     string `json:"total_pool"`
 	IsResolved    bool   `json:"is_resolved"`
 	IsRefunded    bool   `json:"is_refunded"`
@@ -74,6 +75,7 @@ type ChainStateDTO struct {
 // SyncChainStateRequest is the request body for
 // POST /api/v1/gold/games/{id}/chain-state/sync.
 type SyncChainStateRequest struct {
+	ContractAddr  string `json:"contract_address"`
 	TotalPool     string `json:"total_pool"`
 	IsResolved    bool   `json:"is_resolved"`
 	IsRefunded    bool   `json:"is_refunded"`
@@ -204,15 +206,16 @@ type gameRow struct {
 }
 
 type chainStateRow struct {
-	GameID        int
-	TotalPool     *big.Int
-	IsResolved    bool
-	IsRefunded    bool
-	WinningOption int
-	DeadlineSec   int64
-	ReserveYes    *big.Int
-	ReserveNo     *big.Int
-	UpdatedAt     string
+	GameID          int
+	ContractAddress string
+	TotalPool       *big.Int
+	IsResolved      bool
+	IsRefunded      bool
+	WinningOption   int
+	DeadlineSec     int64
+	ReserveYes      *big.Int
+	ReserveNo       *big.Int
+	UpdatedAt       string
 }
 
 type userPositionRow struct {

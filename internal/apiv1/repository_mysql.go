@@ -45,35 +45,37 @@ const (
 		VALUES (?, ?, ?, '', '', '', '', 'YES', 'NO', '', 0)`
 
 	// gold_chain_states
-	selectChainStateSQL = `SELECT game_id, total_pool, is_resolved, is_refunded,
+	selectChainStateSQL = `SELECT game_id, contract_address, total_pool, is_resolved, is_refunded,
 		winning_option, deadline_sec, reserve_yes, reserve_no, updated_at
-		FROM gold_chain_states WHERE game_id = ?`
-	selectAllChainStatesSQL = `SELECT game_id, total_pool, is_resolved, is_refunded,
+		FROM gold_chain_states WHERE contract_address = ? AND game_id = ?`
+	selectAllChainStatesSQL = `SELECT game_id, contract_address, total_pool, is_resolved, is_refunded,
 		winning_option, deadline_sec, reserve_yes, reserve_no, updated_at
-		FROM gold_chain_states ORDER BY game_id`
+		FROM gold_chain_states WHERE contract_address = ? ORDER BY game_id`
 	upsertChainStateSQL = `INSERT INTO gold_chain_states
-		(game_id, total_pool, is_resolved, is_refunded, winning_option, deadline_sec,
+		(contract_address, game_id, total_pool, is_resolved, is_refunded, winning_option, deadline_sec,
 		reserve_yes, reserve_no)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 		total_pool=VALUES(total_pool), is_resolved=VALUES(is_resolved),
 		is_refunded=VALUES(is_refunded), winning_option=VALUES(winning_option),
 		deadline_sec=VALUES(deadline_sec), reserve_yes=VALUES(reserve_yes),
 		reserve_no=VALUES(reserve_no)`
 	upsertChainStatePoolSQL = `INSERT INTO gold_chain_states
-		(game_id, total_pool, is_resolved, is_refunded, winning_option, deadline_sec,
+		(contract_address, game_id, total_pool, is_resolved, is_refunded, winning_option, deadline_sec,
 		reserve_yes, reserve_no)
-		VALUES (?, ?, 0, 0, 0, 0, ?, ?)
+		VALUES (?, ?, ?, 0, 0, 0, 0, ?, ?)
 		ON DUPLICATE KEY UPDATE
 		total_pool=VALUES(total_pool),
 		reserve_yes=VALUES(reserve_yes),
 		reserve_no=VALUES(reserve_no)`
 	upsertChainStateDeadlineSQL = `INSERT INTO gold_chain_states
-		(game_id, total_pool, is_resolved, is_refunded, winning_option, deadline_sec,
+		(contract_address, game_id, total_pool, is_resolved, is_refunded, winning_option, deadline_sec,
 		reserve_yes, reserve_no)
-		VALUES (?, 0, 0, 0, 0, ?, 0, 0)
+		VALUES (?, ?, 0, 0, 0, 0, ?, 0, 0)
 		ON DUPLICATE KEY UPDATE
 		deadline_sec=VALUES(deadline_sec)`
+	selectGameDeadlineForContractSQL = `SELECT deadline_sec FROM gold_games
+		WHERE contract_address = ? AND game_id = ?`
 
 	// gold_user_positions
 	selectUserPositionSQL = `SELECT user_address, game_id, my_shares_yes, my_shares_no, updated_at
@@ -113,13 +115,18 @@ const (
 // error 1054 (unknown column, i.e. stale schema), recreates tables, and
 // retries once.
 type MySQLRepository struct {
-	db       *sql.DB
-	ensureMu sync.Mutex
+	db                     *sql.DB
+	defaultContractAddress string
+	ensureMu               sync.Mutex
 }
 
 // NewMySQLRepository creates a repository backed by db.
-func NewMySQLRepository(db *sql.DB) *MySQLRepository {
-	return &MySQLRepository{db: db}
+func NewMySQLRepository(db *sql.DB, defaultContractAddress ...string) *MySQLRepository {
+	var contractAddress string
+	if len(defaultContractAddress) > 0 {
+		contractAddress = normalizeOptionalAddress(defaultContractAddress[0])
+	}
+	return &MySQLRepository{db: db, defaultContractAddress: contractAddress}
 }
 
 // ensureTables recreates all required tables (CREATE TABLE IF NOT EXISTS).
@@ -304,12 +311,12 @@ func (r *MySQLRepository) GetChainState(ctx context.Context, gameID int) (*chain
 func (r *MySQLRepository) getChainState(ctx context.Context, gameID int) (*chainStateRow, error) {
 	ctx, cancel := context.WithTimeout(ctx, repoTimeout)
 	defer cancel()
-	row := r.db.QueryRowContext(ctx, selectChainStateSQL, gameID)
+	row := r.db.QueryRowContext(ctx, selectChainStateSQL, r.defaultContractAddress, gameID)
 	var s chainStateRow
 	var totalPool, reserveYes, reserveNo []byte
 	var updatedAt sql.NullTime
 	if err := row.Scan(
-		&s.GameID, &totalPool, &s.IsResolved, &s.IsRefunded,
+		&s.GameID, &s.ContractAddress, &totalPool, &s.IsResolved, &s.IsRefunded,
 		&s.WinningOption, &s.DeadlineSec,
 		&reserveYes, &reserveNo, &updatedAt,
 	); err != nil {
@@ -338,7 +345,7 @@ func (r *MySQLRepository) ListAllChainStates(ctx context.Context) ([]chainStateR
 func (r *MySQLRepository) listAllChainStates(ctx context.Context) ([]chainStateRow, error) {
 	ctx, cancel := context.WithTimeout(ctx, repoTimeout)
 	defer cancel()
-	rows, err := r.db.QueryContext(ctx, selectAllChainStatesSQL)
+	rows, err := r.db.QueryContext(ctx, selectAllChainStatesSQL, r.defaultContractAddress)
 	if err != nil {
 		return nil, fmt.Errorf("list all chain states: %w", err)
 	}
@@ -349,7 +356,7 @@ func (r *MySQLRepository) listAllChainStates(ctx context.Context) ([]chainStateR
 		var totalPool, reserveYes, reserveNo []byte
 		var updatedAt sql.NullTime
 		if err := rows.Scan(
-			&s.GameID, &totalPool, &s.IsResolved, &s.IsRefunded,
+			&s.GameID, &s.ContractAddress, &totalPool, &s.IsResolved, &s.IsRefunded,
 			&s.WinningOption, &s.DeadlineSec,
 			&reserveYes, &reserveNo, &updatedAt,
 		); err != nil {
@@ -377,11 +384,14 @@ func (r *MySQLRepository) UpsertChainState(ctx context.Context, state *chainStat
 func (r *MySQLRepository) upsertChainState(ctx context.Context, state *chainStateRow) error {
 	ctx, cancel := context.WithTimeout(ctx, repoTimeout)
 	defer cancel()
+	contractAddress := normalizeOptionalAddress(firstNonEmpty(state.ContractAddress, r.defaultContractAddress))
+	deadlineSec := r.canonicalDeadlineSec(ctx, contractAddress, state.GameID, state.DeadlineSec)
 	_, err := r.db.ExecContext(ctx, upsertChainStateSQL,
+		contractAddress,
 		state.GameID,
 		bigIntToDBBytes(state.TotalPool),
 		state.IsResolved, state.IsRefunded,
-		state.WinningOption, state.DeadlineSec,
+		state.WinningOption, deadlineSec,
 		bigIntToDBBytes(state.ReserveYes),
 		bigIntToDBBytes(state.ReserveNo),
 	)
@@ -408,6 +418,7 @@ func (r *MySQLRepository) upsertChainStatePool(ctx context.Context, gameID int, 
 	ctx, cancel := context.WithTimeout(ctx, repoTimeout)
 	defer cancel()
 	_, err := r.db.ExecContext(ctx, upsertChainStatePoolSQL,
+		r.defaultContractAddress,
 		gameID,
 		bigIntToDBBytes(totalPool),
 		bigIntToDBBytes(reserveYes),
@@ -435,11 +446,27 @@ func (r *MySQLRepository) UpsertChainStateDeadline(ctx context.Context, gameID i
 func (r *MySQLRepository) upsertChainStateDeadline(ctx context.Context, gameID int, deadlineSec int64) error {
 	ctx, cancel := context.WithTimeout(ctx, repoTimeout)
 	defer cancel()
-	_, err := r.db.ExecContext(ctx, upsertChainStateDeadlineSQL, gameID, deadlineSec)
+	_, err := r.db.ExecContext(ctx, upsertChainStateDeadlineSQL, r.defaultContractAddress, gameID, normalizeDeadlineSec(deadlineSec))
 	if err != nil {
 		return fmt.Errorf("upsert chain state deadline %d: %w", gameID, err)
 	}
 	return nil
+}
+
+func (r *MySQLRepository) canonicalDeadlineSec(ctx context.Context, contractAddress string, gameID int, incoming int64) int64 {
+	normalizedIncoming := normalizeDeadlineSec(incoming)
+	if contractAddress == "" || gameID <= 0 {
+		return normalizedIncoming
+	}
+	var gameDeadline int64
+	err := r.db.QueryRowContext(ctx, selectGameDeadlineForContractSQL, contractAddress, gameID).Scan(&gameDeadline)
+	if err != nil || gameDeadline <= 0 {
+		return normalizedIncoming
+	}
+	if incoming <= 0 || incoming > 10_000_000_000 || absInt64(gameDeadline-normalizedIncoming) > 3600 {
+		return gameDeadline
+	}
+	return normalizedIncoming
 }
 
 // ---------------------------------------------------------------------------

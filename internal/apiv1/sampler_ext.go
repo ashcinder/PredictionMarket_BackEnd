@@ -54,13 +54,14 @@ func (e *samplerCacheExt) OnDiscover(ctx context.Context, game chain.GameOnChain
 
 	// 2. Upsert basic chain state (all fields from getAllGames, no reserves).
 	state := &chainStateRow{
-		GameID:        game.ID,
-		TotalPool:     game.TotalPool,
-		IsResolved:    game.IsResolved,
-		IsRefunded:    game.IsRefunded,
-		WinningOption: game.WinningOption,
-		DeadlineSec:   game.DeadlineRaw,
-		UpdatedAt:     time.Now().UTC().Format(time.RFC3339),
+		GameID:          game.ID,
+		ContractAddress: e.contractAddr,
+		TotalPool:       game.TotalPool,
+		IsResolved:      game.IsResolved,
+		IsRefunded:      game.IsRefunded,
+		WinningOption:   game.WinningOption,
+		DeadlineSec:     game.DeadlineRaw,
+		UpdatedAt:       time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := e.chainStates.UpsertChainState(ctx, state); err != nil {
 		slog.Warn("apiv1: sampler ext discover upsert chain state failed", "game_id", game.ID, "error", err)
@@ -82,15 +83,16 @@ func (e *samplerCacheExt) OnSample(
 
 	// 2. Update chain state cache.
 	state := &chainStateRow{
-		GameID:        game.ID,
-		TotalPool:     game.TotalPool,
-		IsResolved:    game.IsResolved,
-		IsRefunded:    game.IsRefunded,
-		WinningOption: game.WinningOption,
-		DeadlineSec:   game.DeadlineRaw,
-		ReserveYes:    getReserve(reserves, 1),
-		ReserveNo:     getReserve(reserves, 0),
-		UpdatedAt:     observedAt.UTC().Format(time.RFC3339),
+		GameID:          game.ID,
+		ContractAddress: e.contractAddr,
+		TotalPool:       game.TotalPool,
+		IsResolved:      game.IsResolved,
+		IsRefunded:      game.IsRefunded,
+		WinningOption:   game.WinningOption,
+		DeadlineSec:     game.DeadlineRaw,
+		ReserveYes:      getReserve(reserves, 1),
+		ReserveNo:       getReserve(reserves, 0),
+		UpdatedAt:       observedAt.UTC().Format(time.RFC3339),
 	}
 	if err := e.chainStates.UpsertChainState(ctx, state); err != nil {
 		slog.Warn("apiv1: sampler ext upsert chain state failed", "game_id", game.ID, "error", err)
@@ -155,8 +157,8 @@ func (e *samplerCacheExt) PopulateUserShares(ctx context.Context, data *chain.Al
 		row := &userPositionRow{
 			UserAddress: signerAddr,
 			GameID:      game.ID,
-			MySharesYes:  sharesYes,
-			MySharesNo:   sharesNo,
+			MySharesYes: sharesYes,
+			MySharesNo:  sharesNo,
 		}
 		if err := e.positions.UpsertUserPosition(ctx, row); err != nil {
 			slog.Warn("apiv1: sampler populate user shares failed", "game_id", game.ID, "error", err)

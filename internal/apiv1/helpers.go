@@ -136,6 +136,30 @@ func normalizeAddress(value string) string {
 	return strings.ToLower(common.HexToAddress(value).Hex())
 }
 
+// normalizeOptionalAddress normalizes a provided address but preserves an
+// omitted value as empty. This is useful for backward-compatible request
+// fields where the server may supply a default contract later.
+func normalizeOptionalAddress(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return normalizeAddress(value)
+}
+
+func normalizeDeadlineSec(value int64) int64 {
+	if value > 10_000_000_000 {
+		return value / 1000
+	}
+	return value
+}
+
+func absInt64(value int64) int64 {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
 // logRequest logs an incoming HTTP API request.
 func logRequest(r *http.Request) {
 	slog.Info("api request",
