@@ -15,14 +15,22 @@ import org.bouncycastle.jce.spec.ECNamedCurveParameterSpec;
 import org.bouncycastle.math.ec.ECPoint;
 import org.bouncycastle.util.encoders.Hex;
 
-import java.io.OutputStream;
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
-import java.util.Scanner;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.UUID;
+
+import okhttp3.Dns;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
 
 /**
  * BrokerChainClient 客户端核心类
@@ -30,34 +38,53 @@ import java.util.UUID;
  */
 public class BrokerChainClient {
     private static final String TAG = "BrokerChainClient";
-    private static final String BASE_URL = "https://dash.broker-chain.com:443/";
+    public static final String SERVICE_HOST = "dash.broker-chain.com";
+    private static final String BASE_URL = "https://" + SERVICE_HOST + "/";
+    // Android 模拟器的系统 DNS（通常为 10.0.2.3）失效时使用。
+    // URL 仍保留域名，因此 HTTPS SNI 和证书主机名校验不会被绕过。
+    private static final byte[] SERVICE_FALLBACK_IPV4 =
+            new byte[] {43, (byte) 162, 111, (byte) 181};
+    private static final MediaType JSON = MediaType.parse("application/json; charset=utf-8");
     private static final Gson gson = new Gson();
+    private static final OkHttpClient httpClient = new OkHttpClient.Builder()
+            .dns(new BrokerChainDns())
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(120, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            // 请求带一次性 UUID 和签名，原样重试会触发 replay attack。
+            .retryOnConnectionFailure(false)
+            .build();
+
+    private static final class BrokerChainDns implements Dns {
+        @Override
+        public List<InetAddress> lookup(String hostname) throws UnknownHostException {
+            try {
+                return Dns.SYSTEM.lookup(hostname);
+            } catch (UnknownHostException systemDnsError) {
+                if (!SERVICE_HOST.equalsIgnoreCase(hostname)) throw systemDnsError;
+                InetAddress fallback = InetAddress.getByAddress(hostname, SERVICE_FALLBACK_IPV4);
+                Log.w(TAG, "系统 DNS 解析失败，BrokerChain 使用备用地址 "
+                        + fallback.getHostAddress());
+                return Collections.singletonList(fallback);
+            }
+        }
+    }
 
     private static String doPost(String endpoint, Object requestBody) throws Exception {
         String jsonInputString = gson.toJson(requestBody);
-        URL requestUrl = new URL(BASE_URL + endpoint);
-        HttpURLConnection connection = (HttpURLConnection) requestUrl.openConnection();
-        connection.setRequestMethod("POST");
-        connection.setRequestProperty("Content-Type", "application/json; utf-8");
-        connection.setRequestProperty("Accept", "application/json");
-        connection.setDoOutput(true);
+        Request request = new Request.Builder()
+                .url(BASE_URL + endpoint)
+                .header("Accept", "application/json")
+                .post(RequestBody.create(jsonInputString, JSON))
+                .build();
 
-        try (OutputStream os = connection.getOutputStream()) {
-            byte[] input = jsonInputString.getBytes(StandardCharsets.UTF_8);
-            os.write(input, 0, input.length);
-        }
-
-        int responseCode = connection.getResponseCode();
-        if (responseCode >= 200 && responseCode < 300) {
-            Scanner scanner = new Scanner(connection.getInputStream(), "UTF-8").useDelimiter("\\A");
-            String res = scanner.hasNext() ? scanner.next() : "";
-            Log.d(TAG, "Request to " + endpoint + " success: " + res);
-            return res;
-        } else {
-            Scanner scanner = new Scanner(connection.getErrorStream(), "UTF-8").useDelimiter("\\A");
-            String err = scanner.hasNext() ? scanner.next() : "";
-            Log.e(TAG, "Request to " + endpoint + " failed: " + responseCode + " " + err);
-            return err;
+        try (Response response = httpClient.newCall(request).execute()) {
+            String text = response.body() != null ? response.body().string() : "";
+            if (!response.isSuccessful()) {
+                throw new IOException("BrokerChain HTTP " + response.code() + ": " + text);
+            }
+            Log.d(TAG, "Request to " + endpoint + " success: " + text);
+            return text;
         }
     }
 

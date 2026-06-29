@@ -6,7 +6,6 @@ import (
 	"math/big"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -46,14 +45,16 @@ func (s *Server) handleGetTrades(w http.ResponseWriter, r *http.Request) {
 	items := make([]TradeHistoryItemDTO, 0, len(records))
 	for _, r := range records {
 		items = append(items, TradeHistoryItemDTO{
-			TradeType:      r.TradeType,
-			OptionID:       r.OptionID,
-			AmountWei:      r.AmountWei,
-			ShareAmountWei: r.SharesWei,
-			IsSuccess:      r.IsSuccess,
-			IsAiManaged:    r.IsAiManaged,
-			TxHash:         r.TxHash,
-			CreatedAt:      time.Unix(r.TimestampSec, 0).UTC().Format("2006-01-02 15:04:05"),
+			TradeType:        r.TradeType,
+			OptionID:         r.OptionID,
+			AmountWei:        r.AmountWei,
+			ShareAmountWei:   r.ShareAmountWei,
+			MySharesYesAfter: r.MySharesYesAfter,
+			MySharesNoAfter:  r.MySharesNoAfter,
+			IsSuccess:        r.IsSuccess,
+			IsAiManaged:      r.IsAiManaged,
+			TxHash:           r.TxHash,
+			CreatedAt:        r.CreatedAt,
 		})
 	}
 
@@ -126,18 +127,21 @@ func (s *Server) handleSyncTrade(w http.ResponseWriter, r *http.Request) {
 
 	// 2. Record the trade (best-effort, non-fatal).
 	trade := &tradeRow{
-		GameID:          req.GameID,
-		ContractAddress: req.ContractAddr,
-		UserAddress:     req.UserAddress,
-		TradeType:       tradeType,
-		OptionID:        req.OptionID,
-		AmountWei:       parseBigIntStr(req.AmountWei),
-		SharesWei:       parseBigIntStr(firstNonEmpty(req.SharesWei, req.ShareAmountWei)),
-		PriceAtTrade:    req.PriceAtTrade,
-		TimestampSec:    req.TimestampSec,
-		TxHash:          req.TxHash,
-		IsSuccess:       req.IsSuccess,
-		IsAiManaged:     req.IsAiManaged,
+		GameID:           req.GameID,
+		ContractAddress:  req.ContractAddr,
+		UserAddress:      req.UserAddress,
+		TradeType:        tradeType,
+		OptionID:         req.OptionID,
+		AmountWei:        parseBigIntStr(req.AmountWei),
+		SharesWei:        parseBigIntStr(firstNonEmpty(req.SharesWei, req.ShareAmountWei)),
+		ShareAmountWei:   req.ShareAmountWei,
+		MySharesYesAfter: req.MySharesYesAfter,
+		MySharesNoAfter:  req.MySharesNoAfter,
+		PriceAtTrade:     req.PriceAtTrade,
+		TimestampSec:     req.TimestampSec,
+		TxHash:           req.TxHash,
+		IsSuccess:        req.IsSuccess,
+		IsAiManaged:      req.IsAiManaged,
 	}
 	if err := s.trades.RecordTrade(r.Context(), trade); err != nil {
 		slog.Warn("apiv1: record trade failed (non-fatal, continuing with state updates)", "game_id", req.GameID, "error", err)

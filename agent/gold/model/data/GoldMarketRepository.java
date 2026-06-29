@@ -25,12 +25,16 @@ import org.web3j.protocol.http.HttpService;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.math.RoundingMode;
+import java.io.IOException;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * GoldMarketRepository - 黄金预测市场数据仓库
@@ -62,6 +66,8 @@ public class GoldMarketRepository {
     private static final String KEY_CONTRACT_ADDRS = "contract_addresses";
     private static final String KEY_RPC_URL = "rpc_url";
     private static final BigDecimal WEI_PER_BKC = new BigDecimal("1000000000000000000");
+    private static final Pattern INSUFFICIENT_FUNDS_PATTERN =
+            Pattern.compile("value:\\s*(\\d+)\\s+have:\\s*(\\d+)");
     private static final BigInteger LOCAL_RPC_CALL_GAS_LIMIT = new BigInteger("5000000");
     private static final BigInteger LOCAL_RPC_CALL_GAS_PRICE = BigInteger.ZERO;
     private static final BigInteger LOCAL_RPC_CALL_VALUE = BigInteger.ZERO;
@@ -274,6 +280,8 @@ public class GoldMarketRepository {
         AppExecutors.getInstance().networkIO().execute(() -> {
             try {
                 String data = FunctionEncoder.encode(function);
+                PostTxState preState = shouldCapturePreTradeState(tradeInfo)
+                        ? queryPostTxState(tradeInfo.gameId) : null;
                 if (useLocalRpc) {
                     // ── Local RPC 模式 ──
                     String txHash = sendLocalRpcAndWait(value, data, callback);
@@ -285,7 +293,7 @@ public class GoldMarketRepository {
 
                     // 同步到后端 DB（在 onConfirmed 之前，确保数据一致性）
                     if (tradeInfo != null) {
-                        syncAllToBackend(tradeInfo, txHash, postState);
+                        syncAllToBackend(tradeInfo, txHash, preState, postState);
                     }
 
                     AppExecutors.getInstance().mainThread().execute(() -> callback.onConfirmed(successMsg));
@@ -310,7 +318,7 @@ public class GoldMarketRepository {
 
                     // 同步到后端 DB（在 onConfirmed 之前）
                     if (tradeInfo != null) {
-                        syncAllToBackend(tradeInfo, response, postState);
+                        syncAllToBackend(tradeInfo, response, preState, postState);
                     }
 
                     AppExecutors.getInstance().mainThread().execute(() -> callback.onConfirmed(successMsg));
@@ -344,6 +352,13 @@ public class GoldMarketRepository {
         return txHash;
     }
 
+    private boolean shouldCapturePreTradeState(TradeSyncInfo tradeInfo) {
+        return tradeInfo != null && tradeInfo.gameId > 0
+                && ("BUY".equalsIgnoreCase(tradeInfo.tradeType)
+                || "SELL".equalsIgnoreCase(tradeInfo.tradeType)
+                || "CLAIM".equalsIgnoreCase(tradeInfo.tradeType));
+    }
+
     /**
      * BrokerChain 模式：发送交易到远程服务器
      * @return 服务器返回的响应字符串，失败时回调 onError 并返回 null
@@ -356,11 +371,102 @@ public class GoldMarketRepository {
         String response = BrokerChainClient.sendEthTx(privateKey, contractAddress, data, valueHex);
         Log.d(TAG, "brokerChainSendTx response: " + (response != null ? response.substring(0, Math.min(200, response.length())) : "null"));
 
-        if (response == null || response.toLowerCase().contains("error") || response.toLowerCase().contains("failed")) {
-            postError(callback, "交易失败: " + response);
+        if (response == null || response.trim().isEmpty()) {
+            throw new IOException("BrokerChain 未返回内容，交易状态暂时未知");
+        }
+
+        String rpcError = describeBrokerChainTxError(response);
+        if (rpcError != null) {
+            throw new IOException(rpcError);
+        }
+
+        String txHash = extractBrokerChainTxHash(response);
+        if (txHash == null || txHash.isEmpty()) {
+            throw new IOException("BrokerChain 未返回交易哈希，交易状态暂时未知");
+        }
+        return txHash;
+    }
+
+    private String extractBrokerChainTxHash(String response) {
+        if (response == null) return null;
+        String trimmed = response.trim();
+        if (trimmed.startsWith("0x")) return trimmed;
+        try {
+            JSONObject obj = new JSONObject(trimmed);
+            String result = obj.optString("result", "");
+            return result.startsWith("0x") ? result : null;
+        } catch (Exception ignored) {
             return null;
         }
-        return response;
+    }
+
+    private String describeBrokerChainTxError(String response) {
+        String trimmed = response == null ? "" : response.trim();
+        if (trimmed.isEmpty()) return "BrokerChain 返回空响应";
+
+        try {
+            JSONObject root = new JSONObject(trimmed);
+            JSONObject error = root.optJSONObject("error");
+            if (error != null) {
+                int code = error.optInt("code", Integer.MIN_VALUE);
+                String message = error.optString("message", trimmed);
+                return describeRpcMessage(code, message, trimmed);
+            }
+            if (root.has("result")) {
+                return null;
+            }
+        } catch (Exception ignored) {
+            // 非 JSON 情况继续用纯文本判断
+        }
+
+        String lower = trimmed.toLowerCase();
+        if (lower.contains("error") || lower.contains("failed")) {
+            return describeRpcMessage(Integer.MIN_VALUE, trimmed, trimmed);
+        }
+        return null;
+    }
+
+    private String describeRpcMessage(int code, String message, String rawResponse) {
+        String msg = message == null ? "" : message.trim();
+        String lower = msg.toLowerCase();
+
+        if (lower.contains("insufficient funds")) {
+            Matcher matcher = INSUFFICIENT_FUNDS_PATTERN.matcher(msg);
+            if (matcher.find()) {
+                BigInteger requiredWei = new BigInteger(matcher.group(1));
+                BigInteger balanceWei = new BigInteger(matcher.group(2));
+                return "账户余额不足。本次创建大约需要 "
+                        + formatBkc(requiredWei) + " BKC，当前余额约 "
+                        + formatBkc(balanceWei)
+                        + " BKC。请把“初始流动性注入”调低到 1 BKC 左右，或先充值后重试。";
+            }
+            return "账户余额不足，无法提交链上交易。请降低初始流动性或先充值后重试。";
+        }
+
+        if (lower.contains("invalid sign") || lower.contains("replay attack")) {
+            return "交易签名被服务器判定为重复或已失效。请不要连续重复点击创建，等待几秒后重新提交一次。";
+        }
+
+        if (lower.contains("nonce")) {
+            return "链上交易序号异常，可能有交易仍在排队。请稍等片刻后重试，避免连续重复提交。";
+        }
+
+        if (lower.contains("execution reverted") || lower.contains("revert")) {
+            return "链上合约拒绝了这笔交易。技术信息：" + msg;
+        }
+
+        if (code != Integer.MIN_VALUE) {
+            return "BrokerChain RPC 返回错误（code=" + code + "）："
+                    + (msg.isEmpty() ? rawResponse : msg);
+        }
+        return "交易失败：" + (msg.isEmpty() ? rawResponse : msg);
+    }
+
+    private String formatBkc(BigInteger wei) {
+        return new BigDecimal(wei)
+                .divide(WEI_PER_BKC, 6, RoundingMode.HALF_UP)
+                .stripTrailingZeros()
+                .toPlainString();
     }
 
     // ── 交易后链上状态查询 ──
@@ -477,7 +583,7 @@ public class GoldMarketRepository {
      * postState 为 null 时回退使用 tradeInfo 中的值。
      * 每项同步失败独立处理，不阻塞其他同步。
      */
-    private void syncAllToBackend(TradeSyncInfo tradeInfo, String txHash, PostTxState postState) {
+    private void syncAllToBackend(TradeSyncInfo tradeInfo, String txHash, PostTxState preState, PostTxState postState) {
         final int gameId = tradeInfo.gameId;
 
         // ── 1. 同步交易记录 ──
@@ -491,6 +597,8 @@ public class GoldMarketRepository {
             tradeReq.amountWei = tradeInfo.amountWei;
             tradeReq.txHash = txHash;
             tradeReq.isSuccess = true;
+            tradeReq.isAiManaged = tradeInfo.isAiManaged;
+            tradeReq.shareAmountWei = resolveTradeShareAmountWei(tradeInfo, preState, postState);
             if (postState != null) {
                 tradeReq.totalPoolAfter = postState.totalPool;
                 tradeReq.reserveYESAfter = postState.reserveYES;
@@ -567,6 +675,35 @@ public class GoldMarketRepository {
         } catch (Exception e) {
             Log.w(TAG, "❌ 后端链上状态同步失败（非关键）: gameId=" + gameId + " - " + e.getMessage());
         }
+    }
+
+    private String resolveTradeShareAmountWei(TradeSyncInfo tradeInfo, PostTxState preState, PostTxState postState) {
+        if (tradeInfo == null) return "0";
+        String tradeType = tradeInfo.tradeType == null ? "" : tradeInfo.tradeType.trim();
+        if (!"BUY".equalsIgnoreCase(tradeType) && !"SELL".equalsIgnoreCase(tradeType)) {
+            return "0";
+        }
+
+        BigInteger beforeShares = shareOfOption(preState, tradeInfo.optionId);
+        BigInteger afterShares = shareOfOption(postState, tradeInfo.optionId);
+        BigInteger delta;
+        if ("BUY".equalsIgnoreCase(tradeType)) {
+            delta = afterShares.subtract(beforeShares);
+        } else {
+            delta = beforeShares.subtract(afterShares);
+        }
+        if (delta.signum() < 0) {
+            delta = BigInteger.ZERO;
+        }
+        return delta.toString();
+    }
+
+    private BigInteger shareOfOption(PostTxState state, int optionId) {
+        if (state == null) return BigInteger.ZERO;
+        if (optionId == 0) {
+            return parseBigInteger(state.mySharesYES);
+        }
+        return parseBigInteger(state.mySharesNO);
     }
 
     private void waitForLocalReceipt(String txHash) throws Exception {
@@ -1443,7 +1580,52 @@ public class GoldMarketRepository {
 
             } catch (Exception e) {
                 e.printStackTrace();
-                postError(callback, "IPFS 上传失败: " + e.getMessage());
+                String msg = e.getMessage();
+                String step;
+                String reason;
+
+                // 按异常类型精确分类，给出可操作的错误提示
+                if (msg != null && (msg.contains("IPFS") || msg.contains("Pinata"))) {
+                    step = "IPFS 上传失败（本地 IPFS 节点不可达，请确认 IPFS daemon 已启动）";
+                    reason = msg;
+                } else if (msg != null && (msg.contains("Unable to resolve host")
+                        || msg.contains("UnknownHost")
+                        || msg.contains("resolve host"))) {
+                    step = "DNS 解析失败，无法连接服务器 dash.broker-chain.com。请检查设备网络/DNS 设置";
+                    reason = msg;
+                } else if (msg != null && (msg.contains("timeout")
+                        || msg.contains("TimedOut")
+                        || msg.contains("connect")
+                        || msg.contains("Connection")
+                        || msg.contains("Socket")
+                        || msg.contains("Network"))) {
+                    step = "网络连接失败，设备无法访问服务器，请检查网络状态";
+                    reason = msg;
+                } else if (msg != null && (msg.contains("revert")
+                        || msg.contains("gas")
+                        || msg.contains("nonce")
+                        || msg.contains("underpriced"))) {
+                    step = "链上交易被拒绝";
+                    reason = msg;
+                } else if (msg != null && msg.contains("insufficient funds")) {
+                    step = "账户余额不足，无法支付 Gas 费";
+                    reason = msg;
+                } else if (msg != null && (msg.contains("账户余额不足")
+                        || msg.contains("交易签名")
+                        || msg.contains("BrokerChain RPC")
+                        || msg.contains("链上合约拒绝"))) {
+                    step = "提交交易到 BrokerChain";
+                    reason = msg;
+                } else {
+                    step = "博弈池创建失败";
+                    reason = msg;
+                }
+                StringBuilder detail = new StringBuilder();
+                detail.append("失败步骤：").append(step);
+                if (reason != null && !reason.trim().isEmpty()) {
+                    detail.append("\n\n原因：").append(reason);
+                }
+                postError(callback, detail.toString());
             }
         });
     }
@@ -1630,6 +1812,7 @@ public class GoldMarketRepository {
         String tradeType;       // "BUY", "SELL", "CLAIM", "RESOLVE"
         int optionId;
         String amountWei;
+        boolean isAiManaged;
         // 交易后的链上状态（可选，后端可自行从链上刷新）
         String totalPoolAfter;
         String reserveYESAfter;

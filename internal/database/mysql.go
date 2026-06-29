@@ -230,15 +230,20 @@ var ensureTableDDLs = []string{
 	trade_type VARCHAR(10) NOT NULL,
 	option_id TINYINT NOT NULL DEFAULT 0,
 	amount_wei VARBINARY(80) NULL,
+	share_amount_wei VARCHAR(78) NOT NULL DEFAULT '0',
 	shares_wei VARBINARY(80) NULL,
 	price_at_trade DOUBLE NULL,
 	timestamp_sec BIGINT NOT NULL DEFAULT 0,
 	tx_hash VARCHAR(80) NOT NULL DEFAULT '',
 	is_success TINYINT(1) NOT NULL DEFAULT 0,
+	is_ai_managed TINYINT(1) NOT NULL DEFAULT 0,
+	my_shares_yes_after VARCHAR(78) NULL,
+	my_shares_no_after VARCHAR(78) NULL,
 	created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
 	PRIMARY KEY (id),
 	INDEX idx_trades_game (game_id, created_at DESC),
 	INDEX idx_trades_user (user_address, created_at DESC),
-	INDEX idx_trades_game_user_time (game_id, user_address, timestamp_sec DESC)
+	INDEX idx_trades_game_user_time (game_id, user_address, timestamp_sec DESC),
+	INDEX idx_gold_trades_game_user (game_id, user_address)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 }

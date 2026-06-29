@@ -94,7 +94,13 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
             }
         });
         viewModel.getError().observe(this, err -> {
-            if (err != null) Toast.makeText(this, "部署失败: " + err, Toast.LENGTH_LONG).show();
+            if (err != null) {
+                new AlertDialog.Builder(this)
+                        .setTitle("博弈池创建失败")
+                        .setMessage(err)
+                        .setPositiveButton("知道了", null)
+                        .show();
+            }
         });
     }
 
@@ -162,6 +168,15 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
                 break;
             case "TYPE_TOUCH": tvTemplateDetail.setText("极值触碰博弈。"); etParam1.setHint("触碰价格 (USD)"); break;
             case "TYPE_RELATIVE": tvTemplateDetail.setText("博弈黄金相对于其他资产的收益率。"); etParam1.setHint("对比标的 (如: BTC)"); break;
+            case "TYPE_PRICE_THRESHOLD":
+                tvTemplateDetail.setText("博弈截止时刻金价大于/小于/等于指定价格。");
+                containerTechnical.setVisibility(View.VISIBLE); spinnerIndicator.setVisibility(View.GONE);
+                updateOperatorSpinner(true); etParam1.setHint("目标价格 (USD)");
+                break;
+            case "TYPE_EVENT":
+                tvTemplateDetail.setText("博弈指定宏观/财经事件在截止日期前是否发生。");
+                etParam1.setHint("事件描述 (如: 美联储降息)");
+                break;
         }
     }
 
@@ -174,7 +189,7 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
             spinnerDirection.setSelection(json.optInt("directionIdx", 0));
             spinnerIndicator.setSelection(json.optInt("indicatorIdx", 0));
             spinnerOperator.setSelection(json.optInt("operatorIdx", 0));
-            etInitialLiquidity.setText(json.optString("liquidity", "100"));
+            etInitialLiquidity.setText(json.optString("liquidity", "1"));
 
             int days = json.optInt("daysFromNow", 7);
             endCalendar = Calendar.getInstance();
@@ -241,8 +256,12 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
 
     private void showSummaryDialog(String title, String condition, long start, long end, long dur) {
         String liqStr = etInitialLiquidity.getText().toString().trim();
-        if (liqStr.isEmpty()) liqStr = "100";
+        if (liqStr.isEmpty()) liqStr = "1";
         final java.math.BigInteger liqWei = GoldMarketRepository.parseTokenAmountToWei(liqStr);
+        if (liqWei == null) {
+            Toast.makeText(this, "初始流动性金额无效，请输入有效数字（如 1）", Toast.LENGTH_SHORT).show();
+            return;
+        }
         
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
         View v = LayoutInflater.from(this).inflate(R.layout.dialog_gold_pool_summary, null);
@@ -263,15 +282,27 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
         dialog.show();
     }
 
+    /**
+     * 安全获取 spinner 当前选中文本的中文部分（"大于 (Above)" → "大于"）
+     */
+    private String safeOperatorText() {
+        Object item = spinnerOperator.getSelectedItem();
+        if (item == null) return "大于";
+        String[] parts = item.toString().split(" ");
+        return parts.length > 0 ? parts[0] : "大于";
+    }
+
     private String generateDescriptiveTitle(String p1) {
         String startStr = dateFormat.format(startCalendar.getTime()), endStr = dateFormat.format(endCalendar.getTime());
         switch (templateType != null ? templateType : "") {
             case "TYPE_PRICE": return String.format("%s 至 %s 黄金价格 %s", startStr, endStr, spinnerDirection.getSelectedItem().toString().split(" ")[0]);
             case "TYPE_VOLATILITY": return String.format("%s 前黄金波幅超过 %s%%", endStr, p1);
-            case "TYPE_VOLUME": return String.format("%s 当日成交量 %s %s 吨", endStr, spinnerOperator.getSelectedItem().toString().split(" ")[0], p1);
+            case "TYPE_VOLUME": return String.format("%s 当日成交量 %s %s 吨", endStr, safeOperatorText(), p1);
             case "TYPE_TOUCH": return String.format("周期内金价触及 %s USD", p1);
             case "TYPE_TECHNICAL": return String.format("指标 %s 触发 %s %s", spinnerIndicator.getSelectedItem(), spinnerOperator.getSelectedItem(), p1);
             case "TYPE_RELATIVE": return String.format("黄金收益率跑赢 %s", p1);
+            case "TYPE_PRICE_THRESHOLD": return String.format("截止 %s 金价 %s %s USD", endStr, safeOperatorText(), p1);
+            case "TYPE_EVENT": return String.format("「%s」是否发生", p1);
             default: return templateTitle;
         }
     }
@@ -285,6 +316,8 @@ public class GoldCreateCustomActivity extends AppCompatActivity {
             case "TYPE_TECHNICAL": return String.format("指标 %s %s %s (%s)", spinnerIndicator.getSelectedItem(), spinnerOperator.getSelectedItem(), p1, period);
             case "TYPE_TOUCH": return String.format("金价曾触及 %s USD (%s)", p1, period);
             case "TYPE_RELATIVE": return String.format("黄金收益率跑赢 %s (%s)", p1, period);
+            case "TYPE_PRICE_THRESHOLD": return String.format("黄金价格 %s %s USD (%s)", safeOperatorText(), p1, period);
+            case "TYPE_EVENT": return String.format("事件「%s」是否发生 (%s)", p1, period);
             default: return "自定义: " + p1;
         }
     }

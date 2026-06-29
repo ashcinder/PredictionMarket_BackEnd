@@ -96,13 +96,15 @@ const (
 	// gold_trades
 	insertTradeSQL = `INSERT INTO gold_trades
 		(game_id, contract_address, user_address, trade_type, option_id, amount_wei,
-		shares_wei, price_at_trade, timestamp_sec, tx_hash, is_success, is_ai_managed)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		share_amount_wei, shares_wei, price_at_trade, timestamp_sec, tx_hash, is_success,
+		is_ai_managed, my_shares_yes_after, my_shares_no_after)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	listTradesByGameAndUserSQL = `SELECT id, game_id, trade_type, option_id, amount_wei,
-		shares_wei, price_at_trade, tx_hash, timestamp_sec, is_success, is_ai_managed
+		shares_wei, share_amount_wei, price_at_trade, tx_hash, timestamp_sec,
+		is_success, is_ai_managed, my_shares_yes_after, my_shares_no_after, created_at
 		FROM gold_trades WHERE game_id = ? AND user_address = ?
-		ORDER BY timestamp_sec DESC, id DESC`
+		ORDER BY created_at DESC, id DESC`
 )
 
 // MySQLRepository implements all five v1 repository interfaces on a single
@@ -617,12 +619,15 @@ func (r *MySQLRepository) recordTrade(ctx context.Context, trade *tradeRow) erro
 		trade.TradeType,
 		trade.OptionID,
 		bigIntToDBBytes(trade.AmountWei),
+		trade.ShareAmountWei,
 		bigIntToDBBytes(trade.SharesWei),
 		trade.PriceAtTrade,
 		trade.TimestampSec,
 		trade.TxHash,
 		trade.IsSuccess,
 		trade.IsAiManaged,
+		trade.MySharesYesAfter,
+		trade.MySharesNoAfter,
 	)
 	if err != nil {
 		return fmt.Errorf("record trade %d: %w", trade.GameID, err)
@@ -631,8 +636,8 @@ func (r *MySQLRepository) recordTrade(ctx context.Context, trade *tradeRow) erro
 }
 
 // ListTradesByGameAndUser returns all trades for a given game and user, ordered
-// by timestamp_sec DESC (most recent first). Returns an empty slice when no
-// trades exist.
+// by the database creation time (most recent first). Returns an empty slice
+// when no trades exist.
 func (r *MySQLRepository) ListTradesByGameAndUser(ctx context.Context, gameID int, userAddress string) ([]TradeRecordDTO, error) {
 	trades, err := r.listTradesByGameAndUser(ctx, gameID, userAddress)
 	if err != nil && r.retryAfterRecover(err, "gold_trades") {
@@ -654,16 +659,23 @@ func (r *MySQLRepository) listTradesByGameAndUser(ctx context.Context, gameID in
 		var t TradeRecordDTO
 		var amountWei, sharesWei []byte
 		var priceAtTrade sql.NullFloat64
+		var shareAmountWei, sharesYesAfter, sharesNoAfter sql.NullString
+		var createdAt time.Time
 		var scanGameID int
 		if err := rows.Scan(
 			&t.TradeID, &scanGameID, &t.TradeType, &t.OptionID,
-			&amountWei, &sharesWei, &priceAtTrade,
+			&amountWei, &sharesWei, &shareAmountWei, &priceAtTrade,
 			&t.TxHash, &t.TimestampSec, &t.IsSuccess, &t.IsAiManaged,
+			&sharesYesAfter, &sharesNoAfter, &createdAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan trade row: %w", err)
 		}
 		t.AmountWei = bigIntOrZero(parseBigIntStr(string(amountWei)))
 		t.SharesWei = bigIntOrZero(parseBigIntStr(string(sharesWei)))
+		t.ShareAmountWei = shareAmountWei.String
+		t.MySharesYesAfter = sharesYesAfter.String
+		t.MySharesNoAfter = sharesNoAfter.String
+		t.CreatedAt = createdAt.Format("2006-01-02 15:04:05")
 		if priceAtTrade.Valid {
 			t.PriceAtTrade = priceAtTrade.Float64
 		}

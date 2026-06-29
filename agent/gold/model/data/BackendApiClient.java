@@ -301,6 +301,23 @@ public class BackendApiClient {
         return json.optBoolean("success", false);
     }
 
+    // ==================== 交易历史 API ====================
+
+    /**
+     * 获取用户在指定博弈池的交易历史
+     *
+     * GET /api/v1/gold/trades?game_id=X&user_address=Y
+     * Response: { "trades": [ TradeDTO, ... ] }
+     */
+    public static List<TradeDTO> fetchTradeHistory(int gameId, String userAddress) throws Exception {
+        String path = String.format("/trades?game_id=%d&user_address=%s", gameId, userAddress);
+        String body = doGet(path);
+        JSONObject json = new JSONObject(body);
+        JSONArray arr = json.getJSONArray("trades");
+        Type listType = new TypeToken<List<TradeDTO>>(){}.getType();
+        return gson.fromJson(arr.toString(), listType);
+    }
+
     // ==================== AI 托管状态 API ====================
 
     /**
@@ -507,6 +524,41 @@ public class BackendApiClient {
     }
 
     /**
+     * 交易历史记录 DTO（从后端查询用户交易历史）
+     */
+    public static class TradeDTO {
+        @SerializedName("trade_type")
+        public String tradeType; // "BUY", "SELL", "CLAIM"
+
+        @SerializedName("option_id")
+        public int optionId;
+
+        @SerializedName("amount_wei")
+        public String amountWei;
+
+        @SerializedName("share_amount_wei")
+        public String shareAmountWei;
+
+        @SerializedName("is_success")
+        public boolean isSuccess;
+
+        @SerializedName("is_ai_managed")
+        public boolean isAiManaged;
+
+        @SerializedName("tx_hash")
+        public String txHash;
+
+        @SerializedName("created_at")
+        public String createdAt;
+
+        @SerializedName("my_shares_yes_after")
+        public String mySharesYESAfter;
+
+        @SerializedName("my_shares_no_after")
+        public String mySharesNOAfter;
+    }
+
+    /**
      * 交易同步请求
      */
     public static class TradeSyncReq {
@@ -533,6 +585,12 @@ public class BackendApiClient {
 
         @SerializedName("is_success")
         public boolean isSuccess;
+
+        @SerializedName("share_amount_wei")
+        public String shareAmountWei;
+
+        @SerializedName("is_ai_managed")
+        public boolean isAiManaged;
 
         // 同步当前链上状态
         @SerializedName("total_pool_after")

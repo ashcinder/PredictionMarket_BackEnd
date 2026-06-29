@@ -1327,6 +1327,8 @@ GET /api/v1/gold/trades?game_id={gameId}&user_address={userAddress}
       "option_id": 0,
       "amount_wei": "1000000000000000000",
       "share_amount_wei": "12500000000000000000",
+      "my_shares_yes_after": "12500000000000000000",
+      "my_shares_no_after": "0",
       "is_success": true,
       "is_ai_managed": false,
       "tx_hash": "0xabc123...",
@@ -1337,6 +1339,8 @@ GET /api/v1/gold/trades?game_id={gameId}&user_address={userAddress}
       "option_id": 1,
       "amount_wei": "500000000000000000",
       "share_amount_wei": "6200000000000000000",
+      "my_shares_yes_after": "12500000000000000000",
+      "my_shares_no_after": "6200000000000000000",
       "is_success": true,
       "is_ai_managed": true,
       "tx_hash": "0xdef456...",
@@ -1354,16 +1358,18 @@ GET /api/v1/gold/trades?game_id={gameId}&user_address={userAddress}
 | `option_id` | int | 0 = YES, 1 = NO |
 | `amount_wei` | string | 用户支付的 BKC 金额（wei 单位，18 位小数） |
 | `share_amount_wei` | string | 🆕 用户实际获得的份额数（wei 单位，18 位小数）。前端用于展示"XX 份额" |
+| `my_shares_yes_after` | string | 🆕 该笔交易完成后，用户持有的 YES 总份额（wei） |
+| `my_shares_no_after` | string | 🆕 该笔交易完成后，用户持有的 NO 总份额（wei） |
 | `is_success` | bool | 交易是否成功 |
 | `is_ai_managed` | bool | 🆕 该笔交易是否由 AI 托管自动执行 |
 | `tx_hash` | string | 链上交易哈希 |
-| `created_at` | string | 交易时间（格式 `yyyy-MM-dd HH:mm:ss`） |
+| `created_at` | string | 交易时间（格式 `yyyy-MM-dd HH:mm:ss` 或 RFC3339）。禁止返回空串、`1970-01-01 00:00:00`、零时间 |
 
 **前端行为：**
 - 仅展示 `trade_type == "BUY"` 的记录（不展示 SELL/CLAIM）
 - `option_id == 0` → 绿色 YES 标签；`option_id == 1` → 红色 NO 标签
 - `is_ai_managed == true` → 显示紫色「AI托管」标签；`false` → 显示灰色「手动」标签
-- `share_amount_wei` 为空或为 0 → 显示「-- 份额」
+- `share_amount_wei` 为空或为 0 时，前端会尝试用 `my_shares_yes_after` / `my_shares_no_after` 反推本次成交份额
 - 按 `created_at` 倒序排列展示
 - 后端不可用时静默降级，显示「暂无交易记录」
 
@@ -1464,7 +1470,8 @@ func GetTradeHistory(c *gin.Context) {
     // 从 gold_trades 表查询
     rows, err := db.Query(`
         SELECT trade_type, option_id, amount_wei, share_amount_wei,
-               is_success, is_ai_managed, tx_hash, created_at
+               is_success, is_ai_managed, tx_hash, created_at,
+               my_shares_yes_after, my_shares_no_after
         FROM gold_trades
         WHERE game_id = $1 AND user_address = $2
         ORDER BY created_at DESC
@@ -1484,6 +1491,8 @@ func GetTradeHistory(c *gin.Context) {
       "option_id": 0,
       "amount_wei": "1000000000000000000",
       "share_amount_wei": "12500000000000000000",
+      "my_shares_yes_after": "12500000000000000000",
+      "my_shares_no_after": "0",
       "is_success": true,
       "is_ai_managed": false,
       "tx_hash": "0x...",
@@ -1506,6 +1515,12 @@ type TradeSyncReq struct {
     IsAiManaged    bool   `json:"is_ai_managed"`     // 是否 AI 托管
 }
 ```
+
+**2026-06-29 补充说明：**
+
+- Android 客户端现已在交易确认后，用“交易前持仓”和“交易后持仓”的差值自动计算 `share_amount_wei`，并随 `POST /api/v1/gold/trades/sync` 一起上传。
+- 后端 `GET /api/v1/gold/trades` 请务必原样返回 `share_amount_wei`，不要在查询层把空值替换成 `0`，除非数据库里确实就是 0。
+- `created_at` 请返回真实入库时间；如果历史脏数据里出现 `1970-01-01 00:00:00`，需要做一次数据修复或在接口层过滤成真实创建时间。
 
 **插入 SQL 更新（Go 示例）：**
 ```go
@@ -1546,10 +1561,12 @@ _, err := db.Exec(`
 | 场景 | 前端行为 |
 |------|---------|
 | 后端尚未部署新接口 | `fetchTradeHistory()` 静默失败，显示「暂无交易记录」，池信息/持仓估值仍正常显示 |
-| `share_amount_wei` 为 `"0"` 或空 | 显示「-- 份额」 |
+| `share_amount_wei` 为 `"0"` 或空，但返回了 `my_shares_*_after` | 前端自动用持仓快照差值反推份额 |
+| `share_amount_wei` 为 `"0"` 或空，且没有 `my_shares_*_after` | 显示「份额待同步」 |
 | `is_ai_managed` 为 `false`（默认值） | 显示灰色「手动」标签 |
 | 仅有 SELL/CLAIM 记录 | 过滤后为空，显示「暂无交易记录」 |
 | 旧数据无 `is_ai_managed` 字段 | DB 默认值 `FALSE` → 显示「手动」 |
+| `created_at` 返回空值或 Unix 零时间 | 前端显示「时间待同步」 |
 
 ---
 
@@ -1563,4 +1580,3 @@ _, err := db.Exec(`
 ---
 
 **最后更新：** 2026年6月29日（v1.1 新增交易历史 API + 个人持仓详情页）
-

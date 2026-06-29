@@ -133,7 +133,7 @@ public class GoldMyPositionsFragment extends Fragment {
             tvProfit.setText(game.isRefunded ? "已退款" : (game.isResolved ? "已结算" : "AMM估值"));
 
             card.setOnClickListener(v -> {
-                Intent intent = new Intent(requireContext(), GoldMarketDetailActivity.class);
+                Intent intent = new Intent(requireContext(), GoldPositionDetailActivity.class);
                 intent.putExtra("GAME_ID", game.id);
                 startActivity(intent);
             });

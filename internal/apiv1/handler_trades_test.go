@@ -76,6 +76,19 @@ func (m *mockChainStateRepo) UpsertChainStateDeadline(_ context.Context, gameID 
 // mockTradeRepo implements TradeRepository for handler-level tests.
 type mockTradeRepo struct {
 	records []*tradeRow
+	trades  []TradeRecordDTO
+}
+
+type mockPositionRepo struct{}
+
+func (*mockPositionRepo) GetUserPosition(context.Context, string, int) (*userPositionRow, error) {
+	return nil, nil
+}
+func (*mockPositionRepo) ListUserPositions(context.Context, string) ([]userPositionRow, error) {
+	return nil, nil
+}
+func (*mockPositionRepo) UpsertUserPosition(context.Context, *userPositionRow) error {
+	return nil
 }
 
 func (m *mockTradeRepo) RecordTrade(_ context.Context, trade *tradeRow) error {
@@ -84,7 +97,87 @@ func (m *mockTradeRepo) RecordTrade(_ context.Context, trade *tradeRow) error {
 }
 
 func (m *mockTradeRepo) ListTradesByGameAndUser(_ context.Context, _ int, _ string) ([]TradeRecordDTO, error) {
-	return nil, nil
+	return m.trades, nil
+}
+
+func TestGetTradesReturnsPurchaseTimeSharesAndPositionSnapshots(t *testing.T) {
+	tradeMock := &mockTradeRepo{trades: []TradeRecordDTO{{
+		TradeType:        "BUY",
+		OptionID:         0,
+		AmountWei:        "1000000000000000000",
+		ShareAmountWei:   "12500000000000000000",
+		MySharesYesAfter: "12500000000000000000",
+		MySharesNoAfter:  "0",
+		IsSuccess:        true,
+		IsAiManaged:      false,
+		TxHash:           "0xabc",
+		CreatedAt:        "2026-06-29 14:30:00",
+	}}}
+	srv := NewServer(nil, nil, nil, nil, tradeMock, nil, nil, nil, "0xContract", 256)
+	mux := http.NewServeMux()
+	srv.Register(mux)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/v1/gold/trades?game_id=1&user_address=0x1234567890123456789012345678901234567890", nil)
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Trades []TradeHistoryItemDTO `json:"trades"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Trades) != 1 {
+		t.Fatalf("expected one trade, got %d", len(response.Trades))
+	}
+	got := response.Trades[0]
+	if got.ShareAmountWei != "12500000000000000000" ||
+		got.MySharesYesAfter != "12500000000000000000" ||
+		got.MySharesNoAfter != "0" {
+		t.Fatalf("unexpected share fields: %+v", got)
+	}
+	if got.CreatedAt != "2026-06-29 14:30:00" {
+		t.Fatalf("expected database purchase time, got %q", got.CreatedAt)
+	}
+}
+
+func TestSyncTradeStoresPositionDetailFields(t *testing.T) {
+	tradeMock := &mockTradeRepo{}
+	srv := NewServer(nil, &mockChainStateRepo{}, &mockPositionRepo{}, nil, tradeMock, nil, nil, nil, "0xContract", 256)
+	mux := http.NewServeMux()
+	srv.Register(mux)
+
+	body := `{
+		"game_id":1,
+		"contract_address":"0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c",
+		"user_address":"0x1234567890123456789012345678901234567890",
+		"trade_type":"BUY",
+		"option_id":0,
+		"amount_wei":"100",
+		"share_amount_wei":"1250",
+		"my_shares_yes_after":"1250",
+		"my_shares_no_after":"0",
+		"tx_hash":"0xabc",
+		"is_success":true
+	}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/gold/trades/sync", strings.NewReader(body))
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(tradeMock.records) != 1 {
+		t.Fatalf("expected one recorded trade, got %d", len(tradeMock.records))
+	}
+	got := tradeMock.records[0]
+	if got.ShareAmountWei != "1250" || got.MySharesYesAfter != "1250" || got.MySharesNoAfter != "0" {
+		t.Fatalf("position detail fields not recorded: %+v", got)
+	}
 }
 
 // mockGameRepo implements GameMetadataRepository for handler-level tests.

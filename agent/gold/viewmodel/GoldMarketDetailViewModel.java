@@ -38,6 +38,7 @@ public class GoldMarketDetailViewModel extends AndroidViewModel {
     public LiveData<String> getTxStatus() { return txStatus; }
     public LiveData<String> getDebugToast() { return debugToast; }
     public String getMarketAiContext() { return marketAiContext; }
+    public String getWalletAddress() { return repository.getWalletAddress(); }
 
     public void loadGameInfo(int gameId) {
         isLoading.setValue(true);

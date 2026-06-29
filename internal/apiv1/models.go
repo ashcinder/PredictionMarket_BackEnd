@@ -152,29 +152,35 @@ type PositionDetailDTO struct {
 
 // TradeRecordDTO represents a single trade record in the position detail response.
 type TradeRecordDTO struct {
-	TradeID      int64   `json:"trade_id"`
-	TradeType    string  `json:"trade_type"`
-	OptionID     int     `json:"option_id"`
-	OptionName   string  `json:"option_name"`
-	AmountWei    string  `json:"amount_wei"`
-	SharesWei    string  `json:"shares_wei"`
-	PriceAtTrade float64 `json:"price_at_trade"`
-	TxHash       string  `json:"tx_hash"`
-	TimestampSec int64   `json:"timestamp_sec"`
-	IsSuccess    bool    `json:"is_success"`
-	IsAiManaged  bool    `json:"is_ai_managed"`
+	TradeID          int64   `json:"trade_id"`
+	TradeType        string  `json:"trade_type"`
+	OptionID         int     `json:"option_id"`
+	OptionName       string  `json:"option_name"`
+	AmountWei        string  `json:"amount_wei"`
+	SharesWei        string  `json:"shares_wei"`
+	ShareAmountWei   string  `json:"share_amount_wei,omitempty"`
+	MySharesYesAfter string  `json:"my_shares_yes_after,omitempty"`
+	MySharesNoAfter  string  `json:"my_shares_no_after,omitempty"`
+	PriceAtTrade     float64 `json:"price_at_trade"`
+	TxHash           string  `json:"tx_hash"`
+	TimestampSec     int64   `json:"timestamp_sec"`
+	CreatedAt        string  `json:"created_at,omitempty"`
+	IsSuccess        bool    `json:"is_success"`
+	IsAiManaged      bool    `json:"is_ai_managed"`
 }
 
 // TradeHistoryItemDTO is the JSON shape returned by GET /api/v1/gold/trades.
 type TradeHistoryItemDTO struct {
-	TradeType      string `json:"trade_type"`
-	OptionID       int    `json:"option_id"`
-	AmountWei      string `json:"amount_wei"`
-	ShareAmountWei string `json:"share_amount_wei"`
-	IsSuccess      bool   `json:"is_success"`
-	IsAiManaged    bool   `json:"is_ai_managed"`
-	TxHash         string `json:"tx_hash"`
-	CreatedAt      string `json:"created_at"`
+	TradeType        string `json:"trade_type"`
+	OptionID         int    `json:"option_id"`
+	AmountWei        string `json:"amount_wei"`
+	ShareAmountWei   string `json:"share_amount_wei"`
+	IsSuccess        bool   `json:"is_success"`
+	IsAiManaged      bool   `json:"is_ai_managed"`
+	TxHash           string `json:"tx_hash"`
+	CreatedAt        string `json:"created_at"`
+	MySharesYesAfter string `json:"my_shares_yes_after"`
+	MySharesNoAfter  string `json:"my_shares_no_after"`
 }
 
 // ---------------------------------------------------------------------------
@@ -227,20 +233,23 @@ type priceHistoryRow struct {
 }
 
 type tradeRow struct {
-	ID              int64
-	GameID          int
-	ContractAddress string
-	UserAddress     string
-	TradeType       string
-	OptionID        int
-	AmountWei       *big.Int
-	SharesWei       *big.Int
-	PriceAtTrade    float64
-	TimestampSec    int64
-	TxHash          string
-	IsSuccess       bool
-	IsAiManaged     bool
-	CreatedAt       string
+	ID               int64
+	GameID           int
+	ContractAddress  string
+	UserAddress      string
+	TradeType        string
+	OptionID         int
+	AmountWei        *big.Int
+	SharesWei        *big.Int
+	ShareAmountWei   string
+	MySharesYesAfter string
+	MySharesNoAfter  string
+	PriceAtTrade     float64
+	TimestampSec     int64
+	TxHash           string
+	IsSuccess        bool
+	IsAiManaged      bool
+	CreatedAt        string
 }
 
 // ---------------------------------------------------------------------------
