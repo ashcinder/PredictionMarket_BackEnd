@@ -26,6 +26,7 @@ type GameMetaDTO struct {
 	OptionYes       string `json:"option_yes"`
 	OptionNo        string `json:"option_no"`
 	CreatorAddress  string `json:"creator_address"`
+	DeadlineSec     int64  `json:"deadline_sec"`
 	CreatedAt       string `json:"created_at"`
 	UpdatedAt       string `json:"updated_at"`
 }
@@ -33,17 +34,18 @@ type GameMetaDTO struct {
 // SyncGameRequest is the request body for POST /api/v1/gold/games/sync.
 // When GameID == 0 the handler resolves the real ID from the chain via IPFS CID.
 type SyncGameRequest struct {
-	GameID          int    `json:"game_id"`
-	ContractAddress string `json:"contract_address"`
-	IPFSCID         string `json:"ipfs_cid"`
-	Desc            string `json:"desc"`
-	Condition       string `json:"condition"`
-	AvatarURL       string `json:"avatar_url"`
-	DetailedInfo    string `json:"detailed_info"`
-	OptionYes       string `json:"option_yes"`
-	OptionNo        string `json:"option_no"`
-	CreatorAddress  string `json:"creator_address"`
-	DurationSec     int64  `json:"duration_sec"`
+	GameID           int    `json:"game_id"`
+	ContractAddress  string `json:"contract_address"`
+	IPFSCID          string `json:"ipfs_cid"`
+	Desc             string `json:"desc"`
+	Condition        string `json:"condition"`
+	AvatarURL        string `json:"avatar_url"`
+	DetailedInfo     string `json:"detailed_info"`
+	OptionYes        string `json:"option_yes"`
+	OptionNo         string `json:"option_no"`
+	CreatorAddress   string `json:"creator_address"`
+	DurationSec      int64  `json:"duration_sec"`
+	DeadlineSec      int64  `json:"deadline_sec"`
 	InitialLiquidity string `json:"initial_liquidity_wei"`
 }
 
@@ -76,10 +78,12 @@ type SyncChainStateRequest struct {
 	IsResolved    bool   `json:"is_resolved"`
 	IsRefunded    bool   `json:"is_refunded"`
 	WinningOption int    `json:"winning_option"`
+	DeadlineSec   int64  `json:"deadline_sec"`
 	ReserveYes    string `json:"reserve_yes"`
 	ReserveNo     string `json:"reserve_no"`
 	MySharesYes   string `json:"my_shares_yes"`
 	MySharesNo    string `json:"my_shares_no"`
+	UserAddress   string `json:"user_address"`
 }
 
 // PricePointDTO is the JSON shape for GET /api/v1/gold/games/{id}/history.
@@ -93,30 +97,84 @@ type PricePointDTO struct {
 
 // AddHistoryRequest is the request body for POST /api/v1/gold/games/{id}/history.
 type AddHistoryRequest struct {
-	GameID       int    `json:"game_id"`
-	TimestampSec int64  `json:"timestamp_sec"`
+	GameID       int     `json:"game_id"`
+	TimestampSec int64   `json:"timestamp_sec"`
 	YesPrice     float64 `json:"yes_price"`
 	NoPrice      float64 `json:"no_price"`
-	TotalPool    string `json:"total_pool"`
+	TotalPool    string  `json:"total_pool"`
 }
 
 // SyncTradeRequest is the request body for POST /api/v1/gold/trades/sync.
 type SyncTradeRequest struct {
-	GameID        int    `json:"game_id"`
-	ContractAddr  string `json:"contract_address"`
-	UserAddress   string `json:"user_address"`
-	TradeType     string `json:"trade_type"`
-	OptionID      int    `json:"option_id"`
-	AmountWei     string `json:"amount_wei"`
-	TxHash        string `json:"tx_hash"`
-	IsSuccess     bool   `json:"is_success"`
+	GameID       int    `json:"game_id"`
+	ContractAddr string `json:"contract_address"`
+	UserAddress  string `json:"user_address"`
+	TradeType    string `json:"trade_type"`
+	OptionID     int    `json:"option_id"`
+	AmountWei    string `json:"amount_wei"`
+	TxHash       string `json:"tx_hash"`
+	IsSuccess    bool   `json:"is_success"`
 	// Post-trade state fields (optional — when present, chain state and user
 	// positions are also upserted).
-	TotalPoolAfter    string `json:"total_pool_after"`
-	ReserveYesAfter   string `json:"reserve_yes_after"`
-	ReserveNoAfter    string `json:"reserve_no_after"`
-	MySharesYesAfter  string `json:"my_shares_yes_after"`
-	MySharesNoAfter   string `json:"my_shares_no_after"`
+	TotalPoolAfter   string `json:"total_pool_after"`
+	ReserveYesAfter  string `json:"reserve_yes_after"`
+	ReserveNoAfter   string `json:"reserve_no_after"`
+	MySharesYesAfter string `json:"my_shares_yes_after"`
+	MySharesNoAfter  string `json:"my_shares_no_after"`
+	// Trade detail fields (optional — stored for the position detail API).
+	SharesWei    string  `json:"shares_wei"`
+	PriceAtTrade float64 `json:"price_at_trade"`
+	TimestampSec int64   `json:"timestamp_sec"`
+	// v1.1 new fields.
+	ShareAmountWei string `json:"share_amount_wei"`
+	IsAiManaged    bool   `json:"is_ai_managed"`
+}
+
+// PositionDetailDTO is the response shape for
+// GET /api/v1/gold/games/{id}/positions?user_address=...
+type PositionDetailDTO struct {
+	GameID        int              `json:"game_id"`
+	Desc          string           `json:"desc"`
+	Condition     string           `json:"condition"`
+	AvatarURL     string           `json:"avatar_url"`
+	OptionNames   []string         `json:"option_names"`
+	IsResolved    bool             `json:"is_resolved"`
+	IsRefunded    bool             `json:"is_refunded"`
+	WinningOption int              `json:"winning_option"`
+	DeadlineSec   int64            `json:"deadline_sec"`
+	TotalPool     string           `json:"total_pool"`
+	ReserveYes    string           `json:"reserve_yes"`
+	ReserveNo     string           `json:"reserve_no"`
+	MySharesYes   string           `json:"my_shares_yes"`
+	MySharesNo    string           `json:"my_shares_no"`
+	Trades        []TradeRecordDTO `json:"trades"`
+}
+
+// TradeRecordDTO represents a single trade record in the position detail response.
+type TradeRecordDTO struct {
+	TradeID      int64   `json:"trade_id"`
+	TradeType    string  `json:"trade_type"`
+	OptionID     int     `json:"option_id"`
+	OptionName   string  `json:"option_name"`
+	AmountWei    string  `json:"amount_wei"`
+	SharesWei    string  `json:"shares_wei"`
+	PriceAtTrade float64 `json:"price_at_trade"`
+	TxHash       string  `json:"tx_hash"`
+	TimestampSec int64   `json:"timestamp_sec"`
+	IsSuccess    bool    `json:"is_success"`
+	IsAiManaged  bool    `json:"is_ai_managed"`
+}
+
+// TradeHistoryItemDTO is the JSON shape returned by GET /api/v1/gold/trades.
+type TradeHistoryItemDTO struct {
+	TradeType      string `json:"trade_type"`
+	OptionID       int    `json:"option_id"`
+	AmountWei      string `json:"amount_wei"`
+	ShareAmountWei string `json:"share_amount_wei"`
+	IsSuccess      bool   `json:"is_success"`
+	IsAiManaged    bool   `json:"is_ai_managed"`
+	TxHash         string `json:"tx_hash"`
+	CreatedAt      string `json:"created_at"`
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +192,7 @@ type gameRow struct {
 	OptionYes       string
 	OptionNo        string
 	CreatorAddress  string
+	DeadlineSec     int64
 	CreatedAt       string
 	UpdatedAt       string
 }
@@ -153,8 +212,8 @@ type chainStateRow struct {
 type userPositionRow struct {
 	UserAddress string
 	GameID      int
-	MySharesYes  *big.Int
-	MySharesNo   *big.Int
+	MySharesYes *big.Int
+	MySharesNo  *big.Int
 	UpdatedAt   string
 }
 
@@ -175,8 +234,12 @@ type tradeRow struct {
 	TradeType       string
 	OptionID        int
 	AmountWei       *big.Int
+	SharesWei       *big.Int
+	PriceAtTrade    float64
+	TimestampSec    int64
 	TxHash          string
 	IsSuccess       bool
+	IsAiManaged     bool
 	CreatedAt       string
 }
 
@@ -201,7 +264,29 @@ type GameMetadataRepository interface {
 type ChainStateRepository interface {
 	GetChainState(ctx context.Context, gameID int) (*chainStateRow, error)
 	ListAllChainStates(ctx context.Context) ([]chainStateRow, error)
+	// UpsertChainState performs a full-field upsert (all columns). Use this
+	// when the caller has complete chain state data (e.g. /chain-state/sync,
+	// sampler extension).
 	UpsertChainState(ctx context.Context, state *chainStateRow) error
+	// UpsertChainStatePool performs a sparse upsert that only touches
+	// total_pool, reserve_yes, reserve_no. All three must be non-nil
+	// (the caller must validate and reject partial requests). Existing
+	// deadline_sec, is_resolved, is_refunded, and winning_option values
+	// are preserved on duplicate key.
+	// Use this for cascade writes from /trades/sync where only pool
+	// reserves are known post-trade.
+	UpsertChainStatePool(ctx context.Context, gameID int, totalPool, reserveYes, reserveNo *big.Int) error
+	// UpsertChainStateDeadline performs a sparse upsert that only touches
+	// deadline_sec. All other columns are preserved on duplicate key.
+	// Use this for deadline-only writes from /games/sync where the full
+	// chain state is not yet available.
+	UpsertChainStateDeadline(ctx context.Context, gameID int, deadlineSec int64) error
+	// UpsertChainStateSkipDeadline performs a full-field upsert EXCEPT for
+	// deadline_sec. On INSERT (new row), deadline_sec defaults to 0. On
+	// DUPLICATE KEY UPDATE, deadline_sec is NOT touched — existing value
+	// is preserved. Use this for /chain-state/sync when the caller does not
+	// have a known-good deadline value (e.g. deadline_sec=0 in request).
+	UpsertChainStateSkipDeadline(ctx context.Context, state *chainStateRow) error
 }
 
 // UserPositionRepository persists per-user share balances so the DApp can
@@ -223,4 +308,5 @@ type PriceHistoryRepository interface {
 // DApp after transaction confirmation.
 type TradeRepository interface {
 	RecordTrade(ctx context.Context, trade *tradeRow) error
+	ListTradesByGameAndUser(ctx context.Context, gameID int, userAddress string) ([]TradeRecordDTO, error)
 }

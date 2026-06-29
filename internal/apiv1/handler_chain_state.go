@@ -127,8 +127,21 @@ func (s *Server) handleSyncChainState(w http.ResponseWriter, r *http.Request) {
 		ReserveNo:     parseBigIntStr(req.ReserveNo),
 		UpdatedAt:     time.Now().UTC().Format(time.RFC3339),
 	}
-	if err := s.chainStates.UpsertChainState(r.Context(), row); err != nil {
-		slog.Warn("apiv1: sync chain state failed", "game_id", gameID, "error", err)
+
+	// Defense-in-depth: when the caller does not provide deadline_sec (0), use a
+	// sparse upsert that preserves the existing deadline. This avoids the non-atomic
+	// read-merge-write pattern and is safe against stale/old frontend clients.
+	// The canonical path (frontend sends deadline_sec from chain via queryPostTxState)
+	// will have req.DeadlineSec > 0 and uses the full UpsertChainState.
+	var upsertErr error
+	if req.DeadlineSec > 0 {
+		upsertErr = s.chainStates.UpsertChainState(r.Context(), row)
+	} else {
+		upsertErr = s.chainStates.UpsertChainStateSkipDeadline(r.Context(), row)
+	}
+
+	if upsertErr != nil {
+		slog.Warn("apiv1: sync chain state failed", "game_id", gameID, "error", upsertErr)
 		writeJSONError(w, http.StatusServiceUnavailable, "failed to sync chain state")
 		return
 	}

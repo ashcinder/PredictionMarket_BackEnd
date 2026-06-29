@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"strings"
 	"sync"
 	"time"
@@ -19,26 +20,29 @@ const (
 	// gold_games
 	selectAllGamesSQL = `SELECT game_id, contract_address, ipfs_cid, ` + "`desc`" + `, ` + "`condition`" + `,
 		avatar_url, detailed_info, option_yes, option_no, creator_address,
-		created_at, updated_at
+		deadline_sec, created_at, updated_at
 		FROM gold_games ORDER BY game_id`
 	selectGameByIDSQL = `SELECT game_id, contract_address, ipfs_cid, ` + "`desc`" + `, ` + "`condition`" + `,
 		avatar_url, detailed_info, option_yes, option_no, creator_address,
-		created_at, updated_at
+		deadline_sec, created_at, updated_at
 		FROM gold_games WHERE game_id = ?`
 	upsertGameSQL = `INSERT INTO gold_games
 		(game_id, contract_address, ipfs_cid, ` + "`desc`" + `, ` + "`condition`" + `,
-		avatar_url, detailed_info, option_yes, option_no, creator_address)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		avatar_url, detailed_info, option_yes, option_no, creator_address,
+		deadline_sec)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 		contract_address=VALUES(contract_address), ipfs_cid=VALUES(ipfs_cid),
 		` + "`desc`" + `=VALUES(` + "`desc`" + `), ` + "`condition`" + `=VALUES(` + "`condition`" + `),
 		avatar_url=VALUES(avatar_url), detailed_info=VALUES(detailed_info),
 		option_yes=VALUES(option_yes), option_no=VALUES(option_no),
-		creator_address=VALUES(creator_address)`
+		creator_address=VALUES(creator_address),
+		deadline_sec=VALUES(deadline_sec)`
 	insertGameIgnoreSQL = `INSERT IGNORE INTO gold_games
 		(game_id, contract_address, ipfs_cid, ` + "`desc`" + `, ` + "`condition`" + `,
-		avatar_url, detailed_info, option_yes, option_no, creator_address)
-		VALUES (?, ?, ?, '', '', '', '', 'YES', 'NO', '')`
+		avatar_url, detailed_info, option_yes, option_no, creator_address,
+		deadline_sec)
+		VALUES (?, ?, ?, '', '', '', '', 'YES', 'NO', '', 0)`
 
 	// gold_chain_states
 	selectChainStateSQL = `SELECT game_id, total_pool, is_resolved, is_refunded,
@@ -56,6 +60,28 @@ const (
 		is_refunded=VALUES(is_refunded), winning_option=VALUES(winning_option),
 		deadline_sec=VALUES(deadline_sec), reserve_yes=VALUES(reserve_yes),
 		reserve_no=VALUES(reserve_no)`
+	upsertChainStatePoolSQL = `INSERT INTO gold_chain_states
+		(game_id, total_pool, is_resolved, is_refunded, winning_option, deadline_sec,
+		reserve_yes, reserve_no)
+		VALUES (?, ?, 0, 0, 0, 0, ?, ?)
+		ON DUPLICATE KEY UPDATE
+		total_pool=VALUES(total_pool),
+		reserve_yes=VALUES(reserve_yes),
+		reserve_no=VALUES(reserve_no)`
+	upsertChainStateDeadlineSQL = `INSERT INTO gold_chain_states
+		(game_id, total_pool, is_resolved, is_refunded, winning_option, deadline_sec,
+		reserve_yes, reserve_no)
+		VALUES (?, 0, 0, 0, 0, ?, 0, 0)
+		ON DUPLICATE KEY UPDATE
+		deadline_sec=VALUES(deadline_sec)`
+	upsertChainStateSkipDeadlineSQL = `INSERT INTO gold_chain_states
+		(game_id, total_pool, is_resolved, is_refunded, winning_option, deadline_sec,
+		reserve_yes, reserve_no)
+		VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+		ON DUPLICATE KEY UPDATE
+		total_pool=VALUES(total_pool), is_resolved=VALUES(is_resolved),
+		is_refunded=VALUES(is_refunded), winning_option=VALUES(winning_option),
+		reserve_yes=VALUES(reserve_yes), reserve_no=VALUES(reserve_no)`
 
 	// gold_user_positions
 	selectUserPositionSQL = `SELECT user_address, game_id, my_shares_yes, my_shares_no, updated_at
@@ -78,8 +104,13 @@ const (
 	// gold_trades
 	insertTradeSQL = `INSERT INTO gold_trades
 		(game_id, contract_address, user_address, trade_type, option_id, amount_wei,
-		tx_hash, is_success)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+		shares_wei, price_at_trade, timestamp_sec, tx_hash, is_success, is_ai_managed)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	listTradesByGameAndUserSQL = `SELECT id, game_id, trade_type, option_id, amount_wei,
+		shares_wei, price_at_trade, tx_hash, timestamp_sec, is_success, is_ai_managed
+		FROM gold_trades WHERE game_id = ? AND user_address = ?
+		ORDER BY timestamp_sec DESC, id DESC`
 )
 
 // MySQLRepository implements all five v1 repository interfaces on a single
@@ -194,6 +225,7 @@ func (r *MySQLRepository) getGameByID(ctx context.Context, gameID int) (*GameMet
 		&g.GameID, &g.ContractAddress, &g.IPFSCID,
 		&desc, &cond, &avatar, &detail,
 		&optYes, &optNo, &creator,
+		&g.DeadlineSec,
 		&g.CreatedAt, &g.UpdatedAt,
 	); err != nil {
 		if err == sql.ErrNoRows {
@@ -255,6 +287,7 @@ func (r *MySQLRepository) upsertGame(ctx context.Context, game *gameRow) (int, e
 		game.AvatarURL, game.DetailedInfo,
 		game.OptionYes, game.OptionNo,
 		normalizeAddress(game.CreatorAddress),
+		game.DeadlineSec,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("upsert game %d: %w", game.GameID, err)
@@ -360,6 +393,87 @@ func (r *MySQLRepository) upsertChainState(ctx context.Context, state *chainStat
 	)
 	if err != nil {
 		return fmt.Errorf("upsert chain state %d: %w", state.GameID, err)
+	}
+	return nil
+}
+
+// UpsertChainStatePool performs a sparse upsert that only writes pool reserves
+// (total_pool, reserve_yes, reserve_no). On INSERT (first-time row), deadline_sec
+// and status fields default to zero — the correct initial state. On DUPLICATE KEY
+// UPDATE, only the three pool columns are touched; deadline_sec, is_resolved,
+// is_refunded, and winning_option are left unchanged.
+func (r *MySQLRepository) UpsertChainStatePool(ctx context.Context, gameID int, totalPool, reserveYes, reserveNo *big.Int) error {
+	err := r.upsertChainStatePool(ctx, gameID, totalPool, reserveYes, reserveNo)
+	if err != nil && r.retryAfterRecover(err, "gold_chain_states") {
+		err = r.upsertChainStatePool(ctx, gameID, totalPool, reserveYes, reserveNo)
+	}
+	return err
+}
+
+func (r *MySQLRepository) upsertChainStatePool(ctx context.Context, gameID int, totalPool, reserveYes, reserveNo *big.Int) error {
+	ctx, cancel := context.WithTimeout(ctx, repoTimeout)
+	defer cancel()
+	_, err := r.db.ExecContext(ctx, upsertChainStatePoolSQL,
+		gameID,
+		bigIntToDBBytes(totalPool),
+		bigIntToDBBytes(reserveYes),
+		bigIntToDBBytes(reserveNo),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert chain state pool %d: %w", gameID, err)
+	}
+	return nil
+}
+
+// UpsertChainStateDeadline performs a sparse upsert that only writes deadline_sec.
+// On INSERT (first-time row), pool and status fields default to zero — the correct
+// initial state. On DUPLICATE KEY UPDATE, only deadline_sec is touched; all other
+// columns (total_pool, reserves, is_resolved, is_refunded, winning_option) are
+// left unchanged.
+func (r *MySQLRepository) UpsertChainStateDeadline(ctx context.Context, gameID int, deadlineSec int64) error {
+	err := r.upsertChainStateDeadline(ctx, gameID, deadlineSec)
+	if err != nil && r.retryAfterRecover(err, "gold_chain_states") {
+		err = r.upsertChainStateDeadline(ctx, gameID, deadlineSec)
+	}
+	return err
+}
+
+func (r *MySQLRepository) upsertChainStateDeadline(ctx context.Context, gameID int, deadlineSec int64) error {
+	ctx, cancel := context.WithTimeout(ctx, repoTimeout)
+	defer cancel()
+	_, err := r.db.ExecContext(ctx, upsertChainStateDeadlineSQL, gameID, deadlineSec)
+	if err != nil {
+		return fmt.Errorf("upsert chain state deadline %d: %w", gameID, err)
+	}
+	return nil
+}
+
+// UpsertChainStateSkipDeadline performs a full-field upsert except for deadline_sec.
+// On INSERT (new row), deadline_sec defaults to 0. On DUPLICATE KEY UPDATE, only
+// the non-deadline columns are touched — the existing deadline_sec is preserved.
+// Use this for /chain-state/sync when the caller does not have a known-good
+// deadline value (e.g. deadline_sec=0 in the request).
+func (r *MySQLRepository) UpsertChainStateSkipDeadline(ctx context.Context, state *chainStateRow) error {
+	err := r.upsertChainStateSkipDeadline(ctx, state)
+	if err != nil && r.retryAfterRecover(err, "gold_chain_states") {
+		err = r.upsertChainStateSkipDeadline(ctx, state)
+	}
+	return err
+}
+
+func (r *MySQLRepository) upsertChainStateSkipDeadline(ctx context.Context, state *chainStateRow) error {
+	ctx, cancel := context.WithTimeout(ctx, repoTimeout)
+	defer cancel()
+	_, err := r.db.ExecContext(ctx, upsertChainStateSkipDeadlineSQL,
+		state.GameID,
+		bigIntToDBBytes(state.TotalPool),
+		state.IsResolved, state.IsRefunded,
+		state.WinningOption,
+		bigIntToDBBytes(state.ReserveYes),
+		bigIntToDBBytes(state.ReserveNo),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert chain state skip deadline %d: %w", state.GameID, err)
 	}
 	return nil
 }
@@ -541,13 +655,65 @@ func (r *MySQLRepository) recordTrade(ctx context.Context, trade *tradeRow) erro
 		trade.TradeType,
 		trade.OptionID,
 		bigIntToDBBytes(trade.AmountWei),
+		bigIntToDBBytes(trade.SharesWei),
+		trade.PriceAtTrade,
+		trade.TimestampSec,
 		trade.TxHash,
 		trade.IsSuccess,
+		trade.IsAiManaged,
 	)
 	if err != nil {
 		return fmt.Errorf("record trade %d: %w", trade.GameID, err)
 	}
 	return nil
+}
+
+// ListTradesByGameAndUser returns all trades for a given game and user, ordered
+// by timestamp_sec DESC (most recent first). Returns an empty slice when no
+// trades exist.
+func (r *MySQLRepository) ListTradesByGameAndUser(ctx context.Context, gameID int, userAddress string) ([]TradeRecordDTO, error) {
+	trades, err := r.listTradesByGameAndUser(ctx, gameID, userAddress)
+	if err != nil && r.retryAfterRecover(err, "gold_trades") {
+		trades, err = r.listTradesByGameAndUser(ctx, gameID, userAddress)
+	}
+	return trades, err
+}
+
+func (r *MySQLRepository) listTradesByGameAndUser(ctx context.Context, gameID int, userAddress string) ([]TradeRecordDTO, error) {
+	ctx, cancel := context.WithTimeout(ctx, repoTimeout)
+	defer cancel()
+	rows, err := r.db.QueryContext(ctx, listTradesByGameAndUserSQL, gameID, normalizeAddress(userAddress))
+	if err != nil {
+		return nil, fmt.Errorf("list trades %d/%s: %w", gameID, userAddress, err)
+	}
+	defer rows.Close()
+	var out []TradeRecordDTO
+	for rows.Next() {
+		var t TradeRecordDTO
+		var amountWei, sharesWei []byte
+		var priceAtTrade sql.NullFloat64
+		var scanGameID int
+		if err := rows.Scan(
+			&t.TradeID, &scanGameID, &t.TradeType, &t.OptionID,
+			&amountWei, &sharesWei, &priceAtTrade,
+			&t.TxHash, &t.TimestampSec, &t.IsSuccess, &t.IsAiManaged,
+		); err != nil {
+			return nil, fmt.Errorf("scan trade row: %w", err)
+		}
+		t.AmountWei = bigIntOrZero(parseBigIntStr(string(amountWei)))
+		t.SharesWei = bigIntOrZero(parseBigIntStr(string(sharesWei)))
+		if priceAtTrade.Valid {
+			t.PriceAtTrade = priceAtTrade.Float64
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate trades: %w", err)
+	}
+	if out == nil {
+		out = []TradeRecordDTO{}
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -563,6 +729,7 @@ func scanGames(rows *sql.Rows) ([]GameMetaDTO, error) {
 			&g.GameID, &g.ContractAddress, &g.IPFSCID,
 			&desc, &cond, &avatar, &detail,
 			&optYes, &optNo, &creator,
+			&g.DeadlineSec,
 			&g.CreatedAt, &g.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan game row: %w", err)
