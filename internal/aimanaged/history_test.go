@@ -19,7 +19,7 @@ func TestPointFromReservesUsesContractNOYESOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if point.Time != 120 || point.YesPercent != 75 || point.NoPercent != 25 {
+	if point.Time != 120 || point.YesPercent != 25 || point.NoPercent != 75 {
 		t.Fatalf("unexpected point: %+v", point)
 	}
 }
@@ -35,7 +35,7 @@ func TestPointFromReservesSupportsHugeIntegers(t *testing.T) {
 		t.Fatal(err)
 	}
 	if math.IsNaN(point.YesPercent) || math.IsInf(point.YesPercent, 0) ||
-		point.YesPercent != 75 || point.NoPercent != 25 {
+		point.YesPercent != 25 || point.NoPercent != 75 {
 		t.Fatalf("unexpected huge-reserve percentages: %+v", point)
 	}
 }
@@ -55,7 +55,7 @@ func TestObservationFromReservesCopiesRawChainValues(t *testing.T) {
 		observation.ReserveYES.Cmp(big.NewInt(75)) != 0 {
 		t.Fatalf("raw reserves were not copied: %+v", observation)
 	}
-	if observation.YesPercent != 75 || observation.NoPercent != 25 {
+	if observation.YesPercent != 25 || observation.NoPercent != 75 {
 		t.Fatalf("unexpected percentages: %+v", observation)
 	}
 }

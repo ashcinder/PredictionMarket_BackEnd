@@ -440,6 +440,9 @@ public class BackendApiClient {
         @SerializedName("game_id")
         public int gameId;
 
+        @SerializedName("contract_address")
+        public String contractAddress;
+
         @SerializedName("total_pool")
         public String totalPool;
 

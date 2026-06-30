@@ -106,14 +106,33 @@ func TestEmbeddedMigrationDefinesPersistenceTables(t *testing.T) {
 			t.Fatalf("migration does not define %s", table)
 		}
 	}
-	var foundSyncState bool
+	var foundSyncState, foundManagedEntries, foundIdempotentPriceHistory, foundProbabilityOrientationFix bool
 	for _, migration := range migrations {
 		if strings.Contains(migration.SQL, "market_sync_state") &&
 			strings.Contains(migration.SQL, "sync_failed") {
 			foundSyncState = true
 		}
+		if strings.Contains(migration.SQL, "ai_managed_entries") {
+			foundManagedEntries = true
+		}
+		if strings.Contains(migration.SQL, "uq_gold_price_history_game_time") {
+			foundIdempotentPriceHistory = true
+		}
+		if strings.Contains(migration.SQL, "100 - yes_percent") &&
+			strings.Contains(migration.SQL, "100 - yes_price") {
+			foundProbabilityOrientationFix = true
+		}
 	}
 	if !foundSyncState {
 		t.Fatalf("migrations do not define sync state and sync outcomes: %+v", migrations)
+	}
+	if !foundManagedEntries {
+		t.Fatalf("migrations do not define ai-managed entries: %+v", migrations)
+	}
+	if !foundIdempotentPriceHistory {
+		t.Fatalf("migrations do not make gold price history idempotent: %+v", migrations)
+	}
+	if !foundProbabilityOrientationFix {
+		t.Fatalf("migrations do not repair historical probability orientation: %+v", migrations)
 	}
 }

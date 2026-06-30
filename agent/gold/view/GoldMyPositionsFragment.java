@@ -135,6 +135,7 @@ public class GoldMyPositionsFragment extends Fragment {
             card.setOnClickListener(v -> {
                 Intent intent = new Intent(requireContext(), GoldPositionDetailActivity.class);
                 intent.putExtra("GAME_ID", game.id);
+                intent.putExtra("CONTRACT_ADDRESS", game.contractAddress);
                 startActivity(intent);
             });
             positionsContainer.addView(card);

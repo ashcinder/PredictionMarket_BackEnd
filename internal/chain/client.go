@@ -241,7 +241,11 @@ func (c *Client) brokerSendTransaction(ctx context.Context, data string, value *
 	if strings.Contains(strings.ToLower(resp), "error") || strings.Contains(strings.ToLower(resp), "failed") {
 		return "", fmt.Errorf("broker chain tx failed: %s", resp)
 	}
-	return resp, nil
+	txHash := extractHexResult(resp)
+	if txHash == "" || txHash == "0x" {
+		return "", fmt.Errorf("broker chain returned empty tx hash: %s", resp)
+	}
+	return txHash, nil
 }
 
 func (c *Client) post(ctx context.Context, endpoint string, body []byte) (string, error) {

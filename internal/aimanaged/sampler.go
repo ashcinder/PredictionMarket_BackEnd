@@ -2,6 +2,7 @@ package aimanaged
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
@@ -11,7 +12,12 @@ import (
 	"PredictionMarket/internal/chain"
 )
 
-const maxSamplerConcurrency = 4
+const (
+	maxSamplerConcurrency   = 4
+	samplerCycleTimeout     = 120 * time.Second
+	samplerChainCallTimeout = 15 * time.Second
+	samplerFallbackTimeout  = 15 * time.Second
+)
 
 // samplerChain is the subset of chain.Client used by MarketHistorySampler.
 type samplerChain interface {
@@ -79,7 +85,7 @@ func (s *MarketHistorySampler) Run(ctx context.Context) error {
 	defer ticker.Stop()
 
 	// Sample immediately with a generous deadline for the initial cycle.
-	initCtx, initCancel := context.WithTimeout(ctx, 120*time.Second)
+	initCtx, initCancel := context.WithTimeout(ctx, samplerCycleTimeout)
 	s.sampleOnce(initCtx)
 	initCancel()
 
@@ -91,7 +97,7 @@ func (s *MarketHistorySampler) Run(ctx context.Context) error {
 		case <-ticker.C:
 			// Each full cycle gets a deadline so a slow BrokerChain cannot
 			// make the sampler goroutine block forever.
-			cycleCtx, cycleCancel := context.WithTimeout(ctx, 120*time.Second)
+			cycleCtx, cycleCancel := context.WithTimeout(ctx, samplerCycleTimeout)
 			s.sampleOnce(cycleCtx)
 			cycleCancel()
 		}
@@ -102,26 +108,12 @@ func (s *MarketHistorySampler) sampleOnce(ctx context.Context) {
 	// Step 1: Fetch all games' metadata (one eth_call).
 	allGamesData := chain.EncodeGetAllGames()
 
-	var hexResult string
-	var err error
-	for attempt := 0; attempt < 3; attempt++ {
-		hexResult, err = s.chain.EthCall(ctx, allGamesData)
-		if err == nil {
-			break
-		}
-		if attempt < 2 {
-			backoff := time.Duration(attempt+1) * 3 * time.Second
-			slog.Warn("sampler: eth_call getAllGames failed, retrying",
-				"attempt", attempt+1, "backoff", backoff, "error", err)
-			select {
-			case <-time.After(backoff):
-			case <-ctx.Done():
-				return
-			}
-		}
-	}
+	hexResult, err := s.ethCallWithTimeout(ctx, allGamesData)
 	if err != nil {
-		slog.Warn("sampler: eth_call getAllGames failed after retries", "error", err)
+		// Sampling is best-effort background work. Retrying a slow BrokerChain
+		// call here can monopolize the single shared request slot and starve
+		// AI post-trade position confirmation.
+		slog.Warn("sampler: eth_call getAllGames failed; skipping cycle", "error", err)
 		return
 	}
 	games, err := chain.DecodeGetAllGames(hexResult)
@@ -141,21 +133,33 @@ func (s *MarketHistorySampler) sampleOnce(ctx context.Context) {
 	var allReserves *chain.AllGamesExtraData
 	extraEncoded, extraErr := chain.EncodeGetAllGamesExtraData(wallet)
 	if extraErr == nil {
-		extraHex, ethErr := s.chain.EthCall(ctx, extraEncoded)
+		extraHex, ethErr := s.ethCallWithTimeout(ctx, extraEncoded)
 		if ethErr == nil {
 			allReserves, err = chain.DecodeGetAllGamesExtraData(extraHex)
 			if err != nil {
 				slog.Warn("sampler: decode getAllGamesExtraData failed, falling back to per-game calls", "error", err)
 			}
 		} else {
+			if errors.Is(ethErr, context.DeadlineExceeded) || errors.Is(ethErr, context.Canceled) {
+				slog.Warn("sampler: batch reserve call timed out; skipping cycle to protect trade traffic", "error", ethErr)
+				return
+			}
 			slog.Warn("sampler: eth_call getAllGamesExtraData failed, falling back to per-game calls", "error", ethErr)
 		}
+	}
+	if ctx.Err() != nil {
+		slog.Warn("sampler: cycle deadline reached before cache update", "error", ctx.Err())
+		return
 	}
 
 	// Notify the cache extension about every game so stub rows are created
 	// even for inactive/resolved games the frontend still needs to list.
 	if s.cacheExt != nil {
 		for _, game := range games {
+			if ctx.Err() != nil {
+				slog.Warn("sampler: cycle deadline reached during cache discovery", "error", ctx.Err())
+				return
+			}
 			s.cacheExt.OnDiscover(ctx, game)
 		}
 	}
@@ -239,7 +243,7 @@ func (s *MarketHistorySampler) sampleOnce(ctx context.Context) {
 				case <-ctx.Done():
 					return
 				}
-				gameCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+				gameCtx, cancel := context.WithTimeout(ctx, samplerFallbackTimeout)
 				defer cancel()
 				if err := s.sampleGame(gameCtx, game, wallet, now); err != nil {
 					mu.Lock()
@@ -323,10 +327,16 @@ func (s *MarketHistorySampler) sampleGame(ctx context.Context, game chain.GameOn
 	// Notify the optional v1 cache extension.
 	if s.cacheExt != nil {
 		totalPool := new(big.Int).Add(obs.ReserveNO, obs.ReserveYES)
-		s.cacheExt.OnSample(ctx, game, extra.VirtualReservesNOYES, totalPool, obs.YesPercent, obs.NoPercent, now)
+		s.cacheExt.OnSample(ctx, game, extra.VirtualReservesNOYES, totalPool, obs.YesPercent, obs.NoPercent, time.Unix(obs.Time, 0))
 	}
 
 	return nil
+}
+
+func (s *MarketHistorySampler) ethCallWithTimeout(ctx context.Context, data string) (string, error) {
+	callCtx, cancel := context.WithTimeout(ctx, samplerChainCallTimeout)
+	defer cancel()
+	return s.chain.EthCall(callCtx, data)
 }
 
 // processGameSample is the fast-path variant that uses pre-fetched reserves
@@ -349,8 +359,9 @@ func (s *MarketHistorySampler) processGameSample(
 		return fmt.Errorf("zero total reserves for game %d", game.ID)
 	}
 
-	yesRat := new(big.Rat).SetFrac(resYES, total)
-	noRat := new(big.Rat).SetFrac(resNO, total)
+	// AMM outcome probability uses the opposite-side reserve.
+	yesRat := new(big.Rat).SetFrac(resNO, total)
+	noRat := new(big.Rat).SetFrac(resYES, total)
 	hundred := new(big.Rat).SetInt64(100)
 	yesRat.Mul(yesRat, hundred)
 	noRat.Mul(noRat, hundred)
@@ -377,7 +388,7 @@ func (s *MarketHistorySampler) processGameSample(
 
 	// Notify the optional v1 cache extension.
 	if s.cacheExt != nil {
-		s.cacheExt.OnSample(ctx, game, []*big.Int{resNO, resYES}, total, yesPct, noPct, now)
+		s.cacheExt.OnSample(ctx, game, []*big.Int{resNO, resYES}, total, yesPct, noPct, time.Unix(obs.Time, 0))
 	}
 
 	return nil

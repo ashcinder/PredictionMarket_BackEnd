@@ -51,6 +51,14 @@ func TestBrokerPostRetriesGatewayTimeout(t *testing.T) {
 	}
 }
 
+func TestExtractHexResultFromBrokerTransactionEnvelope(t *testing.T) {
+	const want = "0x454821efbbf2e057f3955fc987409b25d2a2c584a4de7a392fe04a8cf8804195"
+	got := extractHexResult(`{"jsonrpc":"2.0","id":1,"result":"` + want + `"}`)
+	if got != want {
+		t.Fatalf("unexpected tx hash: got %q want %q", got, want)
+	}
+}
+
 func setBrokerRetryBackoffForTest(t *testing.T, delay time.Duration) func() {
 	t.Helper()
 	oldBackoff := brokerRetryBackoff

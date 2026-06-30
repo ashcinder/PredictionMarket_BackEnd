@@ -16,9 +16,10 @@ import (
 type PreAnalysis struct {
 	// --- Market-implied probabilities (derived from AMM reserves) ---
 	//
-	// In a constant-product AMM, the price of YES is:
-	//   P_YES = R_NO / (R_YES + R_NO)
-	// This is the market's consensus probability.
+	// The contract returns reserves as [R_NO, R_YES], while AMM outcome prices
+	// use the opposite reserve:
+	//   P_YES = R_NO / (R_NO + R_YES)
+	// Keep this aligned with history.go, sampler.go, and the frontend chart.
 
 	// MarketProbYES is the market-implied probability of YES winning (0-1).
 	MarketProbYES float64 `json:"market_prob_yes"`
@@ -86,8 +87,8 @@ func ComputePreAnalysis(
 		rYES := float64FromBig(extra.VirtualReservesNOYES[1])
 		total := rNO + rYES
 		if total > 0 {
-			pa.MarketProbYES = rNO / total // Price of YES = NO reserves / total
-			pa.MarketProbNO = rYES / total  // Price of NO  = YES reserves / total
+			pa.MarketProbYES = rNO / total
+			pa.MarketProbNO = rYES / total
 		}
 		// Pool depth: normalize by a meaningful scale (100 BKC = 100e18 wei).
 		// Score rises quickly for small pools then plateaus.

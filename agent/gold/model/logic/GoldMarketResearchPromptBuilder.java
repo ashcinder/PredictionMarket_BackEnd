@@ -151,7 +151,10 @@ public final class GoldMarketResearchPromptBuilder {
 
     private static long remainingSeconds(long rawDeadline, long nowMillis) {
         if (rawDeadline <= 0) {
-            return 0;
+            return -1;
+        }
+        if (rawDeadline < 1_000_000_000L) {
+            return -1;
         }
         long deadlineMillis = rawDeadline > MILLIS_THRESHOLD
                 ? rawDeadline
@@ -168,6 +171,9 @@ public final class GoldMarketResearchPromptBuilder {
         if (game.isResolved) {
             return "已结算";
         }
+        if (remainingSeconds < 0) {
+            return "同步中";
+        }
         if (remainingSeconds <= 0) {
             return "已到期，待结算";
         }
@@ -175,7 +181,10 @@ public final class GoldMarketResearchPromptBuilder {
     }
 
     private static String formatRemainingTime(long remainingSeconds) {
-        if (remainingSeconds <= 0) {
+        if (remainingSeconds < 0) {
+            return "截止时间待同步";
+        }
+        if (remainingSeconds == 0) {
             return "0秒";
         }
         long days = remainingSeconds / 86_400L;

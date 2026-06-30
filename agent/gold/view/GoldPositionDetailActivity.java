@@ -33,6 +33,7 @@ import java.util.TimeZone;
 
 public class GoldPositionDetailActivity extends AppCompatActivity {
     private int gameId;
+    private String contractAddress;
     private GoldMarketRepository.GameModel currentGame;
     private GoldMarketDetailViewModel viewModel;
     private List<BackendApiClient.TradeDTO> tradeHistory = new ArrayList<>();
@@ -54,6 +55,7 @@ public class GoldPositionDetailActivity extends AppCompatActivity {
         setContentView(R.layout.activity_gold_position_detail);
 
         gameId = getIntent().getIntExtra("GAME_ID", -1);
+        contractAddress = getIntent().getStringExtra("CONTRACT_ADDRESS");
         if (gameId <= 0) {
             Toast.makeText(this, "无效的博弈池 ID", Toast.LENGTH_SHORT).show();
             finish();
@@ -63,7 +65,7 @@ public class GoldPositionDetailActivity extends AppCompatActivity {
         viewModel = new androidx.lifecycle.ViewModelProvider(this).get(GoldMarketDetailViewModel.class);
         initViews();
         observeViewModel();
-        viewModel.loadGameInfo(gameId);
+        viewModel.loadGameInfo(gameId, contractAddress);
         loadTradeHistory();
     }
 
@@ -92,7 +94,7 @@ public class GoldPositionDetailActivity extends AppCompatActivity {
 
         swipeRefresh = findViewById(R.id.swipe_refresh);
         swipeRefresh.setOnRefreshListener(() -> {
-            viewModel.loadGameInfo(gameId);
+            viewModel.loadGameInfo(gameId, resolveContractAddress());
             loadTradeHistory();
         });
     }
@@ -129,6 +131,13 @@ public class GoldPositionDetailActivity extends AppCompatActivity {
             }
             runOnUiThread(this::updateTradeHistoryUI);
         }).start();
+    }
+
+    private String resolveContractAddress() {
+        if (currentGame != null && currentGame.contractAddress != null && !currentGame.contractAddress.trim().isEmpty()) {
+            return currentGame.contractAddress;
+        }
+        return contractAddress;
     }
 
     private void updateUI() {

@@ -18,6 +18,7 @@ import org.web3j.protocol.Web3j;
 import org.web3j.protocol.core.DefaultBlockParameterName;
 import org.web3j.protocol.core.methods.request.Transaction;
 import org.web3j.protocol.core.methods.response.EthCall;
+import org.web3j.protocol.core.methods.response.EthBlock;
 import org.web3j.protocol.core.methods.response.EthGetTransactionReceipt;
 import org.web3j.protocol.core.methods.response.EthSendTransaction;
 import org.web3j.protocol.core.methods.response.TransactionReceipt;
@@ -32,6 +33,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -71,6 +73,7 @@ public class GoldMarketRepository {
     private static final BigInteger LOCAL_RPC_CALL_GAS_LIMIT = new BigInteger("5000000");
     private static final BigInteger LOCAL_RPC_CALL_GAS_PRICE = BigInteger.ZERO;
     private static final BigInteger LOCAL_RPC_CALL_VALUE = BigInteger.ZERO;
+    private static final long MILLIS_TIMESTAMP_THRESHOLD = 10_000_000_000L;
     public static final int GOLD_GAME_ID = 1;
 
     private static List<String> cachedAddresses;
@@ -239,10 +242,14 @@ public class GoldMarketRepository {
     }
 
     private String ethCall(org.web3j.abi.datatypes.Function function) throws Exception {
+        return ethCall(contractAddress, function);
+    }
+
+    private String ethCall(String targetContractAddress, org.web3j.abi.datatypes.Function function) throws Exception {
         String data = FunctionEncoder.encode(function);
         if (useLocalRpc) {
-            Log.d(TAG, "standard ethCall to=" + contractAddress + " data=" + data.substring(0, Math.min(66, data.length())) + "...");
-            Transaction txn = buildLocalEthCallTransaction(walletAddress, contractAddress, data);
+            Log.d(TAG, "standard ethCall to=" + targetContractAddress + " data=" + data.substring(0, Math.min(66, data.length())) + "...");
+            Transaction txn = buildLocalEthCallTransaction(walletAddress, targetContractAddress, data);
             EthCall resp = web3j.ethCall(txn, DefaultBlockParameterName.LATEST).send();
             Log.d(TAG, "standard ethCall result: hasError=" + resp.hasError() + " value=" + resp.getValue());
             if (resp.hasError()) throw new Exception(resp.getError().getMessage());
@@ -252,7 +259,7 @@ public class GoldMarketRepository {
             }
             return value;
         } else {
-            String response = BrokerChainClient.sendEthCall(privateKey, contractAddress, data);
+            String response = BrokerChainClient.sendEthCall(privateKey, targetContractAddress, data);
             Log.d(TAG, "ethCall response: " + (response != null ? response.substring(0, Math.min(200, response.length())) : "null"));
             return extractHexResult(response);
         }
@@ -324,7 +331,7 @@ public class GoldMarketRepository {
                     AppExecutors.getInstance().mainThread().execute(() -> callback.onConfirmed(successMsg));
                 }
             } catch (Exception e) {
-                postError(callback, "交易异常: " + e.getMessage());
+                postError(callback, describeTradeFailure("提交交易", e.getMessage()));
             }
         });
     }
@@ -340,7 +347,7 @@ public class GoldMarketRepository {
                 + " data=" + data.substring(0, Math.min(66, data.length())) + "...");
         EthSendTransaction resp = web3j.ethSendTransaction(txn).send();
         if (resp.hasError()) {
-            postError(callback, resp.getError().getMessage());
+            postError(callback, describeTradeFailure("提交交易", resp.getError().getMessage()));
             return null;
         } else if (resp.getTransactionHash() == null || resp.getTransactionHash().isEmpty()) {
             postError(callback, "本地 RPC 未返回交易哈希，交易未确认提交");
@@ -460,6 +467,43 @@ public class GoldMarketRepository {
                     + (msg.isEmpty() ? rawResponse : msg);
         }
         return "交易失败：" + (msg.isEmpty() ? rawResponse : msg);
+    }
+
+    private String describeTradeFailure(String stage, String rawMessage) {
+        String msg = rawMessage == null ? "" : rawMessage.trim();
+        String lower = msg.toLowerCase(Locale.ROOT);
+
+        if (lower.contains("past deadline")) {
+            return stage + "失败：该博弈池已过截止时间，链上拒绝了本次购买。\n\n"
+                    + "可能原因：\n"
+                    + "1. 该池子确实已到期；\n"
+                    + "2. 链上 deadline 时间单位异常；\n"
+                    + "3. 后端缓存的市场状态还没同步到最新。\n\n"
+                    + "技术信息：Past deadline";
+        }
+        if (lower.contains("game already ended") || lower.contains("already ended")) {
+            return stage + "失败：该博弈池当前已结束或已退款，暂时不能继续购买。\n\n"
+                    + "技术信息：" + msg;
+        }
+        if (lower.contains("insufficient funds")) {
+            return stage + "失败：账户余额不足，无法完成本次下单或支付 Gas。\n\n"
+                    + "技术信息：" + msg;
+        }
+        if (lower.contains("nonce")) {
+            return stage + "失败：链上交易序号异常，可能有交易还在排队。\n\n"
+                    + "建议稍等几秒后再试一次。\n\n技术信息：" + msg;
+        }
+        if (lower.contains("replay attack") || lower.contains("invalid sign")) {
+            return stage + "失败：交易签名被判定为重复或失效。\n\n"
+                    + "建议不要连续重复点击，稍等几秒后重试。\n\n技术信息：" + msg;
+        }
+        if (lower.contains("execution reverted") || lower.contains("revert")) {
+            return stage + "失败：链上合约拒绝了这笔交易。\n\n技术信息：" + msg;
+        }
+        if (msg.isEmpty()) {
+            return stage + "失败：未收到明确的错误详情，请稍后重试。";
+        }
+        return stage + "失败：\n\n" + msg;
     }
 
     private String formatBkc(BigInteger wei) {
@@ -632,7 +676,8 @@ public class GoldMarketRepository {
                 BigInteger noRes = new BigInteger(reserveNO);
                 BigInteger total = yesRes.add(noRes);
                 if (total.compareTo(BigInteger.ZERO) > 0) {
-                    point.yesPrice = (float) (yesRes.doubleValue() / total.doubleValue() * 100);
+                    // YES 的 AMM 隐含概率取对手储备 reserveNO，与实时份额和 Go 采样器保持一致。
+                    point.yesPrice = (float) (noRes.doubleValue() / total.doubleValue() * 100);
                     point.noPrice = 100 - point.yesPrice;
                 }
                 point.totalPool = totalPool;
@@ -774,6 +819,7 @@ public class GoldMarketRepository {
             BigInteger myNo = parseBigInteger(state.mySharesNO);
             m.myShares = Arrays.asList(myYES, myNo);
         } else {
+            m.deadlineSec = -1L;
             m.totalPool = BigInteger.ZERO;
             m.virtualReserves = Arrays.asList(BigInteger.ZERO, BigInteger.ZERO);
             m.myShares = Arrays.asList(BigInteger.ZERO, BigInteger.ZERO);
@@ -799,6 +845,122 @@ public class GoldMarketRepository {
         }
 
         return m;
+    }
+
+    private static boolean hasUsableDeadline(long deadlineSec) {
+        return deadlineSec >= 1000000000L;
+    }
+
+    private static String buildStateKey(String contractAddress, int gameId) {
+        String normalized = contractAddress == null ? "" : contractAddress.trim().toLowerCase(Locale.ROOT);
+        return normalized + "#" + gameId;
+    }
+
+    private boolean shouldRepairChainState(BackendApiClient.GameMetaDTO meta, BackendApiClient.ChainStateDTO state) {
+        return meta != null
+                && meta.contractAddress != null
+                && !meta.contractAddress.trim().isEmpty()
+                && (state == null || !hasUsableDeadline(state.deadlineSec));
+    }
+
+    private BackendApiClient.ChainStateDTO queryChainStateDirectly(int gameId, String targetContractAddress) {
+        try {
+            org.web3j.abi.datatypes.Function fInfo = new org.web3j.abi.datatypes.Function(
+                    "getGameInfo", Collections.singletonList(new Uint256(BigInteger.valueOf(gameId))),
+                    Arrays.asList(
+                            new TypeReference<Utf8String>() {},
+                            new TypeReference<Uint256>() {},
+                            new TypeReference<Bool>() {},
+                            new TypeReference<Uint8>() {},
+                            new TypeReference<Uint256>() {},
+                            new TypeReference<Bool>() {}));
+
+            String addr = getWalletAddress();
+            if (addr == null || addr.isEmpty()) addr = "0x0000000000000000000000000000000000000000";
+
+            org.web3j.abi.datatypes.Function fExtra = new org.web3j.abi.datatypes.Function(
+                    "getGameExtraData",
+                    Arrays.asList(new Uint256(BigInteger.valueOf(gameId)), new Address(addr)),
+                    Arrays.asList(new TypeReference<DynamicArray<Uint256>>() {}, new TypeReference<DynamicArray<Uint256>>() {}));
+
+            String hexInfo = ethCall(targetContractAddress, fInfo);
+            if (hexInfo == null || hexInfo.equals("0x")) return null;
+            List<Type> res = FunctionReturnDecoder.decode(hexInfo, fInfo.getOutputParameters());
+            if (res.size() < 6) return null;
+
+            BackendApiClient.ChainStateDTO state = new BackendApiClient.ChainStateDTO();
+            state.gameId = gameId;
+            state.contractAddress = targetContractAddress;
+            state.totalPool = ((Uint256) res.get(1)).getValue().toString();
+            state.isResolved = ((Bool) res.get(2)).getValue();
+            state.winningOption = ((Uint8) res.get(3)).getValue().intValue();
+            state.deadlineSec = ((Uint256) res.get(4)).getValue().longValue();
+            state.isRefunded = ((Bool) res.get(5)).getValue();
+            state.reserveYES = "0";
+            state.reserveNO = "0";
+            state.mySharesYES = "0";
+            state.mySharesNO = "0";
+
+            String hexExtra = ethCall(targetContractAddress, fExtra);
+            if (hexExtra != null && !hexExtra.equals("0x")) {
+                List<Type> extraRes = FunctionReturnDecoder.decode(hexExtra, fExtra.getOutputParameters());
+                if (extraRes.size() >= 2) {
+                    List<Uint256> reservesArray = ((DynamicArray<Uint256>) extraRes.get(0)).getValue();
+                    List<Uint256> sharesArray = ((DynamicArray<Uint256>) extraRes.get(1)).getValue();
+                    if (reservesArray.size() >= 2) {
+                        state.reserveNO = reservesArray.get(0).getValue().toString();
+                        state.reserveYES = reservesArray.get(1).getValue().toString();
+                    }
+                    if (sharesArray.size() >= 2) {
+                        state.mySharesYES = sharesArray.get(0).getValue().toString();
+                        state.mySharesNO = sharesArray.get(1).getValue().toString();
+                    }
+                }
+            }
+            return state;
+        } catch (Exception e) {
+            Log.w(TAG, "queryChainStateDirectly failed: contract=" + targetContractAddress
+                    + " gameId=" + gameId + " - " + e.getMessage());
+            return null;
+        }
+    }
+
+    private boolean chainUsesMillisecondTimestamps() {
+        if (useLocalRpc) {
+            try {
+                EthBlock latest = web3j.ethGetBlockByNumber(DefaultBlockParameterName.LATEST, false).send();
+                if (latest != null && latest.getBlock() != null && latest.getBlock().getTimestamp() != null) {
+                    return latest.getBlock().getTimestamp().longValue() >= MILLIS_TIMESTAMP_THRESHOLD;
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "chainUsesMillisecondTimestamps local probe failed: " + e.getMessage());
+            }
+        }
+
+        try {
+            org.web3j.abi.datatypes.Function fCount = buildGameCountFunction();
+            String hex = ethCall(fCount);
+            List<Type> result = FunctionReturnDecoder.decode(hex, fCount.getOutputParameters());
+            if (!result.isEmpty()) {
+                int count = ((Uint256) result.get(0)).getValue().intValue();
+                if (count > 0) {
+                    PostTxState sample = queryPostTxState(count);
+                    if (sample != null && sample.deadlineSec > 0) {
+                        return sample.deadlineSec >= MILLIS_TIMESTAMP_THRESHOLD;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "chainUsesMillisecondTimestamps deadline probe failed: " + e.getMessage());
+        }
+
+        // BrokerChain 官方网关历史上存在毫秒级 timestamp，探测失败时优先避免“刚创建就过期”。
+        return !useLocalRpc;
+    }
+
+    private long normalizeDurationForChain(long durationSeconds) {
+        if (durationSeconds <= 0) return durationSeconds;
+        return chainUsesMillisecondTimestamps() ? durationSeconds * 1000L : durationSeconds;
     }
 
     private BigInteger parseBigInteger(String s) {
@@ -892,6 +1054,13 @@ public class GoldMarketRepository {
                 long backendStart = System.currentTimeMillis();
                 BackendApiClient.GameMetaDTO meta = BackendApiClient.fetchGameMetadata(id);
                 BackendApiClient.ChainStateDTO state = BackendApiClient.fetchChainState(id, getWalletAddress());
+                if (shouldRepairChainState(meta, state)) {
+                    BackendApiClient.ChainStateDTO repairedState =
+                            queryChainStateDirectly(id, meta.contractAddress);
+                    if (repairedState != null) {
+                        state = repairedState;
+                    }
+                }
                 long backendEnd = System.currentTimeMillis();
                 long backendMs = backendEnd - backendStart;
                 Log.d("时延", "getGameInfo - 后端DB加载: " + backendMs + "ms");
@@ -971,7 +1140,7 @@ public class GoldMarketRepository {
                 model.ipfsCID = ((Utf8String) res.get(0)).getValue();
                 model.totalPool = ((Uint256) res.get(1)).getValue();
                 model.isResolved = ((Bool) res.get(2)).getValue();
-                // 合约 winningOption: 0=NO, 1=YES → 转换为 UI 约定 0=YES, 1=NO
+                // 合约 winningOption 与 UI 保持一致：0=YES, 1=NO
                 model.winningOption = toUiOption(((Uint8) res.get(3)).getValue().intValue());
                 model.deadlineSec = ((Uint256) res.get(4)).getValue().longValue();
                 model.isRefunded = ((Bool) res.get(5)).getValue();
@@ -1044,17 +1213,31 @@ public class GoldMarketRepository {
                 AppExecutors.getInstance().mainThread().execute(() ->
                     callback.onTiming("数据库批量加载", backendMs, false));
 
-                // 建立 gameId → ChainStateDTO 的映射
-                java.util.Map<Integer, BackendApiClient.ChainStateDTO> stateMap = new java.util.HashMap<>();
+                // 建立 contractAddress + gameId → ChainStateDTO 的映射；兼容旧接口缺少 contractAddress 的情况。
+                java.util.Map<String, BackendApiClient.ChainStateDTO> stateMap = new java.util.HashMap<>();
+                java.util.Map<Integer, BackendApiClient.ChainStateDTO> legacyStateMap = new java.util.HashMap<>();
                 if (states != null) {
                     for (BackendApiClient.ChainStateDTO s : states) {
-                        stateMap.put(s.gameId, s);
+                        legacyStateMap.put(s.gameId, s);
+                        if (s.contractAddress != null && !s.contractAddress.trim().isEmpty()) {
+                            stateMap.put(buildStateKey(s.contractAddress, s.gameId), s);
+                        }
                     }
                 }
 
                 List<GameModel> models = new ArrayList<>();
                 for (BackendApiClient.GameMetaDTO meta : metas) {
-                    BackendApiClient.ChainStateDTO state = stateMap.get(meta.gameId);
+                    BackendApiClient.ChainStateDTO state = stateMap.get(buildStateKey(meta.contractAddress, meta.gameId));
+                    if (state == null) {
+                        state = legacyStateMap.get(meta.gameId);
+                    }
+                    if (shouldRepairChainState(meta, state)) {
+                        BackendApiClient.ChainStateDTO repairedState =
+                                queryChainStateDirectly(meta.gameId, meta.contractAddress);
+                        if (repairedState != null) {
+                            state = repairedState;
+                        }
+                    }
                     GameModel m = buildModelFromBackend(meta, state);
                     if (m.history == null || m.history.isEmpty()) {
                         m.history = generateMockHistory(m.virtualReserves);
@@ -1146,7 +1329,7 @@ public class GoldMarketRepository {
                     m.deadlineSec = deadlines.get(i).getValue().longValue();
                     m.isResolved = isResolveds.get(i).getValue();
                     m.isRefunded = isRefundeds.get(i).getValue();
-                    // 合约 winningOption: 0=NO, 1=YES → 转换为 UI 约定 0=YES, 1=NO
+                    // 合约 winningOption 与 UI 保持一致：0=YES, 1=NO
                     m.winningOption = toUiOption(winningOptions.get(i).getValue().intValue());
                     m.optionNames = Arrays.asList("YES", "NO");
 
@@ -1243,6 +1426,13 @@ public class GoldMarketRepository {
 
                 List<GameModel> models = new ArrayList<>();
                 for (BackendApiClient.ChainStateDTO state : myStates) {
+                    if (!hasUsableDeadline(state.deadlineSec) && state.contractAddress != null && !state.contractAddress.trim().isEmpty()) {
+                        BackendApiClient.ChainStateDTO repairedState =
+                                queryChainStateDirectly(state.gameId, state.contractAddress);
+                        if (repairedState != null) {
+                            state = repairedState;
+                        }
+                    }
                     GameModel m;
                     try {
                         BackendApiClient.GameMetaDTO meta = BackendApiClient.fetchGameMetadata(state.gameId);
@@ -1254,7 +1444,7 @@ public class GoldMarketRepository {
                         m.totalPool = parseBigInteger(state.totalPool);
                         m.isResolved = state.isResolved;
                         m.isRefunded = state.isRefunded;
-                        // 后端 DB 存储合约约定 (0=NO, 1=YES)，转换为 UI 约定 (0=YES, 1=NO)
+                        // 后端 DB 的 winning_option 与当前合约保持一致：0=YES, 1=NO
                         m.winningOption = toUiOption(state.winningOption);
                         m.deadlineSec = state.deadlineSec;
                         // 核心修复：Java 索引 0 必须为 reserveNO，以匹配 UI 概率计算 (res0 / total)
@@ -1323,7 +1513,7 @@ public class GoldMarketRepository {
                     m.deadlineSec = dto.deadlineSec.longValue();
                     m.isResolved = dto.isResolved;
                     m.isRefunded = dto.isRefunded;
-                    // 合约返回 winningOption: 0=NO, 1=YES → 转换为 UI 约定 0=YES, 1=NO
+                    // 合约返回 winningOption 与 UI 保持一致：0=YES, 1=NO
                     m.winningOption = toUiOption(dto.winningOption.intValue());
                     m.optionNames = Arrays.asList("YES", "NO");
                     // 核心修复：Java 索引 0 对应 YES 概率源 (reserveNO) 和 YES 持仓 (mySharesYES)
@@ -1387,9 +1577,9 @@ public class GoldMarketRepository {
     //  设计原则：onConfirmed 回调时，后端 DB 已包含最新数据，UI 无需额外等待
     //
     //  ⚠️ 选项 ID 映射约定：
-    //  合约内部使用 0=NO, 1=YES（与 getGameExtraData 的 reserves=[NO,YES] 顺序一致）
-    //  Java/UI 层统一使用 0=YES, 1=NO（用户直觉：上=YES=0, 下=NO=1）
-    //  所有合约调用前通过 toContractOption() 转换，所有合约返回值通过 toUiOption() 转换
+    //  当前合约 buyShares/resolveGame 明确使用 0=YES, 1=NO。
+    //  getGameExtraData 的储备金顺序仍然是 [reserveNO, reserveYES]，因此选项 ID 与储备金数组顺序不要混淆。
+    //  Java/UI 层与合约保持同一套 optionId，避免交易和展示错位。
     // ========================================================================
 
     /** UI → 合约：保持映射一致 (0=YES, 1=NO) */
@@ -1403,7 +1593,7 @@ public class GoldMarketRepository {
     }
 
     public void buyShares(int gameId, int optionId, BigInteger amountWei, TxCallback callback) {
-        // optionId 是 UI 约定 (0=YES, 1=NO)，需转换为合约约定 (0=NO, 1=YES)
+        // optionId 与当前合约保持一致：0=YES, 1=NO
         int contractOption = toContractOption(optionId);
         org.web3j.abi.datatypes.Function f = new org.web3j.abi.datatypes.Function(
             "buyShares",
@@ -1421,7 +1611,7 @@ public class GoldMarketRepository {
     }
 
     public void sellShares(int gameId, int optionId, BigInteger shareAmount, TxCallback callback) {
-        // optionId 是 UI 约定 (0=YES, 1=NO)，需转换为合约约定 (0=NO, 1=YES)
+        // optionId 与当前合约保持一致：0=YES, 1=NO
         int contractOption = toContractOption(optionId);
         org.web3j.abi.datatypes.Function f = new org.web3j.abi.datatypes.Function(
             "sellShares", Arrays.asList(new Uint256(gameId), new Uint8(contractOption), new Uint256(shareAmount)), Collections.emptyList());
@@ -1477,10 +1667,12 @@ public class GoldMarketRepository {
                 Log.d(TAG, "元数据上传到IPFS成功, CID: " + metadataCid);
 
                 // ---- 步骤 3: 发送 createGame 链上交易 ----
-                // duration 已经是秒（由上层 (end - now) / 1000 计算），合约 createGame 的 _durationSec 参数期望秒
+                // duration 由上层按“秒”计算；如果链上的 block.timestamp 实际是毫秒，则这里补齐到链单位，
+                // 否则会出现“刚创建就到期，随后无法买入 YES/NO”。
+                long chainDuration = normalizeDurationForChain(duration);
                 org.web3j.abi.datatypes.Function f = new org.web3j.abi.datatypes.Function(
                     "createGame",
-                    Arrays.asList(new Utf8String(metadataCid), new Uint256(duration)),
+                    Arrays.asList(new Utf8String(metadataCid), new Uint256(chainDuration)),
                     Collections.emptyList());
 
                 String data = FunctionEncoder.encode(f);
@@ -1650,7 +1842,7 @@ public class GoldMarketRepository {
     }
 
     public void resolveGame(int gameId, int winningOption, TxCallback callback) {
-        // winningOption 是 UI 约定 (0=YES, 1=NO)，需转换为合约约定 (0=NO, 1=YES)
+        // winningOption 与当前合约保持一致：0=YES, 1=NO
         int contractOption = toContractOption(winningOption);
         org.web3j.abi.datatypes.Function f = new org.web3j.abi.datatypes.Function(
             "resolveGame",
@@ -1663,7 +1855,7 @@ public class GoldMarketRepository {
         tradeInfo.optionId = winningOption;          // 交易记录用 UI 约定 (0=YES, 1=NO)
         tradeInfo.amountWei = "0";
         tradeInfo.isResolved = true;
-        // 后端 DB 的 winning_option 使用合约约定 (0=NO, 1=YES)，与 syncChainState 一致
+        // 后端 DB 的 winning_option 与当前合约保持一致：0=YES, 1=NO
         tradeInfo.winningOption = contractOption;
 
         sendTransaction(BigInteger.ZERO, f, "开奖成功", callback, tradeInfo);

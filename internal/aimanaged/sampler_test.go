@@ -153,6 +153,24 @@ type mockSamplerHistory struct {
 	err   error
 }
 
+type mockSamplerCacheExt struct {
+	mu        sync.Mutex
+	discovers int
+	samples   int
+}
+
+func (m *mockSamplerCacheExt) OnDiscover(context.Context, chain.GameOnChain) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.discovers++
+}
+
+func (m *mockSamplerCacheExt) OnSample(context.Context, chain.GameOnChain, []*big.Int, *big.Int, float64, float64, time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.samples++
+}
+
 func (m *mockSamplerHistory) MergeAndList(ctx context.Context, market MarketIdentity, seed []HistoryObservation, current HistoryObservation, limit int) ([]HistoryObservation, error) {
 	m.mu.Lock()
 	m.calls = append(m.calls, mergeAndListCall{market: market, seedLen: len(seed), current: current, limit: limit})
@@ -213,7 +231,7 @@ func pastDeadlineGame(id int) chain.GameOnChain {
 		ID:          id,
 		IPFSCID:     "QmExpired",
 		TotalPool:   big.NewInt(300),
-		DeadlineRaw: time.Now().Add(-2 * time.Hour).UnixMilli() / 1000,
+		DeadlineRaw: time.Now().Add(-2*time.Hour).UnixMilli() / 1000,
 		IsResolved:  false,
 		IsRefunded:  false,
 	}
@@ -240,6 +258,32 @@ func TestNewMarketHistorySampler(t *testing.T) {
 	}
 	if sampler.historyMax != 256 {
 		t.Fatalf("unexpected history max: %d", sampler.historyMax)
+	}
+}
+
+func TestSamplerStopsBeforeCacheWritesWhenBatchCallExhaustsCycle(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	games := []chain.GameOnChain{activeGame(1)}
+	chainMock := &mockSamplerChain{
+		wallet: "0x1111111111111111111111111111111111111111",
+		ethCallFn: func(context.Context, string) (string, error) {
+			return encodeGetAllGamesResult(games), nil
+		},
+		batchExtraFn: func(ctx context.Context, _ string) (string, error) {
+			cancel()
+			return "", ctx.Err()
+		},
+	}
+	histories := &mockSamplerHistory{}
+	cache := &mockSamplerCacheExt{}
+	sampler := NewMarketHistorySampler(chainMock, histories, "0xContract", time.Minute, 256)
+	sampler.SetCacheExt(cache)
+
+	sampler.sampleOnce(ctx)
+
+	if cache.discovers != 0 || cache.samples != 0 || histories.mergeCount() != 0 {
+		t.Fatalf("expired cycle performed cache work: discovers=%d samples=%d history=%d",
+			cache.discovers, cache.samples, histories.mergeCount())
 	}
 }
 
@@ -285,7 +329,7 @@ func TestSamplerSkipsResolvedRefundedAndPastDeadlineGames(t *testing.T) {
 }
 
 func TestSamplerCalculatesYesNoPercentFromReserves(t *testing.T) {
-	// reserveNO=300, reserveYES=700 → yes=70%, no=30%
+	// reserveNO=300, reserveYES=700 → AMM yes=30%, no=70%
 	extra := &chain.GameExtraData{
 		VirtualReservesNOYES: []*big.Int{big.NewInt(300), big.NewInt(700)},
 		MySharesYESNO:        []*big.Int{big.NewInt(0), big.NewInt(0)},
@@ -312,11 +356,11 @@ func TestSamplerCalculatesYesNoPercentFromReserves(t *testing.T) {
 		t.Fatalf("expected 1 history merge, got %d", n)
 	}
 	obs := histories.calls[0].current
-	if obs.YesPercent < 69 || obs.YesPercent > 71 {
-		t.Fatalf("expected yes_percent ~70%%, got %.4f", obs.YesPercent)
+	if obs.YesPercent < 29 || obs.YesPercent > 31 {
+		t.Fatalf("expected yes_percent ~30%%, got %.4f", obs.YesPercent)
 	}
-	if obs.NoPercent < 29 || obs.NoPercent > 31 {
-		t.Fatalf("expected no_percent ~30%%, got %.4f", obs.NoPercent)
+	if obs.NoPercent < 69 || obs.NoPercent > 71 {
+		t.Fatalf("expected no_percent ~70%%, got %.4f", obs.NoPercent)
 	}
 	if obs.Source != historySourceChain {
 		t.Fatalf("expected chain source, got %q", obs.Source)

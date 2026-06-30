@@ -14,7 +14,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"PredictionMarket/internal/chain"
 	"PredictionMarket/internal/database"
+	"PredictionMarket/internal/ipfs"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -60,6 +62,41 @@ last_error='', status=VALUES(status)`
 VALUES (?, ?, NULL, 0, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE fail_count=VALUES(fail_count), next_poll_at=VALUES(next_poll_at),
 last_error=VALUES(last_error), status=VALUES(status)`
+	selectManagedEntriesSQL = `SELECT contract_address, game_id, user_address, key_nonce, key_ciphertext,
+enabled_at, last_trade_at, last_trade_option, last_trade_tx, last_error, last_decision_at, last_decision_text
+FROM ai_managed_entries`
+	selectCachedMarketSQL = "SELECT g.ipfs_cid, g.`desc`, g.`condition`, g.detailed_info, g.option_yes, g.option_no, " +
+		"COALESCE(NULLIF(cs.deadline_sec, 0), g.deadline_sec) AS deadline_sec, " +
+		"cs.total_pool, cs.is_resolved, cs.is_refunded, cs.winning_option, cs.reserve_yes, cs.reserve_no, cs.updated_at " +
+		"FROM gold_games g LEFT JOIN gold_chain_states cs ON cs.contract_address = g.contract_address AND cs.game_id = g.game_id " +
+		"WHERE g.contract_address = ? AND g.game_id = ?"
+	upsertManagedEntrySQL = `INSERT INTO ai_managed_entries
+(contract_address, game_id, user_address, key_nonce, key_ciphertext, enabled_at,
+last_trade_at, last_trade_option, last_trade_tx, last_error, last_decision_at, last_decision_text)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE key_nonce=VALUES(key_nonce), key_ciphertext=VALUES(key_ciphertext),
+enabled_at=VALUES(enabled_at), last_trade_at=VALUES(last_trade_at),
+last_trade_option=VALUES(last_trade_option), last_trade_tx=VALUES(last_trade_tx),
+last_error=VALUES(last_error), last_decision_at=VALUES(last_decision_at),
+last_decision_text=VALUES(last_decision_text)`
+	deleteManagedEntrySQL = `DELETE FROM ai_managed_entries
+WHERE contract_address=? AND game_id=? AND user_address=?`
+	insertManagedGoldTradeSQL = `INSERT INTO gold_trades
+(game_id, contract_address, user_address, trade_type, option_id, amount_wei,
+share_amount_wei, shares_wei, price_at_trade, timestamp_sec, tx_hash, is_success,
+is_ai_managed, my_shares_yes_after, my_shares_no_after)
+VALUES (?, ?, ?, 'BUY', ?, ?, ?, ?, 0, ?, ?, 1, 1, ?, ?)`
+	updateManagedGoldTradeSQL = `UPDATE gold_trades SET
+option_id=?, amount_wei=?, share_amount_wei=?, shares_wei=?, timestamp_sec=?,
+is_success=1, is_ai_managed=1, my_shares_yes_after=?, my_shares_no_after=?
+WHERE contract_address=? AND game_id=? AND user_address=? AND tx_hash=?`
+	selectManagedGoldTradeSQL = `SELECT id FROM gold_trades
+WHERE contract_address=? AND game_id=? AND user_address=? AND tx_hash=? LIMIT 1`
+	upsertManagedUserPositionSQL = `INSERT INTO gold_user_positions
+(user_address, game_id, my_shares_yes, my_shares_no)
+VALUES (?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE
+my_shares_yes=VALUES(my_shares_yes), my_shares_no=VALUES(my_shares_no)`
 )
 
 type MySQLRepository struct {
@@ -69,6 +106,291 @@ type MySQLRepository struct {
 
 func NewMySQLRepository(db *sql.DB) *MySQLRepository {
 	return &MySQLRepository{db: db}
+}
+
+func (r *MySQLRepository) GetCachedMarket(ctx context.Context, market MarketIdentity) (*CachedMarket, error) {
+	cached, err := r.getCachedMarket(ctx, market)
+	if err != nil && r.isTableNotFound(err) {
+		slog.Warn("mysql repository: table missing, recreating and retrying", "op", "get_cached_market")
+		r.ensureTables(ctx)
+		cached, err = r.getCachedMarket(ctx, market)
+	}
+	return cached, err
+}
+
+func (r *MySQLRepository) getCachedMarket(ctx context.Context, market MarketIdentity) (*CachedMarket, error) {
+	if err := validateMarketAndLimit(market, 1); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, repositoryOperationTimeout)
+	defer cancel()
+
+	var ipfsCID, desc, condition, detail, optionYES, optionNO sql.NullString
+	var deadlineSec sql.NullInt64
+	var totalPoolBytes, reserveYESBytes, reserveNOBytes []byte
+	var isResolved, isRefunded, winningOption sql.NullInt64
+	var updatedAt sql.NullTime
+	contract := normalizeAddress(market.ContractAddress)
+	err := r.db.QueryRowContext(ctx, selectCachedMarketSQL, contract, market.GameID).Scan(
+		&ipfsCID, &desc, &condition, &detail, &optionYES, &optionNO,
+		&deadlineSec, &totalPoolBytes, &isResolved, &isRefunded, &winningOption,
+		&reserveYESBytes, &reserveNOBytes, &updatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("cached game %s/%d not found", contract, market.GameID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query cached market: %w", err)
+	}
+	reserveYES, err := parseReserveBytes(reserveYESBytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse cached reserve_yes: %w", err)
+	}
+	reserveNO, err := parseReserveBytes(reserveNOBytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse cached reserve_no: %w", err)
+	}
+	if reserveYES == nil || reserveNO == nil {
+		return nil, fmt.Errorf("cached reserves are missing")
+	}
+	totalPool, err := parseReserveBytes(totalPoolBytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse cached total_pool: %w", err)
+	}
+	if totalPool == nil {
+		totalPool = new(big.Int).Add(new(big.Int).Set(reserveYES), reserveNO)
+	}
+
+	info := &chain.GameInfo{
+		ID:            market.GameID,
+		IPFSCID:       ipfsCID.String,
+		TotalPool:     totalPool,
+		DeadlineRaw:   deadlineSec.Int64,
+		IsResolved:    isResolved.Valid && isResolved.Int64 != 0,
+		IsRefunded:    isRefunded.Valid && isRefunded.Int64 != 0,
+		WinningOption: int(winningOption.Int64),
+	}
+	meta := &ipfs.Metadata{
+		Desc:         desc.String,
+		Condition:    condition.String,
+		DetailedInfo: detail.String,
+		OptionYES:    emptyDefault(optionYES.String, "YES"),
+		OptionNO:     emptyDefault(optionNO.String, "NO"),
+	}
+	extra := &chain.GameExtraData{
+		VirtualReservesNOYES: []*big.Int{reserveNO, reserveYES},
+		MySharesYESNO:        []*big.Int{big.NewInt(0), big.NewInt(0)},
+	}
+	cached := &CachedMarket{
+		Market:   MarketIdentity{ContractAddress: contract, GameID: market.GameID},
+		Info:     info,
+		Extra:    extra,
+		Metadata: meta,
+	}
+	if updatedAt.Valid {
+		cached.UpdatedAt = updatedAt.Time
+	}
+	return cached, nil
+}
+
+func (r *MySQLRepository) ListManagedEntries(ctx context.Context) ([]PersistentManagedEntry, error) {
+	rows, err := r.listManagedEntries(ctx)
+	if err != nil && r.isTableNotFound(err) {
+		slog.Warn("mysql repository: table missing, recreating and retrying", "op", "list_managed_entries")
+		r.ensureTables(ctx)
+		rows, err = r.listManagedEntries(ctx)
+	}
+	return rows, err
+}
+
+func (r *MySQLRepository) listManagedEntries(ctx context.Context) ([]PersistentManagedEntry, error) {
+	ctx, cancel := context.WithTimeout(ctx, repositoryOperationTimeout)
+	defer cancel()
+	rows, err := r.db.QueryContext(ctx, selectManagedEntriesSQL)
+	if err != nil {
+		return nil, fmt.Errorf("list ai-managed entries: %w", err)
+	}
+	defer rows.Close()
+
+	var out []PersistentManagedEntry
+	for rows.Next() {
+		var item PersistentManagedEntry
+		var contract string
+		var gameID int
+		var enabledAt time.Time
+		var lastTradeAt sql.NullTime
+		var lastDecisionAt sql.NullTime
+		var lastTradeTx, lastError, lastDecisionText sql.NullString
+		if err := rows.Scan(
+			&contract, &gameID, &item.UserAddress, &item.KeyNonce, &item.KeyCiphertext,
+			&enabledAt, &lastTradeAt, &item.LastTradeOption, &lastTradeTx, &lastError,
+			&lastDecisionAt, &lastDecisionText,
+		); err != nil {
+			return nil, fmt.Errorf("scan ai-managed entry: %w", err)
+		}
+		item.Market = MarketIdentity{ContractAddress: normalizeAddress(contract), GameID: gameID}
+		item.UserAddress = common.HexToAddress(item.UserAddress).Hex()
+		item.EnabledAt = enabledAt
+		if lastTradeAt.Valid {
+			item.LastTradeAt = lastTradeAt.Time
+		}
+		if lastDecisionAt.Valid {
+			item.LastDecisionAt = lastDecisionAt.Time
+		}
+		item.LastTradeTx = lastTradeTx.String
+		item.LastError = lastError.String
+		item.LastDecisionText = lastDecisionText.String
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate ai-managed entries: %w", err)
+	}
+	return out, nil
+}
+
+func (r *MySQLRepository) SaveManagedEntry(ctx context.Context, item PersistentManagedEntry) error {
+	if err := validateMarketAndLimit(item.Market, 1); err != nil {
+		return err
+	}
+	if !common.IsHexAddress(item.UserAddress) {
+		return fmt.Errorf("invalid user address")
+	}
+	if len(item.KeyNonce) == 0 || len(item.KeyCiphertext) == 0 {
+		return fmt.Errorf("missing encrypted private key")
+	}
+	ctx, cancel := context.WithTimeout(ctx, repositoryOperationTimeout)
+	defer cancel()
+	contract := normalizeAddress(item.Market.ContractAddress)
+	user := common.HexToAddress(item.UserAddress).Hex()
+	if _, err := r.db.ExecContext(ctx, upsertManagedEntrySQL,
+		contract, item.Market.GameID, user, item.KeyNonce, item.KeyCiphertext, item.EnabledAt.UTC(),
+		nullableTime(item.LastTradeAt), item.LastTradeOption, item.LastTradeTx, item.LastError,
+		nullableTime(item.LastDecisionAt), item.LastDecisionText,
+	); err != nil {
+		return fmt.Errorf("save ai-managed entry: %w", err)
+	}
+	return nil
+}
+
+func (r *MySQLRepository) DeleteManagedEntry(ctx context.Context, market MarketIdentity, userAddress string) error {
+	if err := validateMarketAndLimit(market, 1); err != nil {
+		return err
+	}
+	if !common.IsHexAddress(userAddress) {
+		return fmt.Errorf("invalid user address")
+	}
+	ctx, cancel := context.WithTimeout(ctx, repositoryOperationTimeout)
+	defer cancel()
+	if _, err := r.db.ExecContext(ctx, deleteManagedEntrySQL,
+		normalizeAddress(market.ContractAddress), market.GameID, common.HexToAddress(userAddress).Hex(),
+	); err != nil {
+		return fmt.Errorf("delete ai-managed entry: %w", err)
+	}
+	return nil
+}
+
+func (r *MySQLRepository) RecordManagedTrade(ctx context.Context, record ManagedTradeRecord) error {
+	err := r.recordManagedTrade(ctx, record)
+	if err != nil && r.isTableNotFound(err) {
+		slog.Warn("mysql repository: table missing, recreating and retrying", "op", "record_managed_trade")
+		r.ensureTables(ctx)
+		err = r.recordManagedTrade(ctx, record)
+	}
+	return err
+}
+
+func (r *MySQLRepository) recordManagedTrade(ctx context.Context, record ManagedTradeRecord) error {
+	if err := validateManagedTrade(record); err != nil {
+		return err
+	}
+	record.SharesDelta = nonNilBigInt(record.SharesDelta)
+	record.SharesYES = nonNilBigInt(record.SharesYES)
+	record.SharesNO = nonNilBigInt(record.SharesNO)
+	amountWei, err := reserveBytes(record.AmountWei)
+	if err != nil {
+		return fmt.Errorf("amount_wei: %w", err)
+	}
+	sharesDelta, err := reserveBytes(record.SharesDelta)
+	if err != nil {
+		return fmt.Errorf("shares_delta: %w", err)
+	}
+	sharesYES, err := reserveBytes(record.SharesYES)
+	if err != nil {
+		return fmt.Errorf("shares_yes: %w", err)
+	}
+	sharesNO, err := reserveBytes(record.SharesNO)
+	if err != nil {
+		return fmt.Errorf("shares_no: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, repositoryOperationTimeout)
+	defer cancel()
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin managed trade sync: %w", err)
+	}
+	defer tx.Rollback()
+
+	contract := normalizeAddress(record.Market.ContractAddress)
+	user := normalizeAddress(record.UserAddress)
+	result, err := tx.ExecContext(ctx, updateManagedGoldTradeSQL,
+		record.OptionID,
+		amountWei,
+		decimalString(record.SharesDelta),
+		sharesDelta,
+		record.TimestampSec,
+		decimalString(record.SharesYES),
+		decimalString(record.SharesNO),
+		contract,
+		record.Market.GameID,
+		user,
+		record.TxHash,
+	)
+	if err != nil {
+		return fmt.Errorf("update managed gold trade: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("inspect managed gold trade update: %w", err)
+	}
+	if affected == 0 {
+		var existingID int64
+		findErr := tx.QueryRowContext(ctx, selectManagedGoldTradeSQL,
+			contract, record.Market.GameID, user, record.TxHash,
+		).Scan(&existingID)
+		if findErr != nil && !errors.Is(findErr, sql.ErrNoRows) {
+			return fmt.Errorf("find managed gold trade: %w", findErr)
+		}
+		if errors.Is(findErr, sql.ErrNoRows) {
+			if _, err := tx.ExecContext(ctx, insertManagedGoldTradeSQL,
+				record.Market.GameID,
+				contract,
+				user,
+				record.OptionID,
+				amountWei,
+				decimalString(record.SharesDelta),
+				sharesDelta,
+				record.TimestampSec,
+				record.TxHash,
+				decimalString(record.SharesYES),
+				decimalString(record.SharesNO),
+			); err != nil {
+				return fmt.Errorf("insert managed gold trade: %w", err)
+			}
+		}
+	}
+	if _, err := tx.ExecContext(ctx, upsertManagedUserPositionSQL,
+		user,
+		record.Market.GameID,
+		sharesYES,
+		sharesNO,
+	); err != nil {
+		return fmt.Errorf("upsert managed user position: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit managed trade sync: %w", err)
+	}
+	return nil
 }
 
 // ensureTables recreates all required tables (CREATE TABLE IF NOT EXISTS).
@@ -430,12 +752,45 @@ func validateDecisionIdentity(market MarketIdentity, user string) error {
 	return nil
 }
 
+func validateManagedTrade(record ManagedTradeRecord) error {
+	if err := validateDecisionIdentity(record.Market, record.UserAddress); err != nil {
+		return err
+	}
+	if record.OptionID != 0 && record.OptionID != 1 {
+		return errors.New("option_id must be 0 for YES or 1 for NO")
+	}
+	if strings.TrimSpace(record.TxHash) == "" {
+		return errors.New("tx_hash is required")
+	}
+	if record.TimestampSec <= 0 {
+		return errors.New("timestamp_sec must be positive")
+	}
+	if record.AmountWei == nil || record.AmountWei.Sign() <= 0 {
+		return errors.New("amount_wei must be positive")
+	}
+	return nil
+}
+
 func reserveBytes(value *big.Int) ([]byte, error) {
 	if value == nil || value.Sign() < 0 || value.BitLen() > 256 {
 		return nil, errors.New("value is not uint256")
 	}
 	// Store as decimal string so the data is human-readable in the database.
 	return []byte(value.String()), nil
+}
+
+func decimalString(value *big.Int) string {
+	if value == nil {
+		return "0"
+	}
+	return value.String()
+}
+
+func nonNilBigInt(value *big.Int) *big.Int {
+	if value == nil {
+		return big.NewInt(0)
+	}
+	return value
 }
 
 // parseReserveBytes decodes a reserve value from MySQL. It tries decimal
@@ -462,6 +817,13 @@ func parseReserveBytes(data []byte) (*big.Int, error) {
 
 func formatPercentage(value float64) string {
 	return strconv.FormatFloat(value, 'f', 6, 64)
+}
+
+func nullableTime(value time.Time) interface{} {
+	if value.IsZero() {
+		return nil
+	}
+	return value.UTC()
 }
 
 func normalizeAddress(value string) string {

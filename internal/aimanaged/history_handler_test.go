@@ -220,8 +220,8 @@ func TestHistoryHandlerOnDemandSampleWhenNoHistory(t *testing.T) {
 		t.Fatalf("expected 1 on-demand point, got %d: %+v", len(response), response)
 	}
 	p := response[0]
-	if p.YesPercent < 69 || p.YesPercent > 71 {
-		t.Fatalf("expected yes~70%%, got %.4f", p.YesPercent)
+	if p.YesPercent < 29 || p.YesPercent > 31 {
+		t.Fatalf("expected yes~30%%, got %.4f", p.YesPercent)
 	}
 	if p.Source != historySourceChain {
 		t.Fatalf("expected chain source, got %q", p.Source)

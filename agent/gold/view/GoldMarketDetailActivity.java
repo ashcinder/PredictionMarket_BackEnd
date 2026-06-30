@@ -41,6 +41,7 @@ public class GoldMarketDetailActivity extends AppCompatActivity {
     private GoldMarketDetailViewModel viewModel;
     private GoldMarketRepository.GameModel currentGame;
     private int gameId;
+    private String contractAddress;
 
     private TextView tvMarketDesc, tvMarketCondition;
     private TextView tvUpPct, tvDownPct, tvPool, tvCountdown;
@@ -75,11 +76,12 @@ public class GoldMarketDetailActivity extends AppCompatActivity {
         setContentView(R.layout.activity_gold_market_detail);
         destroyed = false;
         gameId = getIntent().getIntExtra("GAME_ID", 1);
+        contractAddress = getIntent().getStringExtra("CONTRACT_ADDRESS");
         viewModel = new ViewModelProvider(this).get(GoldMarketDetailViewModel.class);
         markwon = Markwon.create(this);
         initViews();
         observeViewModel();
-        viewModel.loadGameInfo(gameId);
+        viewModel.loadGameInfo(gameId, contractAddress);
         timerHandler.post(countdownRunnable);
     }
 
@@ -96,7 +98,14 @@ public class GoldMarketDetailActivity extends AppCompatActivity {
         viewModel.getError().observe(this, err -> {
             if (err != null) {
                 Toast.makeText(this, err, Toast.LENGTH_SHORT).show();
-                showMarketAiUnavailable("Error", err);
+                if (err.startsWith("AI error:")) {
+                    showMarketAiUnavailable("Error", err);
+                }
+            }
+        });
+        viewModel.getTradeError().observe(this, err -> {
+            if (err != null && !err.trim().isEmpty()) {
+                showTradeErrorDialog(err);
             }
         });
 
@@ -146,14 +155,14 @@ public class GoldMarketDetailActivity extends AppCompatActivity {
         btnClaimReward = findViewById(R.id.btn_claim_reward);
 
         swipeRefresh = findViewById(R.id.swipe_refresh);
-        swipeRefresh.setOnRefreshListener(() -> viewModel.loadGameInfo(gameId));
+        swipeRefresh.setOnRefreshListener(() -> viewModel.loadGameInfo(gameId, resolveContractAddress()));
 
         findViewById(R.id.btn_buy_up).setOnClickListener(v -> showBuyDialog(0, "YES"));
         findViewById(R.id.btn_buy_down).setOnClickListener(v -> showBuyDialog(1, "NO"));
         cardMarketAi.setOnClickListener(v -> toggleAiDetails());
         switchAiManaged.setOnCheckedChangeListener((btn, isChecked) -> {
             if (currentGame != null && currentGame.isManaged != isChecked) {
-                viewModel.toggleAiManaged(gameId, isChecked);
+                viewModel.toggleAiManaged(gameId, resolveContractAddress(), isChecked);
             }
         });
         btnClaimReward.setOnClickListener(v -> claimReward());
@@ -172,7 +181,7 @@ public class GoldMarketDetailActivity extends AppCompatActivity {
 
         switchAiManaged.setChecked(currentGame.isManaged);
 
-        btnClaimReward.setVisibility(currentGame.isResolved || currentGame.isRefunded ? View.VISIBLE : View.GONE);
+        btnClaimReward.setVisibility(shouldShowClaimReward() ? View.VISIBLE : View.GONE);
         if (currentGame.virtualReserves != null && currentGame.virtualReserves.size() >= 2) {
             BigInteger res0 = currentGame.virtualReserves.get(0);
             BigInteger res1 = currentGame.virtualReserves.get(1);
@@ -385,6 +394,11 @@ public class GoldMarketDetailActivity extends AppCompatActivity {
                 Toast.makeText(GoldMarketDetailActivity.this, "请输入下注金额", Toast.LENGTH_SHORT).show();
                 return;
             }
+            String preflightError = validateBuyRequest(optionId, val);
+            if (preflightError != null) {
+                showTradeErrorDialog(preflightError);
+                return;
+            }
             BigInteger wei = GoldMarketRepository.parseTokenAmountToWei(val);
             if (wei == null) {
                 Toast.makeText(GoldMarketDetailActivity.this, "金额格式无效，请输入有效数字（如 100）", Toast.LENGTH_SHORT).show();
@@ -392,7 +406,7 @@ public class GoldMarketDetailActivity extends AppCompatActivity {
             }
             dialog.dismiss();
             Toast.makeText(GoldMarketDetailActivity.this, "正在发送交易...", Toast.LENGTH_SHORT).show();
-            viewModel.buyShares(gameId, optionId, wei);
+            viewModel.buyShares(gameId, resolveContractAddress(), optionId, wei);
         });
         v.findViewById(R.id.btn_buy_cancel).setOnClickListener(view -> dialog.dismiss());
         dialog.show();
@@ -400,6 +414,10 @@ public class GoldMarketDetailActivity extends AppCompatActivity {
 
     private void claimReward() {
         if (currentGame == null) return;
+        if (!shouldShowClaimReward()) {
+            Toast.makeText(this, "当前暂无可领取收益", Toast.LENGTH_SHORT).show();
+            return;
+        }
         int optIndex = -1;
         if (currentGame.isResolved) optIndex = currentGame.winningOption;
         else if (currentGame.isRefunded) {
@@ -407,6 +425,70 @@ public class GoldMarketDetailActivity extends AppCompatActivity {
                 if (currentGame.myShares.get(i).compareTo(BigInteger.ZERO) > 0) { optIndex = i; break; }
             }
         }
-        if (optIndex != -1) viewModel.claimReward(gameId, optIndex);
+        if (optIndex != -1) viewModel.claimReward(gameId, resolveContractAddress(), optIndex);
+    }
+
+    private String resolveContractAddress() {
+        if (currentGame != null && currentGame.contractAddress != null && !currentGame.contractAddress.trim().isEmpty()) {
+            return currentGame.contractAddress;
+        }
+        return contractAddress;
+    }
+
+    private boolean shouldShowClaimReward() {
+        if (currentGame == null) return false;
+        long remaining = GoldNoteMarketActivity.remainingSecondsUntilDeadline(
+                currentGame.deadlineSec, System.currentTimeMillis());
+        if (remaining > 0) return false;
+        if (!currentGame.isResolved && !currentGame.isRefunded) return false;
+        if (currentGame.myShares == null || currentGame.myShares.size() < 2) return false;
+
+        if (currentGame.isResolved) {
+            int winningIndex = currentGame.winningOption;
+            if (winningIndex < 0 || winningIndex >= currentGame.myShares.size()) return false;
+            BigInteger winningShares = currentGame.myShares.get(winningIndex);
+            return winningShares != null && winningShares.signum() > 0;
+        }
+
+        for (BigInteger shares : currentGame.myShares) {
+            if (shares != null && shares.signum() > 0) return true;
+        }
+        return false;
+    }
+
+    private String validateBuyRequest(int optionId, String amountText) {
+        if (currentGame == null) {
+            return "下单失败：当前市场数据尚未加载完成，请稍后重试。";
+        }
+        long remaining = GoldNoteMarketActivity.remainingSecondsUntilDeadline(
+                currentGame.deadlineSec, System.currentTimeMillis());
+        if (remaining == 0) {
+            return "下单失败：该博弈池已经截止，链上不会再接受新的 YES/NO 购买。";
+        }
+        if (remaining < 0) {
+            return "下单失败：该博弈池的截止时间还未同步完成。\n\n"
+                    + "建议先下拉刷新一次；如果仍然失败，说明后端缓存或链上 deadline 状态异常。";
+        }
+        if (currentGame.isResolved || currentGame.isRefunded) {
+            return "下单失败：该博弈池当前状态为"
+                    + (currentGame.isRefunded ? "已退款" : "已结算")
+                    + "，不允许继续购买。";
+        }
+        if (resolveContractAddress() == null || resolveContractAddress().trim().isEmpty()) {
+            return "下单失败：未能识别该市场所属的合约地址，前端无法正确路由交易。";
+        }
+        if (amountText == null || amountText.trim().isEmpty()) {
+            return "下单失败：请输入下注金额。";
+        }
+        return null;
+    }
+
+    private void showTradeErrorDialog(String message) {
+        if (isFinishing() || destroyed) return;
+        new AlertDialog.Builder(this)
+                .setTitle("下单失败")
+                .setMessage(message)
+                .setPositiveButton("知道了", null)
+                .show();
     }
 }

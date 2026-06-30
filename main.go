@@ -62,11 +62,17 @@ func main() {
 		RequestTimeout: cfg.OracleRequestTimeout,
 	})
 	watcher := sentinel.NewWatcher(cfg, chainClient, ipfsClient, goldOracle)
-	managedStore, err := aimanaged.NewStore()
+	managedStore, err := aimanaged.NewStoreWithSecret(cfg.PrivateKey)
 	if err != nil {
 		slog.Error("init ai-managed store failed", "error", err)
 		os.Exit(1)
 	}
+	managedStore.SetPersistence(repository)
+	if err := managedStore.RestoreFromRepository(context.Background()); err != nil {
+		slog.Error("restore ai-managed entries failed", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("ai-managed entries restored", "count", len(managedStore.Entries()))
 	managedServer := aimanaged.NewServer(managedStore)
 	historyHandler := aimanaged.NewHistoryHandler(repository, cfg.AIHistoryMaxPoints, chainClient)
 	managedEngine := aimanaged.NewEngine(cfg, managedStore, ipfsClient, goldOracle, repository, repository)

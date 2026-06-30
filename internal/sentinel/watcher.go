@@ -15,12 +15,14 @@ import (
 )
 
 type Watcher struct {
-	cfg      *config.Config
-	chain    *chain.Client
-	ipfs     *ipfs.Client
-	oracle   *oracle.GoldOracle
+	cfg       *config.Config
+	chain     *chain.Client
+	ipfs      *ipfs.Client
+	oracle    *oracle.GoldOracle
 	resolving sync.Map
 }
+
+const sentinelScanTimeout = 15 * time.Second
 
 func NewWatcher(cfg *config.Config, chainClient *chain.Client, ipfsClient *ipfs.Client, goldOracle *oracle.GoldOracle) *Watcher {
 	return &Watcher{
@@ -42,7 +44,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 	ticker := time.NewTicker(w.cfg.PollInterval)
 	defer ticker.Stop()
 
-	initCtx, initCancel := context.WithTimeout(ctx, 120*time.Second)
+	initCtx, initCancel := context.WithTimeout(ctx, sentinelScanTimeout)
 	if err := w.scanOnce(initCtx); err != nil {
 		slog.Warn("initial scan failed", "error", err)
 	}
@@ -54,7 +56,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 			slog.Info("sentinel stopped")
 			return ctx.Err()
 		case <-ticker.C:
-			cycleCtx, cycleCancel := context.WithTimeout(ctx, 120*time.Second)
+			cycleCtx, cycleCancel := context.WithTimeout(ctx, sentinelScanTimeout)
 			if err := w.scanOnce(cycleCtx); err != nil {
 				slog.Warn("scan failed", "error", err)
 			}

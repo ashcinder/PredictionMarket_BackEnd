@@ -81,7 +81,10 @@ func pointFromReserves(extra *chain.GameExtraData, observedAt time.Time) (ipfs.H
 		return ipfs.HistoryPoint{}, errors.New("virtual reserves total must be positive")
 	}
 
-	yesRatio := new(big.Rat).SetFrac(reserveYES, total)
+	// The contract stores outcome reserves as [NO, YES]. AMM outcome prices
+	// use the opposite reserve: buying YES depletes reserveNO, so the displayed
+	// YES probability is reserveNO / (reserveNO + reserveYES).
+	yesRatio := new(big.Rat).SetFrac(reserveNO, total)
 	yesPercent, _ := yesRatio.Float64()
 	yesPercent *= 100
 	noPercent := 100 - yesPercent

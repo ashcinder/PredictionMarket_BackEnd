@@ -100,7 +100,10 @@ func (e *samplerCacheExt) OnSample(
 
 	// 3. Append price history point.
 	point := &priceHistoryRow{
-		GameID:       game.ID,
+		GameID: game.ID,
+		// The sampler already represents one observation interval. Store the
+		// interval bucket rather than the request completion second so service
+		// restarts/retries update the same chart point instead of duplicating it.
 		TimestampSec: observedAt.Unix(),
 		YesPrice:     yesPct,
 		NoPrice:      noPct,

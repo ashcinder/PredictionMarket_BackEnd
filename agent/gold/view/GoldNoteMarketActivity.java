@@ -109,9 +109,25 @@ public class GoldNoteMarketActivity extends AppCompatActivity {
     }
 
     public static String formatRemainingTime(long rem) {
-        if (rem <= 0) return "已截止";
+        if (rem < 0) return "截止时间待同步";
+        if (rem == 0) return "已截止";
         long days = rem / 86400;
-        return days >= 1 ? String.format(Locale.getDefault(), "距结束 %d 天", days) : "距结束不足 1 天";
+        long hours = (rem % 86400) / 3600;
+        long minutes = (rem % 3600) / 60;
+        if (days > 0) {
+            return hours > 0
+                    ? String.format(Locale.getDefault(), "距结束 %d天%d小时", days, hours)
+                    : String.format(Locale.getDefault(), "距结束 %d天", days);
+        }
+        if (hours > 0) {
+            return minutes > 0
+                    ? String.format(Locale.getDefault(), "距结束 %d小时%d分钟", hours, minutes)
+                    : String.format(Locale.getDefault(), "距结束 %d小时", hours);
+        }
+        if (minutes > 0) {
+            return String.format(Locale.getDefault(), "距结束 %d分钟", minutes);
+        }
+        return String.format(Locale.getDefault(), "距结束 %d秒", rem);
     }
 
     public static String formatBkc(BigInteger value) {
@@ -121,9 +137,29 @@ public class GoldNoteMarketActivity extends AppCompatActivity {
     }
 
     public static long remainingSecondsUntilDeadline(long raw, long now) {
-        if (raw <= 0) return 0;
-        long deadline = (raw > 10000000000L) ? raw : raw * 1000;
+        long deadline = normalizeDeadlineMillis(raw);
+        if (deadline <= 0) return -1;
         long diff = deadline - now;
-        return diff > 0 ? (diff / 1000) : 0;
+        return diff > 0 ? ((diff + 999) / 1000) : 0;
+    }
+
+    public static boolean hasKnownDeadline(long raw) {
+        return normalizeDeadlineMillis(raw) > 0;
+    }
+
+    public static String formatMarketStatus(long remainingSeconds) {
+        if (remainingSeconds < 0) return "同步中";
+        return remainingSeconds > 0 ? "进行中" : "已到期";
+    }
+
+    private static long normalizeDeadlineMillis(long raw) {
+        if (raw <= 0) return -1;
+        if (raw >= 10000000000L) {
+            return raw;
+        }
+        if (raw < 1000000000L) {
+            return -1;
+        }
+        return raw * 1000;
     }
 }

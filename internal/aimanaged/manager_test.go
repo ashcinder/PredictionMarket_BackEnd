@@ -36,7 +36,7 @@ func TestAIClientUsesConfiguredKeyAndModel(t *testing.T) {
 		}
 		model = body.Model
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"action\":\"hold\",\"confidence\":0.4,\"reason\":\"test\"}"}}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"condition_outcome\":\"uncertain\",\"action\":\"hold\",\"confidence\":0.4,\"reason\":\"test\"}"}}]}`))
 	}))
 	defer server.Close()
 
@@ -64,6 +64,66 @@ func TestAIClientUsesConfiguredKeyAndModel(t *testing.T) {
 	}
 }
 
+func TestAIClientRetriesMalformedDecisionJSON(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"condition_outcome\":\"yes\",\"action\":\"buy_yes\",\"confidence\":0.9] }"}}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"condition_outcome\":\"yes\",\"action\":\"buy_yes\",\"confidence\":0.9,\"estimated_prob\":0.8,\"reason\":\"retry ok\"}"}}]}`))
+	}))
+	defer server.Close()
+
+	client := NewAIClient(&config.Config{
+		AIAPIKey:  "test-key",
+		AIBaseURL: server.URL,
+		AIModel:   "test-model",
+	})
+	decision, err := client.Decide(context.Background(),
+		&chain.GameInfo{ID: 1, TotalPool: big.NewInt(100), DeadlineRaw: time.Now().Add(time.Hour).Unix()},
+		&chain.GameExtraData{VirtualReservesNOYES: []*big.Int{big.NewInt(50), big.NewInt(50)}},
+		&ipfs.Metadata{},
+		&oracle.Quote{PriceUSD: 2300, QuoteSource: "test"},
+		&ResearchContext{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || decision.Action != "buy_yes" {
+		t.Fatalf("expected valid second decision, calls=%d decision=%+v", calls, decision)
+	}
+}
+
+func TestParseDecisionRejectsConditionProbabilityMismatch(t *testing.T) {
+	_, err := parseDecision(`{
+		"condition_outcome":"yes",
+		"action":"buy_no",
+		"confidence":0.85,
+		"estimated_prob":0.03,
+		"reason":"YES 几乎必然成立"
+	}`)
+	if err == nil || !strings.Contains(err.Error(), "conflicts with estimated_prob") {
+		t.Fatalf("expected condition/probability conflict, got %v", err)
+	}
+
+	decision, err := parseDecision(`{
+		"condition_outcome":"no",
+		"action":"buy_no",
+		"confidence":0.85,
+		"estimated_prob":0,
+		"reason":"YES 几乎不可能"
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.EstimatedProb != 0 {
+		t.Fatalf("literal zero probability was replaced: %+v", decision)
+	}
+}
+
 func TestAIClientDecisionPromptIncludesResearchHistoryAndUntrustedDataBoundary(t *testing.T) {
 	var messages []struct {
 		Role    string `json:"role"`
@@ -81,7 +141,7 @@ func TestAIClientDecisionPromptIncludesResearchHistoryAndUntrustedDataBoundary(t
 		}
 		messages = body.Messages
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"action\":\"hold\",\"confidence\":0.8,\"reason\":\"history is mixed\"}"}}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"condition_outcome\":\"uncertain\",\"action\":\"hold\",\"confidence\":0.8,\"reason\":\"history is mixed\"}"}}]}`))
 	}))
 	defer server.Close()
 
@@ -135,6 +195,9 @@ func TestAIClientDecisionPromptIncludesResearchHistoryAndUntrustedDataBoundary(t
 		"市场隐含NO概率: 40.0%",
 		"博弈池ID: 9",
 		"当前金价: $2300.25",
+		"YES=0, NO=1",
+		"价值阈值模板",
+		"不要把历史点数量少当作唯一持有理由",
 		`[{"time":100,"yes_percent":51,"no_percent":49},{"time":200,"yes_percent":55,"no_percent":45},{"time":300,"yes_percent":60,"no_percent":40}]`,
 	} {
 		if !strings.Contains(user, required) {
@@ -204,6 +267,8 @@ type fakeManagedChain struct {
 	info       *chain.GameInfo
 	infoErr    error
 	extra      *chain.GameExtraData
+	extras     []*chain.GameExtraData
+	extraIndex int
 	extraErr   error
 	sendCount  int
 	option     int
@@ -211,6 +276,7 @@ type fakeManagedChain struct {
 	buyErr     error
 	onGetInfo  func()
 	onGetExtra func()
+	onBuy      func()
 }
 
 func (f *fakeManagedChain) WalletAddress() string { return f.wallet }
@@ -225,12 +291,23 @@ func (f *fakeManagedChain) GetGameExtraData(context.Context, int, string) (*chai
 	if f.onGetExtra != nil {
 		f.onGetExtra()
 	}
+	if len(f.extras) > 0 {
+		index := f.extraIndex
+		if index >= len(f.extras) {
+			index = len(f.extras) - 1
+		}
+		f.extraIndex++
+		return f.extras[index], f.extraErr
+	}
 	return f.extra, f.extraErr
 }
 func (f *fakeManagedChain) BuyShares(_ context.Context, _ int, option int, value *big.Int) (string, error) {
 	f.sendCount++
 	f.option = option
 	f.value = new(big.Int).Set(value)
+	if f.onBuy != nil {
+		f.onBuy()
+	}
 	if f.buyErr != nil {
 		return "", f.buyErr
 	}
@@ -311,6 +388,18 @@ type recordingSyncStateRepository struct {
 	successes int
 }
 
+type recordingManagedTradeRepository struct {
+	records    []ManagedTradeRecord
+	err        error
+	contextErr error
+}
+
+func (r *recordingManagedTradeRepository) RecordManagedTrade(ctx context.Context, record ManagedTradeRecord) error {
+	r.contextErr = ctx.Err()
+	r.records = append(r.records, record)
+	return r.err
+}
+
 func (r *recordingSyncStateRepository) GetSyncState(_ context.Context, _ MarketIdentity) (MarketSyncState, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -379,6 +468,17 @@ func (f failingHistoryRepository) MergeAndList(context.Context, MarketIdentity, 
 
 func (f failingHistoryRepository) List(context.Context, MarketIdentity, int) ([]HistoryObservation, error) {
 	return nil, f.err
+}
+
+type staticCachedMarket struct {
+	value *CachedMarket
+	err   error
+	calls int
+}
+
+func (s *staticCachedMarket) GetCachedMarket(context.Context, MarketIdentity) (*CachedMarket, error) {
+	s.calls++
+	return s.value, s.err
 }
 
 func (s *staticDecision) Decide(_ context.Context, _ *chain.GameInfo, _ *chain.GameExtraData, _ *ipfs.Metadata, _ *oracle.Quote, research *ResearchContext) (*Decision, error) {
@@ -499,6 +599,185 @@ func TestEngineSendsAndRecordsOneSimulatedTrade(t *testing.T) {
 	}
 }
 
+func TestEngineMirrorsAITradeIntoFrontendTables(t *testing.T) {
+	store, snapshot, user := newManagedTestEntry(t)
+	client := &fakeManagedChain{
+		wallet: user,
+		info: &chain.GameInfo{ID: 1, TotalPool: big.NewInt(0),
+			DeadlineRaw: time.Now().Add(time.Hour).UnixMilli()},
+		extras: []*chain.GameExtraData{
+			{
+				VirtualReservesNOYES: []*big.Int{big.NewInt(40), big.NewInt(60)},
+				MySharesYESNO:        []*big.Int{big.NewInt(100), big.NewInt(0)},
+			},
+			{
+				VirtualReservesNOYES: []*big.Int{big.NewInt(40), big.NewInt(60)},
+				MySharesYESNO:        []*big.Int{big.NewInt(100), big.NewInt(0)},
+			},
+			{
+				VirtualReservesNOYES: []*big.Int{big.NewInt(30), big.NewInt(70)},
+				MySharesYESNO:        []*big.Int{big.NewInt(1234), big.NewInt(0)},
+			},
+		},
+	}
+	trades := &recordingManagedTradeRepository{}
+	engine := newTestEngine(store, client, &Decision{Action: "buy_yes", Confidence: 0.91, EstimatedProb: 0.85, Reason: "strong signal"})
+	engine.trades = trades
+
+	if err := engine.process(context.Background(), snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(trades.records) != 2 {
+		t.Fatalf("expected provisional and reconciled frontend trade writes, got %d", len(trades.records))
+	}
+	if trades.records[0].SharesDelta.Sign() != 0 {
+		t.Fatalf("provisional trade must not invent a share delta: %+v", trades.records[0])
+	}
+	record := trades.records[1]
+	if record.OptionID != 0 || record.TxHash != "0xtest" || record.UserAddress != snapshot.UserAddress {
+		t.Fatalf("unexpected trade record identity: %+v", record)
+	}
+	if record.AmountWei == nil || record.AmountWei.Sign() <= 0 {
+		t.Fatalf("expected positive trade amount: %+v", record)
+	}
+	if record.SharesYES.String() != "1234" || record.SharesNO.String() != "0" || record.SharesDelta.String() != "1134" {
+		t.Fatalf("unexpected synced shares: yes=%v no=%v delta=%v", record.SharesYES, record.SharesNO, record.SharesDelta)
+	}
+}
+
+func TestEngineFinalizesTradeWithFreshContextAfterTaskCancellation(t *testing.T) {
+	store, snapshot, user := newManagedTestEntry(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &fakeManagedChain{
+		wallet: user,
+		info: &chain.GameInfo{ID: 1, TotalPool: big.NewInt(0),
+			DeadlineRaw: time.Now().Add(time.Hour).UnixMilli()},
+		extras: []*chain.GameExtraData{
+			{VirtualReservesNOYES: []*big.Int{big.NewInt(50), big.NewInt(50)}, MySharesYESNO: []*big.Int{big.NewInt(0), big.NewInt(0)}},
+			{VirtualReservesNOYES: []*big.Int{big.NewInt(50), big.NewInt(50)}, MySharesYESNO: []*big.Int{big.NewInt(0), big.NewInt(0)}},
+			{VirtualReservesNOYES: []*big.Int{big.NewInt(40), big.NewInt(60)}, MySharesYESNO: []*big.Int{big.NewInt(500), big.NewInt(0)}},
+		},
+		onBuy: cancel,
+	}
+	trades := &recordingManagedTradeRepository{}
+	engine := newTestEngine(store, client, &Decision{Action: "buy_yes", Confidence: 0.91, EstimatedProb: 0.85, Reason: "strong signal"})
+	engine.trades = trades
+
+	if err := engine.process(ctx, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(trades.records) != 2 || trades.contextErr != nil {
+		t.Fatalf("post-trade DB sync inherited canceled context: records=%d context_error=%v", len(trades.records), trades.contextErr)
+	}
+	finalized := engine.audits.(*recordingDecisionRepository).finalized
+	if len(finalized) != 1 || finalized[0].outcome != "traded" {
+		t.Fatalf("trade audit was not finalized after task cancellation: %+v", finalized)
+	}
+}
+
+func TestDecisionMarketConsistencyGuardPreventsReversedTrade(t *testing.T) {
+	guarded := enforceDecisionMarketConsistency(&Decision{
+		Action:        "buy_no",
+		Confidence:    0.95,
+		EstimatedProb: 1.0,
+		Reason:        "YES 几乎确定",
+	}, 0.991, 0.05)
+	if guarded.Action != "hold" {
+		t.Fatalf("expected inconsistent buy_no to become hold, got %+v", guarded)
+	}
+	if !strings.Contains(guarded.Reason, "一致性保护") {
+		t.Fatalf("expected guard reason, got %q", guarded.Reason)
+	}
+
+	allowed := enforceDecisionMarketConsistency(&Decision{
+		Action:        "buy_no",
+		Confidence:    0.95,
+		EstimatedProb: 0.20,
+		Reason:        "YES 被高估",
+	}, 0.80, 0.05)
+	if allowed.Action != "buy_no" {
+		t.Fatalf("expected consistent buy_no to pass, got %+v", allowed)
+	}
+}
+
+func TestEngineExplicitConditionCallsAIEvenWithInsufficientHistory(t *testing.T) {
+	store, snapshot, user := newManagedTestEntry(t)
+	client := &fakeManagedChain{
+		wallet: user,
+		info: &chain.GameInfo{ID: 1, TotalPool: big.NewInt(0),
+			DeadlineRaw: time.Now().Add(time.Hour).UnixMilli(), IPFSCID: "cid"},
+		extra: &chain.GameExtraData{VirtualReservesNOYES: []*big.Int{big.NewInt(50), big.NewInt(50)}},
+	}
+	engine := newTestEngine(store, client, &Decision{Action: "buy_yes", Confidence: 0.91, EstimatedProb: 0.95, Reason: "AI 判断条件强成立，市场低估 YES"})
+	engine.cfg.AIHistoryMinPoints = 99
+	engine.metadata = staticMetadata{value: &ipfs.Metadata{
+		Desc:      "截止 2026-06-30 金价 大于 1 USD",
+		Condition: "黄金价格 大于 1 USD (截至 2026-06-30)",
+		OptionYES: "达成 (YES)",
+		OptionNO:  "未达成 (NO)",
+	}}
+	engine.quotes = &staticQuote{value: &oracle.Quote{PriceUSD: 2300, QuoteSource: "test"}}
+
+	if err := engine.process(context.Background(), snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if client.sendCount != 1 || client.option != 0 {
+		t.Fatalf("expected AI-driven YES trade, got sends=%d option=%d", client.sendCount, client.option)
+	}
+	if calls := engine.decisions.(*staticDecision).calls; calls != 1 {
+		t.Fatalf("explicit market condition should call AI despite insufficient history, got calls=%d", calls)
+	}
+	finalized := engine.audits.(*recordingDecisionRepository).finalized
+	if len(finalized) != 1 || finalized[0].outcome != "traded" {
+		t.Fatalf("unexpected AI audit finalization: %+v", finalized)
+	}
+	pending := engine.audits.(*recordingDecisionRepository).pending
+	if len(pending) != 1 || pending[0].Action != "buy_yes" || !strings.Contains(pending[0].Reason, "AI 判断条件强成立") {
+		t.Fatalf("unexpected AI pending decision: %+v", pending)
+	}
+}
+
+func TestEngineUsesCachedMarketForDecisionInsteadOfChainReads(t *testing.T) {
+	store, snapshot, user := newManagedTestEntry(t)
+	client := &fakeManagedChain{
+		wallet: user,
+		onGetInfo: func() {
+			t.Fatal("AI decision path should not call chain getGameInfo when cached market is available")
+		},
+		onGetExtra: func() {
+			t.Fatal("AI decision path should not call chain getGameExtraData when cached market is available")
+		},
+	}
+	engine := newTestEngine(store, client, &Decision{Action: "buy_yes", Confidence: 0.91, EstimatedProb: 0.95, Reason: "cached market supports YES"})
+	cache := &staticCachedMarket{value: &CachedMarket{
+		Market: MarketIdentity{ContractAddress: snapshot.ContractAddress, GameID: snapshot.GameID},
+		Info: &chain.GameInfo{
+			ID:          snapshot.GameID,
+			TotalPool:   big.NewInt(100),
+			DeadlineRaw: time.Now().Add(time.Hour).Unix(),
+		},
+		Extra: &chain.GameExtraData{VirtualReservesNOYES: []*big.Int{big.NewInt(50), big.NewInt(50)}},
+		Metadata: &ipfs.Metadata{
+			Desc:      "截止 2026-06-30 金价 大于 1 USD",
+			Condition: "黄金价格 大于 1 USD (截至 2026-06-30)",
+		},
+	}}
+	engine.cached = cache
+
+	if err := engine.process(context.Background(), snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if cache.calls != 1 {
+		t.Fatalf("expected one cached market lookup, got %d", cache.calls)
+	}
+	if calls := engine.decisions.(*staticDecision).calls; calls != 1 {
+		t.Fatalf("expected AI decision call, got %d", calls)
+	}
+	if client.sendCount != 1 || client.option != 0 {
+		t.Fatalf("expected cached AI decision to execute YES trade, sends=%d option=%d", client.sendCount, client.option)
+	}
+}
+
 func TestEngineForcesHoldUntilHistoryMinimumIsReached(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -546,7 +825,7 @@ func TestEngineForcesHoldUntilHistoryMinimumIsReached(t *testing.T) {
 			}
 			if test.wantCalls == 1 {
 				if decisions.research == nil || len(decisions.research.History) != 3 ||
-					decisions.research.Current.YesPercent != 60 ||
+					decisions.research.Current.YesPercent != 40 ||
 					decisions.research.History[2].Time != 360 {
 					t.Fatalf("unexpected research context: %+v", decisions.research)
 				}

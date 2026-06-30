@@ -15,10 +15,13 @@ import com.example.brokerfi.xc.agent.gold.model.logic.GoldMarketResearchPromptBu
 import java.math.BigInteger;
 
 public class GoldMarketDetailViewModel extends AndroidViewModel {
+    private final Application application;
+    private final String privateKey;
     private final GoldMarketRepository repository;
     private final MutableLiveData<GoldMarketRepository.GameModel> currentGame = new MutableLiveData<>();
     private final MutableLiveData<String> marketAiSummary = new MutableLiveData<>();
     private final MutableLiveData<String> error = new MutableLiveData<>();
+    private final MutableLiveData<String> tradeError = new MutableLiveData<>();
     private final MutableLiveData<Boolean> isLoading = new MutableLiveData<>(false);
     private final MutableLiveData<String> txStatus = new MutableLiveData<>();
     private final MutableLiveData<String> debugToast = new MutableLiveData<>();
@@ -27,13 +30,22 @@ public class GoldMarketDetailViewModel extends AndroidViewModel {
 
     public GoldMarketDetailViewModel(@NonNull Application application) {
         super(application);
-        String pk = StorageUtil.getCurrentPrivatekey(application);
-        repository = new GoldMarketRepository(application, pk);
+        this.application = application;
+        this.privateKey = StorageUtil.getCurrentPrivatekey(application);
+        repository = new GoldMarketRepository(application, privateKey);
+    }
+
+    private GoldMarketRepository repositoryFor(String contractAddress) {
+        if (contractAddress == null || contractAddress.trim().isEmpty()) {
+            return repository;
+        }
+        return new GoldMarketRepository(application, privateKey, contractAddress);
     }
 
     public LiveData<GoldMarketRepository.GameModel> getCurrentGame() { return currentGame; }
     public LiveData<String> getMarketAiSummary() { return marketAiSummary; }
     public LiveData<String> getError() { return error; }
+    public LiveData<String> getTradeError() { return tradeError; }
     public LiveData<Boolean> getIsLoading() { return isLoading; }
     public LiveData<String> getTxStatus() { return txStatus; }
     public LiveData<String> getDebugToast() { return debugToast; }
@@ -41,11 +53,17 @@ public class GoldMarketDetailViewModel extends AndroidViewModel {
     public String getWalletAddress() { return repository.getWalletAddress(); }
 
     public void loadGameInfo(int gameId) {
+        loadGameInfo(gameId, null);
+    }
+
+    public void loadGameInfo(int gameId, String contractAddress) {
         isLoading.setValue(true);
-        repository.getGameInfo(gameId, new GoldMarketRepository.DataCallback<GoldMarketRepository.GameModel>() {
+        GoldMarketRepository activeRepository = repositoryFor(contractAddress);
+        activeRepository.getGameInfo(gameId, new GoldMarketRepository.DataCallback<GoldMarketRepository.GameModel>() {
             @Override
             public void onSuccess(GoldMarketRepository.GameModel model) {
-                repository.getAiManagedStatus(gameId, new GoldMarketRepository.DataCallback<Boolean>() {
+                GoldMarketRepository aiRepository = repositoryFor(model != null ? model.contractAddress : contractAddress);
+                aiRepository.getAiManagedStatus(gameId, new GoldMarketRepository.DataCallback<Boolean>() {
                     @Override
                     public void onSuccess(Boolean managed) {
                         model.isManaged = managed;
@@ -93,7 +111,11 @@ public class GoldMarketDetailViewModel extends AndroidViewModel {
     }
 
     public void toggleAiManaged(int gameId, boolean enabled) {
-        repository.toggleAiManaged(gameId, enabled, new GoldMarketRepository.DataCallback<Boolean>() {
+        toggleAiManaged(gameId, null, enabled);
+    }
+
+    public void toggleAiManaged(int gameId, String contractAddress, boolean enabled) {
+        repositoryFor(contractAddress).toggleAiManaged(gameId, enabled, new GoldMarketRepository.DataCallback<Boolean>() {
             @Override
             public void onSuccess(Boolean result) {
                 GoldMarketRepository.GameModel model = currentGame.getValue();
@@ -147,29 +169,37 @@ public class GoldMarketDetailViewModel extends AndroidViewModel {
     }
 
     public void buyShares(int gameId, int optionId, BigInteger amountWei) {
-        repository.buyShares(gameId, optionId, amountWei, new GoldMarketRepository.TxCallback() {
+        buyShares(gameId, null, optionId, amountWei);
+    }
+
+    public void buyShares(int gameId, String contractAddress, int optionId, BigInteger amountWei) {
+        repositoryFor(contractAddress).buyShares(gameId, optionId, amountWei, new GoldMarketRepository.TxCallback() {
             @Override public void onTxSent(String txHash) { txStatus.postValue("Sent: " + txHash); }
             @Override public void onConfirmed(String msg) {
                 txStatus.postValue("Confirmed: " + msg);
                 // 延迟 2 秒再刷新，确保后端 DB 同步完成 + 链上状态已更新
                 new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
-                    loadGameInfo(gameId);
+                    loadGameInfo(gameId, contractAddress);
                 }, 2000);
             }
-            @Override public void onError(String err) { error.postValue("Failed: " + err); }
+            @Override public void onError(String err) { tradeError.postValue(err); }
         });
     }
 
     public void claimReward(int gameId, int optionId) {
-        repository.claimReward(gameId, optionId, new GoldMarketRepository.TxCallback() {
+        claimReward(gameId, null, optionId);
+    }
+
+    public void claimReward(int gameId, String contractAddress, int optionId) {
+        repositoryFor(contractAddress).claimReward(gameId, optionId, new GoldMarketRepository.TxCallback() {
             @Override public void onTxSent(String txHash) { txStatus.postValue("Claim Sent"); }
             @Override public void onConfirmed(String msg) {
                 txStatus.postValue("Claim Success");
                 new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
-                    loadGameInfo(gameId);
+                    loadGameInfo(gameId, contractAddress);
                 }, 2000);
             }
-            @Override public void onError(String err) { error.postValue("Claim Failed: " + err); }
+            @Override public void onError(String err) { tradeError.postValue("领取失败：\n\n" + err); }
         });
     }
 }

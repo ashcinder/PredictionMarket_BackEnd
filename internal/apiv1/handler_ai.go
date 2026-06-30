@@ -28,7 +28,11 @@ func (s *Server) handleAIGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	contractAddress := r.URL.Query().Get("contract_address")
 	enabled := s.aiStore.IsEnabled(gameID, userAddress)
+	if common.IsHexAddress(contractAddress) {
+		enabled = s.aiStore.IsEnabledForContract(gameID, userAddress, contractAddress)
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"enabled": enabled})
 }
 
@@ -66,7 +70,7 @@ func (s *Server) handleAISet(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		s.aiStore.Disable(req.GameID, req.UserAddress)
+		s.aiStore.DisableForContract(req.GameID, req.UserAddress, req.ContractAddress)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"success": true})

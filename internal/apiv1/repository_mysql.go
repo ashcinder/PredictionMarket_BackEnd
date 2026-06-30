@@ -91,9 +91,12 @@ const (
 	// gold_price_history
 	selectPriceHistorySQL = `SELECT id, game_id, timestamp_sec, yes_price, no_price, total_pool
 		FROM gold_price_history WHERE game_id = ? ORDER BY timestamp_sec DESC LIMIT ?`
-	insertPriceHistorySQL = `INSERT INTO gold_price_history
+	upsertPriceHistorySQL = `INSERT INTO gold_price_history
 		(game_id, timestamp_sec, yes_price, no_price, total_pool)
-		VALUES (?, ?, ?, ?, ?)`
+		VALUES (?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+		yes_price=VALUES(yes_price), no_price=VALUES(no_price),
+		total_pool=VALUES(total_pool)`
 
 	// gold_trades
 	insertTradeSQL = `INSERT INTO gold_trades
@@ -455,7 +458,7 @@ func (r *MySQLRepository) upsertChainStateDeadline(ctx context.Context, gameID i
 
 func (r *MySQLRepository) canonicalDeadlineSec(ctx context.Context, contractAddress string, gameID int, incoming int64) int64 {
 	normalizedIncoming := normalizeDeadlineSec(incoming)
-	if contractAddress == "" || gameID <= 0 {
+	if normalizedIncoming > 0 || contractAddress == "" || gameID <= 0 {
 		return normalizedIncoming
 	}
 	var gameDeadline int64
@@ -463,10 +466,7 @@ func (r *MySQLRepository) canonicalDeadlineSec(ctx context.Context, contractAddr
 	if err != nil || gameDeadline <= 0 {
 		return normalizedIncoming
 	}
-	if incoming <= 0 || incoming > 10_000_000_000 || absInt64(gameDeadline-normalizedIncoming) > 3600 {
-		return gameDeadline
-	}
-	return normalizedIncoming
+	return normalizeDeadlineSec(gameDeadline)
 }
 
 // ---------------------------------------------------------------------------
@@ -613,7 +613,7 @@ func (r *MySQLRepository) AppendHistory(ctx context.Context, point *priceHistory
 func (r *MySQLRepository) appendHistory(ctx context.Context, point *priceHistoryRow) error {
 	ctx, cancel := context.WithTimeout(ctx, repoTimeout)
 	defer cancel()
-	_, err := r.db.ExecContext(ctx, insertPriceHistorySQL,
+	_, err := r.db.ExecContext(ctx, upsertPriceHistorySQL,
 		point.GameID, point.TimestampSec,
 		point.YesPrice, point.NoPrice,
 		bigIntToDBBytes(point.TotalPool),

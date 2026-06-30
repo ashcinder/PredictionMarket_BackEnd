@@ -112,7 +112,7 @@ func (s *Server) handleSyncGame(w http.ResponseWriter, r *http.Request) {
 	var deadlineSec int64
 	if req.DeadlineSec > 0 {
 		// Absolute chain deadline timestamp (from frontend post-creation chain query).
-		deadlineSec = req.DeadlineSec
+		deadlineSec = normalizeDeadlineSec(req.DeadlineSec)
 	} else if req.DurationSec > 0 {
 		// Relative duration in seconds (legacy / fallback).
 		deadlineSec = time.Now().Unix() + req.DurationSec
