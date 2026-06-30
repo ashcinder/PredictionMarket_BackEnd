@@ -4,6 +4,8 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.Spannable;
 import android.text.SpannableStringBuilder;
 import android.text.style.AbsoluteSizeSpan;
@@ -40,11 +42,19 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class GoldMarketListFragment extends Fragment {
+    private static final long DATA_REFRESH_INTERVAL_MS = 15_000L;
     private GoldMarketViewModel viewModel;
     private final List<GoldMarketRepository.GameModel> availableGames = new ArrayList<>();
 
     private LinearLayout marketListContainer;
     private SwipeRefreshLayout swipeRefresh;
+    private final Handler dataRefreshHandler = new Handler(Looper.getMainLooper());
+    private final Runnable dataRefreshRunnable = new Runnable() {
+        @Override public void run() {
+            if (viewModel != null) viewModel.refreshData();
+            dataRefreshHandler.postDelayed(this, DATA_REFRESH_INTERVAL_MS);
+        }
+    };
 
     @Nullable
     @Override
@@ -89,6 +99,25 @@ public class GoldMarketListFragment extends Fragment {
                 Toast.makeText(requireContext(), msg, Toast.LENGTH_SHORT).show();
             }
         });
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        dataRefreshHandler.removeCallbacks(dataRefreshRunnable);
+        dataRefreshHandler.post(dataRefreshRunnable);
+    }
+
+    @Override
+    public void onPause() {
+        dataRefreshHandler.removeCallbacks(dataRefreshRunnable);
+        super.onPause();
+    }
+
+    @Override
+    public void onDestroyView() {
+        dataRefreshHandler.removeCallbacks(dataRefreshRunnable);
+        super.onDestroyView();
     }
 
     private void renderMarketList() {

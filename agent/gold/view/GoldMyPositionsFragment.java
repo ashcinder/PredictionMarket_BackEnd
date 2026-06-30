@@ -5,6 +5,8 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.Spannable;
 import android.text.SpannableStringBuilder;
 import android.text.style.AbsoluteSizeSpan;
@@ -42,6 +44,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class GoldMyPositionsFragment extends Fragment {
+    private static final long DATA_REFRESH_INTERVAL_MS = 15_000L;
     private GoldMyPositionsViewModel viewModel;
     private final List<GoldMarketRepository.GameModel> myPositions = new ArrayList<>();
 
@@ -49,6 +52,13 @@ public class GoldMyPositionsFragment extends Fragment {
     private LinearLayout positionsContainer;
     private SwipeRefreshLayout swipeRefresh;
     private double lastTotalBalance = 0.0;
+    private final Handler dataRefreshHandler = new Handler(Looper.getMainLooper());
+    private final Runnable dataRefreshRunnable = new Runnable() {
+        @Override public void run() {
+            if (viewModel != null) viewModel.refreshPositions();
+            dataRefreshHandler.postDelayed(this, DATA_REFRESH_INTERVAL_MS);
+        }
+    };
 
     @Nullable
     @Override
@@ -89,6 +99,25 @@ public class GoldMyPositionsFragment extends Fragment {
                 Toast.makeText(requireContext(), msg, Toast.LENGTH_SHORT).show();
             }
         });
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        dataRefreshHandler.removeCallbacks(dataRefreshRunnable);
+        dataRefreshHandler.post(dataRefreshRunnable);
+    }
+
+    @Override
+    public void onPause() {
+        dataRefreshHandler.removeCallbacks(dataRefreshRunnable);
+        super.onPause();
+    }
+
+    @Override
+    public void onDestroyView() {
+        dataRefreshHandler.removeCallbacks(dataRefreshRunnable);
+        super.onDestroyView();
     }
 
     private void renderPositions() {

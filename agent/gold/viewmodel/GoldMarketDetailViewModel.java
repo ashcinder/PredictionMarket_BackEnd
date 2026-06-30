@@ -13,6 +13,7 @@ import com.example.brokerfi.xc.agent.gold.model.logic.GoldAdvisoryManager;
 import com.example.brokerfi.xc.agent.gold.model.logic.GoldMarketResearchPromptBuilder;
 
 import java.math.BigInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class GoldMarketDetailViewModel extends AndroidViewModel {
     private final Application application;
@@ -25,6 +26,7 @@ public class GoldMarketDetailViewModel extends AndroidViewModel {
     private final MutableLiveData<Boolean> isLoading = new MutableLiveData<>(false);
     private final MutableLiveData<String> txStatus = new MutableLiveData<>();
     private final MutableLiveData<String> debugToast = new MutableLiveData<>();
+    private final AtomicBoolean gameInfoRequestInFlight = new AtomicBoolean(false);
 
     private String marketAiContext = "";
 
@@ -57,7 +59,16 @@ public class GoldMarketDetailViewModel extends AndroidViewModel {
     }
 
     public void loadGameInfo(int gameId, String contractAddress) {
-        isLoading.setValue(true);
+        loadGameInfo(gameId, contractAddress, true);
+    }
+
+    public void refreshGameInfo(int gameId, String contractAddress) {
+        loadGameInfo(gameId, contractAddress, false);
+    }
+
+    private void loadGameInfo(int gameId, String contractAddress, boolean showLoading) {
+        if (!gameInfoRequestInFlight.compareAndSet(false, true)) return;
+        if (showLoading) isLoading.setValue(true);
         GoldMarketRepository activeRepository = repositoryFor(contractAddress);
         activeRepository.getGameInfo(gameId, new GoldMarketRepository.DataCallback<GoldMarketRepository.GameModel>() {
             @Override
@@ -66,29 +77,35 @@ public class GoldMarketDetailViewModel extends AndroidViewModel {
                 aiRepository.getAiManagedStatus(gameId, new GoldMarketRepository.DataCallback<Boolean>() {
                     @Override
                     public void onSuccess(Boolean managed) {
-                        model.isManaged = managed;
-                        isLoading.postValue(false);
+                        if (model != null) model.isManaged = managed;
+                        finishGameInfoRequest(showLoading);
                         currentGame.postValue(model);
                     }
                     @Override
                     public void onError(String err) {
-                        isLoading.postValue(false);
+                        finishGameInfoRequest(showLoading);
                         currentGame.postValue(model);
                     }
                 });
             }
             @Override
             public void onError(String err) {
-                isLoading.postValue(false);
-                error.postValue(err);
+                finishGameInfoRequest(showLoading);
+                if (showLoading) error.postValue(err);
             }
             @Override
             public void onTiming(String source, long durationMs, boolean isFallback) {
+                if (!showLoading) return;
                 String msg = source + " | " + String.format(java.util.Locale.getDefault(), "%.2f秒", durationMs / 1000.0);
                 if (isFallback) msg = "🔄 " + msg;
                 debugToast.postValue(msg);
             }
         });
+    }
+
+    private void finishGameInfoRequest(boolean showLoading) {
+        gameInfoRequestInFlight.set(false);
+        if (showLoading) isLoading.postValue(false);
     }
 
     public void startAiAnalysis() {

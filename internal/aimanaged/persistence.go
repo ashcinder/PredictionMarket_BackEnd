@@ -105,6 +105,9 @@ type ManagedTradeRecord struct {
 	SharesDelta  *big.Int
 	SharesYES    *big.Int
 	SharesNO     *big.Int
+	TotalPool    *big.Int
+	ReserveYES   *big.Int
+	ReserveNO    *big.Int
 	TxHash       string
 	TimestampSec int64
 }

@@ -10,6 +10,7 @@ import com.example.brokerfi.xc.agent.gold.model.data.GoldMarketRepository;
 import com.example.brokerfi.xc.StorageUtil;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class GoldMyPositionsViewModel extends AndroidViewModel {
     private final GoldMarketRepository repository;
@@ -17,6 +18,7 @@ public class GoldMyPositionsViewModel extends AndroidViewModel {
     private final MutableLiveData<String> error = new MutableLiveData<>();
     private final MutableLiveData<Boolean> isLoading = new MutableLiveData<>(false);
     private final MutableLiveData<String> debugToast = new MutableLiveData<>();
+    private final AtomicBoolean requestInFlight = new AtomicBoolean(false);
 
     public GoldMyPositionsViewModel(@NonNull Application application) {
         super(application);
@@ -30,25 +32,39 @@ public class GoldMyPositionsViewModel extends AndroidViewModel {
     public LiveData<String> getDebugToast() { return debugToast; }
 
     public void loadPositions() {
-        if (Boolean.TRUE.equals(isLoading.getValue())) return;
-        isLoading.setValue(true);
+        loadPositions(true);
+    }
+
+    public void refreshPositions() {
+        loadPositions(false);
+    }
+
+    private void loadPositions(boolean showLoading) {
+        if (!requestInFlight.compareAndSet(false, true)) return;
+        if (showLoading) isLoading.setValue(true);
         repository.getMyParticipatedGames(new GoldMarketRepository.DataCallback<List<GoldMarketRepository.GameModel>>() {
             @Override
             public void onSuccess(List<GoldMarketRepository.GameModel> models) {
-                isLoading.postValue(false);
+                finishRequest(showLoading);
                 myPositions.postValue(models);
             }
             @Override
             public void onError(String err) {
-                isLoading.postValue(false);
-                error.postValue(err);
+                finishRequest(showLoading);
+                if (showLoading) error.postValue(err);
             }
             @Override
             public void onTiming(String source, long durationMs, boolean isFallback) {
+                if (!showLoading) return;
                 String msg = source + " | " + String.format(java.util.Locale.getDefault(), "%.2f秒", durationMs / 1000.0);
                 if (isFallback) msg = "🔄 " + msg;
                 debugToast.postValue(msg);
             }
         });
+    }
+
+    private void finishRequest(boolean showLoading) {
+        requestInFlight.set(false);
+        if (showLoading) isLoading.postValue(false);
     }
 }

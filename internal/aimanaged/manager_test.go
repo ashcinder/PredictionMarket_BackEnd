@@ -643,6 +643,12 @@ func TestEngineMirrorsAITradeIntoFrontendTables(t *testing.T) {
 	if record.SharesYES.String() != "1234" || record.SharesNO.String() != "0" || record.SharesDelta.String() != "1134" {
 		t.Fatalf("unexpected synced shares: yes=%v no=%v delta=%v", record.SharesYES, record.SharesNO, record.SharesDelta)
 	}
+	expectedTotalPool := new(big.Int).Add(client.info.TotalPool, client.value)
+	if record.TotalPool == nil || record.TotalPool.Cmp(expectedTotalPool) != 0 ||
+		record.ReserveYES.String() != "70" || record.ReserveNO.String() != "30" {
+		t.Fatalf("unexpected synced market cache: total=%v yes=%v no=%v",
+			record.TotalPool, record.ReserveYES, record.ReserveNO)
+	}
 }
 
 func TestEngineFinalizesTradeWithFreshContextAfterTaskCancellation(t *testing.T) {

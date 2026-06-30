@@ -37,6 +37,7 @@ import java.util.Locale;
 
 public class GoldMarketDetailActivity extends AppCompatActivity {
     private static final String MARKET_AI_LOADING_MESSAGE = "专属分析仍在生成，请稍后";
+    private static final long DATA_REFRESH_INTERVAL_MS = 15_000L;
 
     private GoldMarketDetailViewModel viewModel;
     private GoldMarketRepository.GameModel currentGame;
@@ -62,6 +63,14 @@ public class GoldMarketDetailActivity extends AppCompatActivity {
     private boolean requestInFlight = false;
 
     private final Handler timerHandler = new Handler(Looper.getMainLooper());
+    private final Handler dataRefreshHandler = new Handler(Looper.getMainLooper());
+    private final Runnable dataRefreshRunnable = new Runnable() {
+        @Override public void run() {
+            if (destroyed) return;
+            viewModel.refreshGameInfo(gameId, resolveContractAddress());
+            dataRefreshHandler.postDelayed(this, DATA_REFRESH_INTERVAL_MS);
+        }
+    };
     private final Runnable countdownRunnable = new Runnable() {
         @Override public void run() {
             if (destroyed) return;
@@ -120,7 +129,21 @@ public class GoldMarketDetailActivity extends AppCompatActivity {
     protected void onDestroy() {
         destroyed = true;
         timerHandler.removeCallbacks(countdownRunnable);
+        dataRefreshHandler.removeCallbacks(dataRefreshRunnable);
         super.onDestroy();
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        dataRefreshHandler.removeCallbacks(dataRefreshRunnable);
+        dataRefreshHandler.postDelayed(dataRefreshRunnable, DATA_REFRESH_INTERVAL_MS);
+    }
+
+    @Override
+    protected void onStop() {
+        dataRefreshHandler.removeCallbacks(dataRefreshRunnable);
+        super.onStop();
     }
 
     private void initViews() {

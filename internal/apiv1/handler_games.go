@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"strings"
 	"time"
@@ -82,6 +83,15 @@ func (s *Server) handleSyncGame(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid contract_address")
 		return
 	}
+	var initialLiquidity *big.Int
+	if strings.TrimSpace(req.InitialLiquidity) != "" {
+		var ok bool
+		initialLiquidity, ok = parseBigIntStrChecked(req.InitialLiquidity)
+		if !ok || initialLiquidity.Sign() <= 0 {
+			writeJSONError(w, http.StatusBadRequest, "initial_liquidity_wei must be a positive decimal integer")
+			return
+		}
+	}
 
 	gameID := req.GameID
 
@@ -136,6 +146,30 @@ func (s *Server) handleSyncGame(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("apiv1: sync game failed", "game_id", gameID, "error", err)
 		writeJSONError(w, http.StatusServiceUnavailable, "failed to sync game metadata")
 		return
+	}
+
+	// A newly created game is visible to the list as soon as this endpoint
+	// returns. Seed its known initial pool synchronously so that first render
+	// cannot observe the deadline-only placeholder as a 0 BKC market.
+	if initialLiquidity != nil {
+		if err := s.chainStates.UpsertChainStatePool(
+			r.Context(), gameID, initialLiquidity, initialLiquidity, initialLiquidity,
+		); err != nil {
+			slog.Warn("apiv1: sync game - initialize chain state pool failed", "game_id", gameID, "error", err)
+			writeJSONError(w, http.StatusServiceUnavailable, "failed to initialize game pool cache")
+			return
+		}
+		if s.history != nil {
+			if err := s.history.AppendHistory(r.Context(), &priceHistoryRow{
+				GameID:       gameID,
+				TimestampSec: time.Now().Unix(),
+				YesPrice:     50,
+				NoPrice:      50,
+				TotalPool:    new(big.Int).Set(initialLiquidity),
+			}); err != nil {
+				slog.Warn("apiv1: sync game - initialize price history failed", "game_id", gameID, "error", err)
+			}
+		}
 	}
 
 	// Also upsert deadline_sec into gold_chain_states when explicitly provided.

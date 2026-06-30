@@ -166,6 +166,9 @@ func TestMySQLRepositoryRecordsAIManagedNOTradeAndPositionAtomically(t *testing.
 		SharesDelta:  big.NewInt(250),
 		SharesYES:    big.NewInt(10),
 		SharesNO:     big.NewInt(350),
+		TotalPool:    big.NewInt(4000),
+		ReserveYES:   big.NewInt(1800),
+		ReserveNO:    big.NewInt(2200),
 		TxHash:       "0xmanaged",
 		TimestampSec: 1782782000,
 	}
@@ -189,6 +192,60 @@ func TestMySQLRepositoryRecordsAIManagedNOTradeAndPositionAtomically(t *testing.
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO gold_user_positions").
 		WithArgs(repositoryTestContract, 42, []byte("10"), []byte("350")).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO gold_chain_states").
+		WithArgs(repositoryTestContract, 42, []byte("4000"), []byte("1800"), []byte("2200"), []byte("1000")).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO gold_price_history").
+		WithArgs(42, int64(1782782000), "55.000000", "45.000000").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	if err := repository.RecordManagedTrade(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMySQLRepositoryReconcilesManagedTradeWithoutIncrementingPoolAgain(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	repository := NewMySQLRepository(db)
+	record := ManagedTradeRecord{
+		Market:       MarketIdentity{ContractAddress: repositoryTestContract, GameID: 42},
+		UserAddress:  repositoryTestContract,
+		OptionID:     0,
+		AmountWei:    big.NewInt(1000),
+		SharesDelta:  big.NewInt(500),
+		SharesYES:    big.NewInt(500),
+		SharesNO:     big.NewInt(0),
+		TotalPool:    big.NewInt(4000),
+		ReserveYES:   big.NewInt(100),
+		ReserveNO:    big.NewInt(2400),
+		TxHash:       "0xmanaged",
+		TimestampSec: 1782782000,
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE gold_trades SET").
+		WithArgs(
+			0, []byte("1000"), "500", []byte("500"), int64(1782782000),
+			"500", "0", repositoryTestContract, 42, repositoryTestContract, "0xmanaged",
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO gold_user_positions").
+		WithArgs(repositoryTestContract, 42, []byte("500"), []byte("0")).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO gold_chain_states").
+		WithArgs(repositoryTestContract, 42, nil, []byte("100"), []byte("2400")).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO gold_price_history").
+		WithArgs(42, int64(1782782000), "96.000000", "4.000000").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 

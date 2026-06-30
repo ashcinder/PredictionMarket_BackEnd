@@ -97,6 +97,24 @@ WHERE contract_address=? AND game_id=? AND user_address=? AND tx_hash=? LIMIT 1`
 VALUES (?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE
 my_shares_yes=VALUES(my_shares_yes), my_shares_no=VALUES(my_shares_no)`
+	upsertManagedChainStateSQL = `INSERT INTO gold_chain_states
+(contract_address, game_id, total_pool, is_resolved, is_refunded, winning_option,
+deadline_sec, reserve_yes, reserve_no)
+VALUES (?, ?, ?, 0, 0, 0, 0, ?, ?)
+ON DUPLICATE KEY UPDATE
+total_pool=COALESCE(VALUES(total_pool), total_pool),
+reserve_yes=VALUES(reserve_yes), reserve_no=VALUES(reserve_no)`
+	incrementManagedChainStateSQL = `INSERT INTO gold_chain_states
+(contract_address, game_id, total_pool, is_resolved, is_refunded, winning_option,
+deadline_sec, reserve_yes, reserve_no)
+VALUES (?, ?, ?, 0, 0, 0, 0, ?, ?)
+ON DUPLICATE KEY UPDATE
+total_pool=CAST(CAST(total_pool AS CHAR) AS DECIMAL(65,0)) + CAST(? AS DECIMAL(65,0)),
+reserve_yes=VALUES(reserve_yes), reserve_no=VALUES(reserve_no)`
+	upsertManagedPriceHistorySQL = `INSERT INTO gold_price_history
+(game_id, timestamp_sec, yes_price, no_price, total_pool)
+VALUES (?, ?, ?, ?, NULL)
+ON DUPLICATE KEY UPDATE yes_price=VALUES(yes_price), no_price=VALUES(no_price)`
 )
 
 type MySQLRepository struct {
@@ -353,6 +371,7 @@ func (r *MySQLRepository) recordManagedTrade(ctx context.Context, record Managed
 	if err != nil {
 		return fmt.Errorf("inspect managed gold trade update: %w", err)
 	}
+	insertedTrade := false
 	if affected == 0 {
 		var existingID int64
 		findErr := tx.QueryRowContext(ctx, selectManagedGoldTradeSQL,
@@ -377,6 +396,7 @@ func (r *MySQLRepository) recordManagedTrade(ctx context.Context, record Managed
 			); err != nil {
 				return fmt.Errorf("insert managed gold trade: %w", err)
 			}
+			insertedTrade = true
 		}
 	}
 	if _, err := tx.ExecContext(ctx, upsertManagedUserPositionSQL,
@@ -387,10 +407,60 @@ func (r *MySQLRepository) recordManagedTrade(ctx context.Context, record Managed
 	); err != nil {
 		return fmt.Errorf("upsert managed user position: %w", err)
 	}
+	if record.ReserveYES != nil && record.ReserveNO != nil {
+		var totalPool interface{}
+		if record.TotalPool != nil {
+			totalPool, err = reserveBytes(record.TotalPool)
+			if err != nil {
+				return fmt.Errorf("total_pool: %w", err)
+			}
+		}
+		reserveYES, reserveErr := reserveBytes(record.ReserveYES)
+		if reserveErr != nil {
+			return fmt.Errorf("reserve_yes: %w", reserveErr)
+		}
+		reserveNO, reserveErr := reserveBytes(record.ReserveNO)
+		if reserveErr != nil {
+			return fmt.Errorf("reserve_no: %w", reserveErr)
+		}
+		if insertedTrade {
+			if _, err := tx.ExecContext(ctx, incrementManagedChainStateSQL,
+				contract, record.Market.GameID, totalPool, reserveYES, reserveNO, amountWei,
+			); err != nil {
+				return fmt.Errorf("increment managed chain state: %w", err)
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx, upsertManagedChainStateSQL,
+				contract, record.Market.GameID, nil, reserveYES, reserveNO,
+			); err != nil {
+				return fmt.Errorf("upsert managed chain state: %w", err)
+			}
+		}
+		if record.SharesDelta.Sign() > 0 {
+			yesPercent, noPercent := percentagesFromManagedReserves(record.ReserveYES, record.ReserveNO)
+			if _, err := tx.ExecContext(ctx, upsertManagedPriceHistorySQL,
+				record.Market.GameID, record.TimestampSec,
+				formatPercentage(yesPercent), formatPercentage(noPercent),
+			); err != nil {
+				return fmt.Errorf("upsert managed price history: %w", err)
+			}
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit managed trade sync: %w", err)
 	}
 	return nil
+}
+
+func percentagesFromManagedReserves(reserveYES, reserveNO *big.Int) (float64, float64) {
+	total := new(big.Int).Add(nonNilBigInt(reserveYES), nonNilBigInt(reserveNO))
+	if total.Sign() <= 0 {
+		return 50, 50
+	}
+	yesRat := new(big.Rat).SetFrac(nonNilBigInt(reserveNO), total)
+	yes, _ := yesRat.Float64()
+	yes *= 100
+	return yes, 100 - yes
 }
 
 // ensureTables recreates all required tables (CREATE TABLE IF NOT EXISTS).

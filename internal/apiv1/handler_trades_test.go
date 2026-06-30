@@ -81,6 +81,20 @@ type mockTradeRepo struct {
 
 type mockPositionRepo struct{}
 
+type mockHistoryRepo struct {
+	points []*priceHistoryRow
+}
+
+func (m *mockHistoryRepo) ListHistory(context.Context, int, int) ([]PricePointDTO, error) {
+	return nil, nil
+}
+func (m *mockHistoryRepo) AppendHistory(_ context.Context, point *priceHistoryRow) error {
+	copyPoint := *point
+	copyPoint.TotalPool = cloneBig(point.TotalPool)
+	m.points = append(m.points, &copyPoint)
+	return nil
+}
+
 func (*mockPositionRepo) GetUserPosition(context.Context, string, int) (*userPositionRow, error) {
 	return nil, nil
 }
@@ -552,6 +566,48 @@ func TestSyncGameNoDeadlineSkipsChainState(t *testing.T) {
 	}
 	if len(chainMock.deadlineCalls) != 0 {
 		t.Errorf("expected 0 UpsertChainStateDeadline calls, got %d", len(chainMock.deadlineCalls))
+	}
+}
+
+func TestSyncGameInitialLiquiditySeedsPoolBeforeSuccess(t *testing.T) {
+	chainMock := &mockChainStateRepo{}
+	historyMock := &mockHistoryRepo{}
+	gamesMock := &mockGameRepo{}
+
+	srv := NewServer(gamesMock, chainMock, nil, historyMock, nil, nil, nil, nil, "0xContract", 256)
+	mux := http.NewServeMux()
+	srv.Register(mux)
+
+	body := `{
+		"game_id": 7,
+		"contract_address": "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c",
+		"ipfs_cid": "QmInitialPool",
+		"initial_liquidity_wei": "1000000000000000000"
+	}`
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/gold/games/sync", strings.NewReader(body))
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(chainMock.poolCalls) != 1 {
+		t.Fatalf("expected initial pool to be written before success, calls=%d", len(chainMock.poolCalls))
+	}
+	call := chainMock.poolCalls[0]
+	want := "1000000000000000000"
+	if call.gameID != 7 || call.totalPool.String() != want ||
+		call.reserveYes.String() != want || call.reserveNo.String() != want {
+		t.Fatalf("unexpected initial pool write: %+v", call)
+	}
+	if len(historyMock.points) != 1 {
+		t.Fatalf("expected one initial history point, got %d", len(historyMock.points))
+	}
+	point := historyMock.points[0]
+	if point.GameID != 7 || point.YesPrice != 50 || point.NoPrice != 50 ||
+		point.TotalPool.String() != want {
+		t.Fatalf("unexpected initial history point: %+v", point)
 	}
 }
 

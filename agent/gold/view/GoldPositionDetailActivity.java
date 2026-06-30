@@ -2,6 +2,8 @@ package com.example.brokerfi.xc.agent.gold.view;
 
 import android.graphics.Color;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.ImageView;
@@ -30,8 +32,10 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.TimeZone;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class GoldPositionDetailActivity extends AppCompatActivity {
+    private static final long DATA_REFRESH_INTERVAL_MS = 15_000L;
     private int gameId;
     private String contractAddress;
     private GoldMarketRepository.GameModel currentGame;
@@ -48,6 +52,15 @@ public class GoldPositionDetailActivity extends AppCompatActivity {
     private SwipeRefreshLayout swipeRefresh;
 
     private final SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault());
+    private final AtomicBoolean tradeHistoryRequestInFlight = new AtomicBoolean(false);
+    private final Handler dataRefreshHandler = new Handler(Looper.getMainLooper());
+    private final Runnable dataRefreshRunnable = new Runnable() {
+        @Override public void run() {
+            viewModel.refreshGameInfo(gameId, resolveContractAddress());
+            loadTradeHistory();
+            dataRefreshHandler.postDelayed(this, DATA_REFRESH_INTERVAL_MS);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -115,6 +128,7 @@ public class GoldPositionDetailActivity extends AppCompatActivity {
     }
 
     private void loadTradeHistory() {
+        if (!tradeHistoryRequestInFlight.compareAndSet(false, true)) return;
         // 在后台线程加载交易历史
         new Thread(() -> {
             try {
@@ -126,11 +140,31 @@ public class GoldPositionDetailActivity extends AppCompatActivity {
                     normalizeTradeHistory(tradeHistory);
                 }
             } catch (Exception e) {
-                // 后端可能还没有这个接口，静默处理
-                tradeHistory.clear();
+                // 保留最后一次成功结果，避免短暂网络故障让交易记录闪空。
+            } finally {
+                tradeHistoryRequestInFlight.set(false);
             }
             runOnUiThread(this::updateTradeHistoryUI);
         }).start();
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        dataRefreshHandler.removeCallbacks(dataRefreshRunnable);
+        dataRefreshHandler.postDelayed(dataRefreshRunnable, DATA_REFRESH_INTERVAL_MS);
+    }
+
+    @Override
+    protected void onStop() {
+        dataRefreshHandler.removeCallbacks(dataRefreshRunnable);
+        super.onStop();
+    }
+
+    @Override
+    protected void onDestroy() {
+        dataRefreshHandler.removeCallbacks(dataRefreshRunnable);
+        super.onDestroy();
     }
 
     private String resolveContractAddress() {

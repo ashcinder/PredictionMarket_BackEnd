@@ -684,7 +684,7 @@ func (e *Engine) processMarket(ctx context.Context, snapshots []EntrySnapshot) e
 		return fmt.Errorf("ai decide: %w", err)
 	}
 	for _, snapshot := range snapshots {
-		if err := e.applyDecision(ctx, snapshot, market, current.Time, len(history), decision, pre.MarketProbYES, now); err != nil {
+		if err := e.applyDecision(ctx, snapshot, market, current.Time, len(history), decision, pre.MarketProbYES, info.TotalPool, now); err != nil {
 			e.store.RecordError(snapshot.GameID, snapshot.UserAddress, err)
 			slog.Warn("ai-managed apply decision failed for user, continuing with remaining users",
 				"game_id", snapshot.GameID, "user", snapshot.UserAddress, "error", err)
@@ -836,7 +836,7 @@ func hasExplicitMarketRule(meta *ipfs.Metadata) bool {
 		strings.TrimSpace(meta.DetailedInfo) != ""
 }
 
-func (e *Engine) applyDecision(ctx context.Context, snapshot EntrySnapshot, market MarketIdentity, observedAt int64, historyPoints int, decision *Decision, marketProbYES float64, now time.Time) error {
+func (e *Engine) applyDecision(ctx context.Context, snapshot EntrySnapshot, market MarketIdentity, observedAt int64, historyPoints int, decision *Decision, marketProbYES float64, preTradeTotalPool *big.Int, now time.Time) error {
 	decision = enforceDecisionMarketConsistency(decision, marketProbYES, 0.05)
 	option, ok := decision.Option()
 	action := "hold"
@@ -982,13 +982,14 @@ func (e *Engine) applyDecision(ctx context.Context, snapshot EntrySnapshot, mark
 		return fmt.Errorf("send buyShares tx: %w", err)
 	}
 	tradeAt := e.currentTime()
+	expectedTotalPool := new(big.Int).Add(cloneBigInt(preTradeTotalPool), value)
 
 	// Once a transaction hash has been returned, recording it is mandatory
 	// cleanup. Do not inherit an AI/chain deadline that may have expired just
 	// as the transaction was accepted. The bounded cleanup context still
 	// prevents shutdown from hanging indefinitely.
 	postTradeBaseCtx := context.WithoutCancel(ctx)
-	if err := e.persistManagedTradeSnapshot(postTradeBaseCtx, snapshot, market, option, value, tx, tradeAt, preTradeExtra, preTradeExtra); err != nil {
+	if err := e.persistManagedTradeSnapshot(postTradeBaseCtx, snapshot, market, option, value, tx, tradeAt, preTradeExtra, preTradeExtra, expectedTotalPool); err != nil {
 		slog.Warn("ai-managed provisional trade persistence failed",
 			"game_id", snapshot.GameID,
 			"contract", market.ContractAddress,
@@ -1007,7 +1008,7 @@ func (e *Engine) applyDecision(ctx context.Context, snapshot EntrySnapshot, mark
 	}
 
 	var frontendSyncErr error
-	if err := e.syncManagedTradeForFrontend(postTradeBaseCtx, client, snapshot, market, option, value, tx, tradeAt, preTradeExtra); err != nil {
+	if err := e.syncManagedTradeForFrontend(postTradeBaseCtx, client, snapshot, market, option, value, tx, tradeAt, preTradeExtra, expectedTotalPool); err != nil {
 		frontendSyncErr = err
 		slog.Warn("ai-managed frontend trade sync failed",
 			"game_id", snapshot.GameID,
@@ -1016,7 +1017,7 @@ func (e *Engine) applyDecision(ctx context.Context, snapshot EntrySnapshot, mark
 			"tx", tx,
 			"error", err,
 		)
-		go e.retryManagedTradeSync(snapshot, market, option, value, tx, tradeAt, preTradeExtra)
+		go e.retryManagedTradeSync(snapshot, market, option, value, tx, tradeAt, preTradeExtra, expectedTotalPool)
 	}
 
 	e.store.RecordTrade(snapshot.GameID, snapshot.UserAddress, option, tx)
@@ -1044,17 +1045,29 @@ func (e *Engine) applyDecision(ctx context.Context, snapshot EntrySnapshot, mark
 	return nil
 }
 
-func (e *Engine) syncManagedTradeForFrontend(ctx context.Context, client managedChain, snapshot EntrySnapshot, market MarketIdentity, option int, value *big.Int, txHash string, now time.Time, preTradeExtra *chain.GameExtraData) error {
+func (e *Engine) syncManagedTradeForFrontend(ctx context.Context, client managedChain, snapshot EntrySnapshot, market MarketIdentity, option int, value *big.Int, txHash string, now time.Time, preTradeExtra *chain.GameExtraData, expectedTotalPool *big.Int) error {
 	if e.trades == nil {
 		return nil
 	}
 	stateCtx, stateCancel := context.WithTimeout(context.WithoutCancel(ctx), postTradeStateTimeout)
 	extra, err := fetchPostTradeExtraData(stateCtx, client, snapshot.GameID, snapshot.UserAddress, option, preTradeExtra)
-	stateCancel()
 	if err != nil {
+		stateCancel()
 		return err
 	}
-	if err := e.persistManagedTradeSnapshot(ctx, snapshot, market, option, value, txHash, now, preTradeExtra, extra); err != nil {
+	info, infoErr := client.GetGameInfo(stateCtx, snapshot.GameID)
+	stateCancel()
+	if infoErr != nil {
+		slog.Warn("ai-managed post-trade pool read failed; syncing reserves and position",
+			"game_id", snapshot.GameID, "contract", market.ContractAddress,
+			"user", snapshot.UserAddress, "tx", txHash, "error", infoErr)
+		info = nil
+	}
+	totalPool := cloneBigInt(expectedTotalPool)
+	if info != nil && info.TotalPool != nil && info.TotalPool.Cmp(totalPool) > 0 {
+		totalPool = cloneBigInt(info.TotalPool)
+	}
+	if err := e.persistManagedTradeSnapshot(ctx, snapshot, market, option, value, txHash, now, preTradeExtra, extra, totalPool); err != nil {
 		return err
 	}
 	sharesYES, sharesNO := sharesYESNO(extra)
@@ -1070,12 +1083,13 @@ func (e *Engine) syncManagedTradeForFrontend(ctx context.Context, client managed
 	return nil
 }
 
-func (e *Engine) persistManagedTradeSnapshot(ctx context.Context, snapshot EntrySnapshot, market MarketIdentity, option int, value *big.Int, txHash string, now time.Time, preTradeExtra, postTradeExtra *chain.GameExtraData) error {
+func (e *Engine) persistManagedTradeSnapshot(ctx context.Context, snapshot EntrySnapshot, market MarketIdentity, option int, value *big.Int, txHash string, now time.Time, preTradeExtra, postTradeExtra *chain.GameExtraData, totalPool *big.Int) error {
 	if e.trades == nil {
 		return nil
 	}
 	preSharesYES, preSharesNO := sharesYESNO(preTradeExtra)
 	sharesYES, sharesNO := sharesYESNO(postTradeExtra)
+	reserveYES, reserveNO := reservesYESNO(postTradeExtra)
 	record := ManagedTradeRecord{
 		Market:       market,
 		UserAddress:  snapshot.UserAddress,
@@ -1084,6 +1098,9 @@ func (e *Engine) persistManagedTradeSnapshot(ctx context.Context, snapshot Entry
 		SharesDelta:  boughtSideSharesDelta(option, preSharesYES, preSharesNO, sharesYES, sharesNO),
 		SharesYES:    sharesYES,
 		SharesNO:     sharesNO,
+		TotalPool:    totalPool,
+		ReserveYES:   reserveYES,
+		ReserveNO:    reserveNO,
 		TxHash:       txHash,
 		TimestampSec: now.Unix(),
 	}
@@ -1095,7 +1112,7 @@ func (e *Engine) persistManagedTradeSnapshot(ctx context.Context, snapshot Entry
 	return nil
 }
 
-func (e *Engine) retryManagedTradeSync(snapshot EntrySnapshot, market MarketIdentity, option int, value *big.Int, txHash string, tradeAt time.Time, preTradeExtra *chain.GameExtraData) {
+func (e *Engine) retryManagedTradeSync(snapshot EntrySnapshot, market MarketIdentity, option int, value *big.Int, txHash string, tradeAt time.Time, preTradeExtra *chain.GameExtraData, expectedTotalPool *big.Int) {
 	retryCtx, retryCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer retryCancel()
 
@@ -1111,7 +1128,7 @@ func (e *Engine) retryManagedTradeSync(snapshot EntrySnapshot, market MarketIden
 
 		client, err := e.openValidatedClient(snapshot)
 		if err == nil {
-			err = e.syncManagedTradeForFrontend(retryCtx, client, snapshot, market, option, value, txHash, tradeAt, preTradeExtra)
+			err = e.syncManagedTradeForFrontend(retryCtx, client, snapshot, market, option, value, txHash, tradeAt, preTradeExtra, expectedTotalPool)
 			client.Close()
 		}
 		if err == nil {
@@ -1169,6 +1186,13 @@ func sharesYESNO(extra *chain.GameExtraData) (*big.Int, *big.Int) {
 		return big.NewInt(0), big.NewInt(0)
 	}
 	return cloneBigInt(extra.MySharesYESNO[0]), cloneBigInt(extra.MySharesYESNO[1])
+}
+
+func reservesYESNO(extra *chain.GameExtraData) (*big.Int, *big.Int) {
+	if extra == nil || len(extra.VirtualReservesNOYES) < 2 {
+		return nil, nil
+	}
+	return cloneBigInt(extra.VirtualReservesNOYES[1]), cloneBigInt(extra.VirtualReservesNOYES[0])
 }
 
 func extraHasIncreasedBoughtSideShares(extra, previous *chain.GameExtraData, option int) bool {
