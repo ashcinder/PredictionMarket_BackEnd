@@ -68,11 +68,13 @@ func (e *ConsensusEngine) aggregate(event Event, opinions []ModelOpinion) *Verdi
 	}
 
 	verdict := &Verdict{
-		EventID:    event.ID,
-		Occurred:   false,
+		EventID:     event.ID,
+		Occurred:    false,
+		Decision:    DecisionIndeterminate,
+		Resolved:    false,
 		TotalModels: totalModels,
-		Opinions:   append(valid, failed...),
-		ResolvedAt: now,
+		Opinions:    append(valid, failed...),
+		ResolvedAt:  now,
 	}
 
 	if len(valid) < e.cfg.MinModelsRequired {
@@ -91,13 +93,13 @@ func (e *ConsensusEngine) aggregate(event Event, opinions []ModelOpinion) *Verdi
 
 	// Tally weighted votes for "occurred" and "not occurred".
 	var (
-		weightOccurred     float64
-		weightNotOccurred  float64
-		weightTotal        float64
-		confidenceOccurred float64
+		weightOccurred        float64
+		weightNotOccurred     float64
+		weightTotal           float64
+		confidenceOccurred    float64
 		confidenceNotOccurred float64
-		countOccurred      int
-		countNotOccurred   int
+		countOccurred         int
+		countNotOccurred      int
 	)
 
 	for _, op := range valid {
@@ -107,18 +109,14 @@ func (e *ConsensusEngine) aggregate(event Event, opinions []ModelOpinion) *Verdi
 		}
 		weightTotal += w
 
-		// Confidence is folded into the vote weight so high-confidence
-		// opinions carry more influence.
-		weightedVote := w * op.Confidence
-
 		if op.Occurred {
 			countOccurred++
-			weightOccurred += weightedVote
-			confidenceOccurred += op.Confidence
+			weightOccurred += w
+			confidenceOccurred += w * op.Confidence
 		} else {
 			countNotOccurred++
-			weightNotOccurred += weightedVote
-			confidenceNotOccurred += op.Confidence
+			weightNotOccurred += w
+			confidenceNotOccurred += w * op.Confidence
 		}
 	}
 
@@ -129,14 +127,14 @@ func (e *ConsensusEngine) aggregate(event Event, opinions []ModelOpinion) *Verdi
 
 	// Determine which side won.
 	var (
-		winnerOccurred   bool
-		winnerWeight     float64
-		winnerCount      int
-		winnerConfSum    float64
-		totalWeighted    = weightOccurred + weightNotOccurred
+		winnerOccurred bool
+		winnerWeight   float64
+		winnerCount    int
+		winnerConfSum  float64
 	)
 
-	if weightOccurred >= weightNotOccurred {
+	isTie := math.Abs(weightOccurred-weightNotOccurred) < 1e-9
+	if weightOccurred > weightNotOccurred {
 		winnerOccurred = true
 		winnerWeight = weightOccurred
 		winnerCount = countOccurred
@@ -148,21 +146,21 @@ func (e *ConsensusEngine) aggregate(event Event, opinions []ModelOpinion) *Verdi
 		winnerConfSum = confidenceNotOccurred
 	}
 
-	verdict.Occurred = winnerOccurred
 	verdict.AgreeingModels = winnerCount
 
-	// Consensus ratio: what fraction of total weighted vote went to the winner?
-	if totalWeighted > 0 {
-		verdict.ConsensusRatio = winnerWeight / totalWeighted
+	// Consensus ratio is based on configured provider weights. Confidence is a
+	// separate threshold; mixing it into the vote made low-confidence dissent
+	// artificially disappear from the denominator.
+	if weightTotal > 0 {
+		verdict.ConsensusRatio = winnerWeight / weightTotal
 	}
 	if verdict.ConsensusRatio > 1.0 {
 		verdict.ConsensusRatio = 1.0
 	}
 
-	// Aggregated confidence: weighted average of winner-side confidence,
-	// scaled by the consensus ratio (stronger consensus = higher final confidence).
-	if winnerCount > 0 {
-		verdict.Confidence = (winnerConfSum / float64(winnerCount)) * verdict.ConsensusRatio
+	// Aggregated confidence is the provider-weighted average on the winning side.
+	if winnerWeight > 0 {
+		verdict.Confidence = winnerConfSum / winnerWeight
 	}
 	if verdict.Confidence > 1.0 {
 		verdict.Confidence = 1.0
@@ -173,13 +171,20 @@ func (e *ConsensusEngine) aggregate(event Event, opinions []ModelOpinion) *Verdi
 
 	// Handle ties BEFORE threshold checks: if weights are effectively equal,
 	// delegate to the designated tiebreak model.
-	if math.Abs(weightOccurred-weightNotOccurred) < 1e-9 && e.cfg.TiebreakModel != "" {
+	if isTie && e.cfg.TiebreakModel != "" {
 		for _, op := range valid {
 			if strings.EqualFold(op.ModelName, e.cfg.TiebreakModel) && op.Error == "" {
-				verdict.Occurred = op.Occurred
 				verdict.Confidence = op.Confidence
 				verdict.ConsensusRatio = 1.0 // tiebreak model's verdict is treated as authoritative
 				verdict.AgreeingModels = 1
+				if op.Confidence < e.cfg.MinConfidence {
+					verdict.Summary = fmt.Sprintf(
+						"tiebreak model %s confidence %.2f below threshold %.2f",
+						e.cfg.TiebreakModel, op.Confidence, e.cfg.MinConfidence,
+					)
+					return verdict
+				}
+				setResolvedDecision(verdict, op.Occurred)
 				verdict.Summary = fmt.Sprintf(
 					"tie broken by %s: %s (confidence %.2f)",
 					e.cfg.TiebreakModel, boolLabel(op.Occurred), op.Confidence,
@@ -189,9 +194,13 @@ func (e *ConsensusEngine) aggregate(event Event, opinions []ModelOpinion) *Verdi
 		}
 	}
 
+	if isTie {
+		verdict.Summary = "indeterminate: weighted vote is tied and no eligible tiebreak model resolved it"
+		return verdict
+	}
+
 	// Check thresholds.
 	if verdict.ConsensusRatio < e.cfg.MinConsensusRatio {
-		verdict.Occurred = false
 		verdict.Summary = fmt.Sprintf(
 			"consensus ratio %.2f below threshold %.2f (%d/%d valid models agreed with %s)",
 			verdict.ConsensusRatio, e.cfg.MinConsensusRatio,
@@ -201,13 +210,14 @@ func (e *ConsensusEngine) aggregate(event Event, opinions []ModelOpinion) *Verdi
 	}
 
 	if verdict.Confidence < e.cfg.MinConfidence {
-		verdict.Occurred = false
 		verdict.Summary = fmt.Sprintf(
 			"aggregated confidence %.2f below threshold %.2f",
 			verdict.Confidence, e.cfg.MinConfidence,
 		)
 		return verdict
 	}
+
+	setResolvedDecision(verdict, winnerOccurred)
 
 	// Build summary.
 	var parts []string
@@ -242,4 +252,14 @@ func boolLabel(b bool) string {
 		return "YES"
 	}
 	return "NO"
+}
+
+func setResolvedDecision(verdict *Verdict, occurred bool) {
+	verdict.Resolved = true
+	verdict.Occurred = occurred
+	if occurred {
+		verdict.Decision = DecisionYes
+	} else {
+		verdict.Decision = DecisionNo
+	}
 }

@@ -147,6 +147,18 @@ func TestParseOracleResponse_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestParseOracleResponse_StripsMiniMaxThinking(t *testing.T) {
+	content := `<think>先分析证据，不应把这段思考当成 JSON。</think>
+{"occurred": true, "confidence": 0.91, "reasoning": "权威来源已确认", "sources": []}`
+	opinion, err := parseOracleResponse("MiniMax-M2.7", content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opinion.Error != "" || !opinion.Occurred || opinion.Confidence != 0.91 {
+		t.Fatalf("unexpected opinion: %+v", opinion)
+	}
+}
+
 // =============================================================================
 // Provider integration tests (using httptest)
 // =============================================================================
@@ -309,6 +321,8 @@ func TestProviderFactory(t *testing.T) {
 		{"deepseek", false},
 		{"openai", false},
 		{"anthropic", false},
+		{"glm", false},
+		{"minimax", false},
 		{"unknown", true},
 		{"", true},
 	}
@@ -386,20 +400,23 @@ func TestConsensusEngine_MajorityNo(t *testing.T) {
 	if verdict.Occurred {
 		t.Error("expected NO verdict (majority says not occurred)")
 	}
+	if !verdict.Resolved || verdict.Decision != DecisionNo {
+		t.Errorf("expected resolved NO, got resolved=%v decision=%s", verdict.Resolved, verdict.Decision)
+	}
 	if verdict.AgreeingModels != 2 {
 		t.Errorf("expected 2 agreeing models, got %d", verdict.AgreeingModels)
 	}
 }
 
 func TestConsensusEngine_BelowMinRatio(t *testing.T) {
-	// Evenly split vote with high threshold should fail.
+	// A narrow weighted majority with a high threshold should remain unresolved.
 	providers := []ModelProvider{
 		&mockProvider{name: "m1", model: "gpt-4", weight: 1.0, opinion: &ModelOpinion{Occurred: true, Confidence: 0.9}},
-		&mockProvider{name: "m2", model: "claude", weight: 1.0, opinion: &ModelOpinion{Occurred: false, Confidence: 0.9}},
+		&mockProvider{name: "m2", model: "claude", weight: 0.8, opinion: &ModelOpinion{Occurred: false, Confidence: 0.9}},
 	}
 
 	cfg := ConsensusConfig{
-		MinConsensusRatio: 0.90, // Need 90% consensus, but only 50% exists
+		MinConsensusRatio: 0.90,
 		MinConfidence:     0.50,
 		MinModelsRequired: 2,
 	}
@@ -410,6 +427,9 @@ func TestConsensusEngine_BelowMinRatio(t *testing.T) {
 
 	if verdict.Occurred {
 		t.Error("expected verdict NOT occurred due to insufficient consensus ratio")
+	}
+	if verdict.Resolved || verdict.Decision != DecisionIndeterminate {
+		t.Errorf("expected indeterminate verdict, got resolved=%v decision=%s", verdict.Resolved, verdict.Decision)
 	}
 	if !strings.Contains(verdict.Summary, "consensus ratio") {
 		t.Errorf("summary should mention consensus ratio: %s", verdict.Summary)
@@ -434,6 +454,9 @@ func TestConsensusEngine_BelowMinConfidence(t *testing.T) {
 
 	if verdict.Occurred {
 		t.Error("expected verdict NOT occurred due to low aggregated confidence")
+	}
+	if verdict.Resolved || verdict.Decision != DecisionIndeterminate {
+		t.Errorf("expected indeterminate verdict, got resolved=%v decision=%s", verdict.Resolved, verdict.Decision)
 	}
 }
 
@@ -550,15 +573,17 @@ type mockProvider struct {
 }
 
 func (m *mockProvider) Name() string    { return m.name }
-func (m *mockProvider) ModelID() string  { return m.model }
-func (m *mockProvider) Weight() float64  { return m.weight }
+func (m *mockProvider) ModelID() string { return m.model }
+func (m *mockProvider) Weight() float64 { return m.weight }
 
 func (m *mockProvider) Query(ctx context.Context, event Event, articles []NewsArticle) (*ModelOpinion, error) {
 	if m.err {
 		return &ModelOpinion{ModelName: m.name, Error: "mock failure"}, nil
 	}
 	op := *m.opinion
-	op.ModelName = m.name
+	// Match real providers, which parse the API response using the model ID.
+	// QueryAllModels must normalize this to the configured provider name.
+	op.ModelName = m.model
 	return &op, nil
 }
 
@@ -578,7 +603,7 @@ func TestOracle_Resolve(t *testing.T) {
 		MinModelsRequired: 2,
 	}
 	engine := NewConsensusEngine(cfg, providers)
-	oracle := NewOracle(nil, engine, time.Minute)
+	oracle := NewOracle(fixedNewsFetcher{}, engine, time.Minute)
 
 	event := Event{
 		ID:          "test-event",
@@ -604,6 +629,38 @@ func TestOracle_Resolve(t *testing.T) {
 	}
 }
 
+type fixedNewsFetcher struct{}
+
+func (fixedNewsFetcher) Fetch(_ context.Context, _ []string, _ time.Time, _ int) ([]NewsArticle, error) {
+	return []NewsArticle{{
+		Title:       "Test evidence",
+		URL:         "https://example.com/evidence",
+		Source:      "Test source",
+		PublishedAt: time.Now(),
+		Content:     "The test event occurred.",
+	}}, nil
+}
+
+func TestOracleNeverResolvesWithoutExternalEvidence(t *testing.T) {
+	engine := NewConsensusEngine(ConsensusConfig{
+		MinConsensusRatio: 0.5,
+		MinConfidence:     0.5,
+		MinModelsRequired: 1,
+	}, []ModelProvider{
+		&mockProvider{name: "m1", model: "model-1", weight: 1, opinion: &ModelOpinion{Occurred: true, Confidence: 1}},
+	})
+	verdict := NewOracle(nil, engine, time.Minute).Resolve(context.Background(), Event{
+		ID:       "no-evidence",
+		Deadline: time.Now().Add(time.Hour),
+	})
+	if verdict.Resolved || verdict.Decision != DecisionIndeterminate {
+		t.Fatalf("no-evidence verdict must be indeterminate: %+v", verdict)
+	}
+	if !strings.Contains(verdict.Summary, "no external evidence") {
+		t.Fatalf("unexpected summary: %s", verdict.Summary)
+	}
+}
+
 func TestSimpleResolve(t *testing.T) {
 	providers := []ModelProvider{
 		&mockProvider{name: "m1", model: "test", weight: 1.0, opinion: &ModelOpinion{Occurred: false, Confidence: 0.7}},
@@ -624,6 +681,63 @@ func TestSimpleResolve(t *testing.T) {
 
 	if verdict.EventID != "event-1" {
 		t.Errorf("expected event-1, got %s", verdict.EventID)
+	}
+}
+
+type recordingNewsFetcher struct {
+	since       time.Time
+	maxArticles int
+}
+
+func (f *recordingNewsFetcher) Fetch(_ context.Context, _ []string, since time.Time, maxArticles int) ([]NewsArticle, error) {
+	f.since = since
+	f.maxArticles = maxArticles
+	return nil, nil
+}
+
+func TestOracleUsesConfiguredNewsWindow(t *testing.T) {
+	fetcher := &recordingNewsFetcher{}
+	engine := NewConsensusEngine(ConsensusConfig{MinModelsRequired: 1}, []ModelProvider{
+		&mockProvider{name: "m1", model: "model-1", weight: 1, opinion: &ModelOpinion{Occurred: false, Confidence: 0.9}},
+	})
+	oracle := NewOracleWithOptions(fetcher, engine, OracleOptions{
+		PollInterval: time.Minute,
+		NewsLookback: 12 * time.Hour,
+		MaxArticles:  3,
+	})
+
+	before := time.Now()
+	oracle.Resolve(context.Background(), Event{ID: "configured-news", Deadline: time.Now().Add(time.Hour)})
+
+	if fetcher.maxArticles != 3 {
+		t.Fatalf("expected maxArticles=3, got %d", fetcher.maxArticles)
+	}
+	expected := before.Add(-12 * time.Hour)
+	if fetcher.since.Before(expected.Add(-time.Second)) || fetcher.since.After(expected.Add(time.Second)) {
+		t.Fatalf("configured lookback not used: since=%s expected near %s", fetcher.since, expected)
+	}
+}
+
+func TestOracleRunEmitsResolvedNoBeforeDeadline(t *testing.T) {
+	engine := NewConsensusEngine(ConsensusConfig{
+		MinConsensusRatio: 0.6,
+		MinConfidence:     0.6,
+		MinModelsRequired: 1,
+	}, []ModelProvider{
+		&mockProvider{name: "m1", model: "model-1", weight: 1, opinion: &ModelOpinion{Occurred: false, Confidence: 0.9}},
+	})
+	oracle := NewOracle(fixedNewsFetcher{}, engine, time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	out := oracle.Run(ctx, []Event{{ID: "resolved-no", Deadline: time.Now().Add(time.Hour)}})
+	select {
+	case verdict := <-out:
+		if verdict == nil || !verdict.Resolved || verdict.Decision != DecisionNo {
+			t.Fatalf("expected resolved NO, got %#v", verdict)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("resolved NO was not emitted immediately")
 	}
 }
 

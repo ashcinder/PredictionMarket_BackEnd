@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -10,17 +11,27 @@ import (
 	"time"
 
 	"PredictionMarket/internal/aimanaged"
+	"PredictionMarket/internal/aioracle"
 	"PredictionMarket/internal/apiv1"
 	"PredictionMarket/internal/chain"
 	"PredictionMarket/internal/config"
 	"PredictionMarket/internal/database"
 	"PredictionMarket/internal/ipfs"
+	"PredictionMarket/internal/logging"
 	"PredictionMarket/internal/oracle"
 	"PredictionMarket/internal/sentinel"
 )
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	consoleHandler := logging.NewConciseConsoleHandler(os.Stdout)
+	markdownLogs, logErr := logging.NewMarkdownRouter(consoleHandler, "logs")
+	if logErr != nil {
+		slog.SetDefault(slog.New(consoleHandler))
+		slog.Warn("initialize markdown logs failed; continuing with console only", "error", logErr)
+	} else {
+		slog.SetDefault(slog.New(markdownLogs))
+		defer markdownLogs.Close()
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -61,7 +72,12 @@ func main() {
 		UserAgent:      cfg.OracleUserAgent,
 		RequestTimeout: cfg.OracleRequestTimeout,
 	})
-	watcher := sentinel.NewWatcher(cfg, chainClient, ipfsClient, goldOracle)
+	aiOracle, err := buildAIOracle(cfg, goldOracle)
+	if err != nil {
+		slog.Error("init AI oracle failed", "error", err)
+		os.Exit(1)
+	}
+	watcher := sentinel.NewWatcher(cfg, chainClient, ipfsClient, aiOracle)
 	managedStore, err := aimanaged.NewStoreWithSecret(cfg.PrivateKey)
 	if err != nil {
 		slog.Error("init ai-managed store failed", "error", err)
@@ -140,6 +156,58 @@ func main() {
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		slog.Warn("http api shutdown failed", "error", err)
 	}
+}
+
+func buildAIOracle(cfg *config.Config, goldOracle *oracle.GoldOracle) (*aioracle.Oracle, error) {
+	providerConfigs := make([]aioracle.ProviderConfig, 0, len(cfg.AIOracleProviders))
+	for _, p := range cfg.AIOracleProviders {
+		providerConfigs = append(providerConfigs, aioracle.ProviderConfig{
+			Name:           p.Name,
+			Model:          p.Model,
+			APIKey:         p.APIKey,
+			BaseURL:        p.BaseURL,
+			Provider:       p.Provider,
+			Weight:         p.Weight,
+			TimeoutSeconds: p.TimeoutSeconds,
+		})
+	}
+	providers := aioracle.NewProviders(providerConfigs)
+	if len(providers) == 0 {
+		return nil, fmt.Errorf("aioracle.providers must contain at least one usable provider")
+	}
+	if len(providers) != len(providerConfigs) {
+		return nil, fmt.Errorf("initialized %d/%d AI oracle providers", len(providers), len(providerConfigs))
+	}
+
+	consensus := aioracle.NewConsensusEngine(aioracle.ConsensusConfig{
+		MinConsensusRatio: cfg.AIOracleConsensus.MinConsensusRatio,
+		MinConfidence:     cfg.AIOracleConsensus.MinConfidence,
+		MinModelsRequired: cfg.AIOracleConsensus.MinModelsRequired,
+		TiebreakModel:     cfg.AIOracleConsensus.TiebreakModel,
+	}, providers)
+
+	newsCfg := aioracle.NewsConfig{
+		NewsAPIKey:            cfg.AIOracleNews.NewsAPIKey,
+		NewsAPIURL:            cfg.AIOracleNews.NewsAPIURL,
+		RSSFeeds:              cfg.AIOracleNews.RSSFeeds,
+		MaxArticles:           cfg.AIOracleNews.MaxArticles,
+		LookbackHours:         cfg.AIOracleNews.LookbackHours,
+		RequestTimeoutSeconds: cfg.AIOracleNews.RequestTimeoutSeconds,
+	}
+	evidenceFetchers := []aioracle.NewsFetcher{aioracle.NewGoldEvidenceFetcher(goldOracle)}
+	if newsFetcher := aioracle.NewNewsFetcher(newsCfg); newsFetcher != nil {
+		evidenceFetchers = append(evidenceFetchers, newsFetcher)
+	}
+
+	return aioracle.NewOracleWithOptions(
+		aioracle.NewCompositeNewsFetcher(evidenceFetchers...),
+		consensus,
+		aioracle.OracleOptions{
+			PollInterval: time.Duration(cfg.AIOraclePollIntervalSeconds) * time.Second,
+			NewsLookback: time.Duration(cfg.AIOracleNews.LookbackHours) * time.Hour,
+			MaxArticles:  cfg.AIOracleNews.MaxArticles,
+		},
+	), nil
 }
 
 func withCORS(next http.Handler) http.Handler {

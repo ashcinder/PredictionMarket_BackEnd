@@ -19,6 +19,31 @@ type NewsFetcher interface {
 	Fetch(ctx context.Context, keywords []string, since time.Time, maxArticles int) ([]NewsArticle, error)
 }
 
+// NewNewsFetcher builds the configured evidence sources. It returns nil when
+// no RSS feed or NewsAPI credential is configured.
+func NewNewsFetcher(cfg NewsConfig) NewsFetcher {
+	timeout := time.Duration(cfg.RequestTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+
+	var fetchers []NewsFetcher
+	if len(cfg.RSSFeeds) > 0 {
+		fetchers = append(fetchers, NewRSSFetcher(cfg.RSSFeeds, timeout))
+	}
+	if strings.TrimSpace(cfg.NewsAPIKey) != "" {
+		fetchers = append(fetchers, NewNewsAPIFetcher(
+			cfg.NewsAPIKey,
+			cfg.NewsAPIURL,
+			timeout,
+		))
+	}
+	if len(fetchers) == 0 {
+		return nil
+	}
+	return NewCompositeNewsFetcher(fetchers...)
+}
+
 // =============================================================================
 // Composite fetcher: tries multiple sources and merges results
 // =============================================================================
@@ -248,12 +273,12 @@ func NewNewsAPIFetcher(apiKey, baseURL string, timeout time.Duration) *NewsAPIFe
 type newsAPIResponse struct {
 	Status   string `json:"status"`
 	Articles []struct {
-		Title       string `json:"title"`
-		URL         string `json:"url"`
+		Title       string                `json:"title"`
+		URL         string                `json:"url"`
 		Source      struct{ Name string } `json:"source"`
-		PublishedAt string `json:"publishedAt"`
-		Description string `json:"description"`
-		Content     string `json:"content"`
+		PublishedAt string                `json:"publishedAt"`
+		Description string                `json:"description"`
+		Content     string                `json:"content"`
 	} `json:"articles"`
 }
 

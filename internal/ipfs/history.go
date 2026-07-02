@@ -16,26 +16,30 @@ type HistoryPoint struct {
 
 func (m *Metadata) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Desc         string            `json:"desc"`
-		Condition    string            `json:"condition"`
-		AvatarURL    string            `json:"avatarUrl"`
-		DetailedInfo string            `json:"detailedInfo"`
-		OptionYES    string            `json:"optionYES"`
-		OptionNO     string            `json:"optionNO"`
-		History      []json.RawMessage `json:"history"`
+		Desc                 string            `json:"desc"`
+		Condition            string            `json:"condition"`
+		AvatarURL            string            `json:"avatarUrl"`
+		DetailedInfo         string            `json:"detailedInfo"`
+		OptionYES            string            `json:"optionYES"`
+		OptionNO             string            `json:"optionNO"`
+		Keywords             []string          `json:"keywords"`
+		AuthoritativeSources []string          `json:"authoritativeSources"`
+		History              []json.RawMessage `json:"history"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 
 	*m = Metadata{
-		Desc:         raw.Desc,
-		Condition:    raw.Condition,
-		AvatarURL:    raw.AvatarURL,
-		DetailedInfo: raw.DetailedInfo,
-		OptionYES:    raw.OptionYES,
-		OptionNO:     raw.OptionNO,
-		History:      normalizeHistory(raw.History),
+		Desc:                 raw.Desc,
+		Condition:            raw.Condition,
+		AvatarURL:            raw.AvatarURL,
+		DetailedInfo:         raw.DetailedInfo,
+		OptionYES:            raw.OptionYES,
+		OptionNO:             raw.OptionNO,
+		Keywords:             raw.Keywords,
+		AuthoritativeSources: raw.AuthoritativeSources,
+		History:              normalizeHistory(raw.History),
 	}
 	return nil
 }

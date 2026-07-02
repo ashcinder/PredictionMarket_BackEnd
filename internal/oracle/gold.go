@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -28,6 +29,7 @@ type Config struct {
 type GoldOracle struct {
 	config          Config
 	httpClient      *http.Client
+	prevCloseMu     sync.Mutex
 	sinaPrevClose   float64
 	sinaPrevFetched bool
 }
@@ -95,6 +97,9 @@ func (o *GoldOracle) fetchGoldAPI() (*Quote, error) {
 }
 
 func (o *GoldOracle) getSinaPrevClose() float64 {
+	o.prevCloseMu.Lock()
+	defer o.prevCloseMu.Unlock()
+
 	if o.sinaPrevFetched {
 		return o.sinaPrevClose
 	}

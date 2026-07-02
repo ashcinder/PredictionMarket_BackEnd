@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"PredictionMarket/internal/chain"
@@ -123,6 +124,7 @@ type Engine struct {
 	cached     CachedMarketRepository
 	trades     ManagedTradeRepository
 	now        func() time.Time
+	round      atomic.Uint64
 }
 
 type productionManagedChain struct {
@@ -566,8 +568,14 @@ func (e *Engine) Run(ctx context.Context) error {
 }
 
 func (e *Engine) scanOnce(ctx context.Context) {
+	round := e.round.Add(1)
+	startedAt := time.Now()
 	entries := e.store.Entries()
+	slog.Info("ai-managed round started", "round", round, "entries", len(entries))
 	if len(entries) == 0 {
+		slog.Info("ai-managed round completed",
+			"round", round, "entries", 0, "markets", 0,
+			"duration_ms", time.Since(startedAt).Milliseconds())
 		return
 	}
 
@@ -610,6 +618,12 @@ func (e *Engine) scanOnce(ctx context.Context) {
 		}()
 	}
 	wg.Wait()
+	slog.Info("ai-managed round completed",
+		"round", round,
+		"entries", len(entries),
+		"markets", len(order),
+		"duration_ms", time.Since(startedAt).Milliseconds(),
+	)
 }
 
 func (e *Engine) process(ctx context.Context, snapshot EntrySnapshot) error {

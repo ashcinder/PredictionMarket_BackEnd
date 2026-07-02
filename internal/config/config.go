@@ -55,18 +55,18 @@ type fileConfig struct {
 		PollIntervalSeconds int `yaml:"poll_interval_seconds"`
 	} `yaml:"sampler"`
 	AI struct {
-		APIKey              string  `yaml:"api_key"`
-		BaseURL             string  `yaml:"base_url"`
-		Model               string  `yaml:"model"`
-		PollIntervalSeconds int     `yaml:"poll_interval_seconds"`
-		BuyAmountBKC        string  `yaml:"buy_amount_bkc"`
-		ConfidenceMin       float64 `yaml:"confidence_min"`
-		HistoryMinPoints       int     `yaml:"history_min_points"`
-		HistoryMaxPoints       int     `yaml:"history_max_points"`
-		KellyFraction          float64 `yaml:"kelly_fraction"`
-		MinEdgePercent         float64 `yaml:"min_edge_percent"`
+		APIKey                  string  `yaml:"api_key"`
+		BaseURL                 string  `yaml:"base_url"`
+		Model                   string  `yaml:"model"`
+		PollIntervalSeconds     int     `yaml:"poll_interval_seconds"`
+		BuyAmountBKC            string  `yaml:"buy_amount_bkc"`
+		ConfidenceMin           float64 `yaml:"confidence_min"`
+		HistoryMinPoints        int     `yaml:"history_min_points"`
+		HistoryMaxPoints        int     `yaml:"history_max_points"`
+		KellyFraction           float64 `yaml:"kelly_fraction"`
+		MinEdgePercent          float64 `yaml:"min_edge_percent"`
 		MaxPositionPerMarketBKC string  `yaml:"max_position_per_market_bkc"`
-		AdaptiveCooldown       bool    `yaml:"adaptive_cooldown"`
+		AdaptiveCooldown        bool    `yaml:"adaptive_cooldown"`
 	} `yaml:"ai"`
 	AIOracle struct {
 		PollIntervalSeconds int `yaml:"poll_interval_seconds"`
@@ -77,12 +77,12 @@ type fileConfig struct {
 			TiebreakModel     string  `yaml:"tiebreak_model"`
 		} `yaml:"consensus"`
 		News struct {
-			NewsAPIKey             string   `yaml:"news_api_key"`
-			NewsAPIURL             string   `yaml:"news_api_url"`
-			RSSFeeds               []string `yaml:"rss_feeds"`
-			MaxArticles            int      `yaml:"max_articles"`
-			LookbackHours          int      `yaml:"lookback_hours"`
-			RequestTimeoutSeconds  int      `yaml:"request_timeout_seconds"`
+			NewsAPIKey            string   `yaml:"news_api_key"`
+			NewsAPIURL            string   `yaml:"news_api_url"`
+			RSSFeeds              []string `yaml:"rss_feeds"`
+			MaxArticles           int      `yaml:"max_articles"`
+			LookbackHours         int      `yaml:"lookback_hours"`
+			RequestTimeoutSeconds int      `yaml:"request_timeout_seconds"`
 		} `yaml:"news"`
 		Providers []struct {
 			Name           string  `yaml:"name"`
@@ -123,17 +123,17 @@ type Config struct {
 	AIMinEdgePercent           float64
 	AIMaxPositionPerMarketBKC  string
 	AIAdaptiveCooldown         bool
-	SamplerPollInterval         time.Duration
+	SamplerPollInterval        time.Duration
 	MySQLDSN                   string
 	MySQLMaxOpenConnections    int
 	MySQLMaxIdleConnections    int
 	MySQLConnectionMaxLifetime time.Duration
 
 	// AI Oracle multi-model consensus
-	AIOraclePollIntervalSeconds   int
-	AIOracleConsensus             ConsensusConfig
-	AIOracleNews                  NewsConfig
-	AIOracleProviders             []ProviderConfig
+	AIOraclePollIntervalSeconds int
+	AIOracleConsensus           ConsensusConfig
+	AIOracleNews                NewsConfig
+	AIOracleProviders           []ProviderConfig
 }
 
 // ConsensusConfig is exported for use by the aioracle package.
@@ -387,10 +387,15 @@ func LoadFile(path string) (*Config, error) {
 			seenNames[p.Name] = true
 
 			provider := strings.ToLower(strings.TrimSpace(p.Provider))
-			if provider != "deepseek" && provider != "openai" && provider != "anthropic" {
-				return nil, fmt.Errorf("aioracle.providers[%d].provider must be one of: deepseek, openai, anthropic", i)
+			if !validAIOracleProvider(provider) {
+				return nil, fmt.Errorf("aioracle.providers[%d].provider must be one of: deepseek, openai, anthropic, glm, minimax", i)
 			}
-			if strings.TrimSpace(p.APIKey) == "" {
+			apiKey := strings.TrimSpace(p.APIKey)
+			if isPlaceholderSecret(apiKey) {
+				slog.Warn("aioracle: ignoring provider with placeholder api_key", "name", p.Name)
+				continue
+			}
+			if apiKey == "" {
 				return nil, fmt.Errorf("aioracle.providers[%d].api_key is required (provider: %s)", i, p.Name)
 			}
 			if p.Weight < 0 {
@@ -418,7 +423,7 @@ func LoadFile(path string) (*Config, error) {
 			oracleProviders = append(oracleProviders, ProviderConfig{
 				Name:           strings.TrimSpace(p.Name),
 				Model:          strings.TrimSpace(p.Model),
-				APIKey:         strings.TrimSpace(p.APIKey),
+				APIKey:         apiKey,
 				BaseURL:        strings.TrimSpace(p.BaseURL),
 				Provider:       provider,
 				Weight:         p.Weight,
@@ -426,6 +431,9 @@ func LoadFile(path string) (*Config, error) {
 			})
 		}
 
+		if len(oracleProviders) == 0 {
+			return nil, errors.New("aioracle has no usable providers after ignoring placeholder credentials")
+		}
 		if raw.AIOracle.Consensus.MinModelsRequired > len(oracleProviders) {
 			return nil, fmt.Errorf(
 				"aioracle.consensus.min_models_required (%d) exceeds number of providers (%d)",
@@ -450,42 +458,59 @@ func LoadFile(path string) (*Config, error) {
 	}
 
 	return &Config{
-		PrivateKey:                 privateKey,
-		ContractAddress:            common.HexToAddress(raw.Chain.ContractAddress).Hex(),
-		RPCURL:                     rpcURL,
-		BrokerChainURL:             brokerURL,
-		IPFSGateway:                ipfsGateway,
-		GoldAPIURL:                 goldAPIURL,
-		SinaURL:                    sinaURL,
-		SinaReferer:                sinaReferer,
-		OracleUserAgent:            strings.TrimSpace(raw.Oracle.UserAgent),
-		OracleRequestTimeout:       time.Duration(raw.Oracle.RequestTimeoutSeconds) * time.Second,
-		PollInterval:               time.Duration(raw.Sentinel.PollIntervalSeconds) * time.Second,
-		ResolveDelay:               time.Duration(raw.Sentinel.ResolveDelaySeconds) * time.Second,
-		UseBrokerChain:             raw.Chain.UseBrokerChain,
-		HTTPListen:                 strings.TrimSpace(raw.Server.HTTPListen),
-		AIAPIKey:                   apiKey,
-		AIBaseURL:                  aiBaseURL,
-		AIModel:                    strings.TrimSpace(raw.AI.Model),
-		AIPollInterval:             time.Duration(raw.AI.PollIntervalSeconds) * time.Second,
-		AIBuyAmountBKC:             strings.TrimSpace(raw.AI.BuyAmountBKC),
-		AIConfidenceMin:            raw.AI.ConfidenceMin,
-		AIHistoryMinPoints:         raw.AI.HistoryMinPoints,
-		AIHistoryMaxPoints:         raw.AI.HistoryMaxPoints,
-		AIKellyFraction:            raw.AI.KellyFraction,
-		AIMinEdgePercent:           raw.AI.MinEdgePercent,
-		AIMaxPositionPerMarketBKC:  strings.TrimSpace(raw.AI.MaxPositionPerMarketBKC),
-		AIAdaptiveCooldown:         raw.AI.AdaptiveCooldown,
-		SamplerPollInterval:        time.Duration(raw.Sampler.PollIntervalSeconds) * time.Second,
-		MySQLDSN:                   mysqlDSN,
-		MySQLMaxOpenConnections:    raw.MySQL.MaxOpenConnections,
-		MySQLMaxIdleConnections:    raw.MySQL.MaxIdleConnections,
-		MySQLConnectionMaxLifetime: time.Duration(raw.MySQL.ConnectionMaxLifetimeSeconds) * time.Second,
-		AIOraclePollIntervalSeconds:   raw.AIOracle.PollIntervalSeconds,
-		AIOracleConsensus:             oracleConsensus,
-		AIOracleNews:                  oracleNews,
-		AIOracleProviders:             oracleProviders,
+		PrivateKey:                  privateKey,
+		ContractAddress:             common.HexToAddress(raw.Chain.ContractAddress).Hex(),
+		RPCURL:                      rpcURL,
+		BrokerChainURL:              brokerURL,
+		IPFSGateway:                 ipfsGateway,
+		GoldAPIURL:                  goldAPIURL,
+		SinaURL:                     sinaURL,
+		SinaReferer:                 sinaReferer,
+		OracleUserAgent:             strings.TrimSpace(raw.Oracle.UserAgent),
+		OracleRequestTimeout:        time.Duration(raw.Oracle.RequestTimeoutSeconds) * time.Second,
+		PollInterval:                time.Duration(raw.Sentinel.PollIntervalSeconds) * time.Second,
+		ResolveDelay:                time.Duration(raw.Sentinel.ResolveDelaySeconds) * time.Second,
+		UseBrokerChain:              raw.Chain.UseBrokerChain,
+		HTTPListen:                  strings.TrimSpace(raw.Server.HTTPListen),
+		AIAPIKey:                    apiKey,
+		AIBaseURL:                   aiBaseURL,
+		AIModel:                     strings.TrimSpace(raw.AI.Model),
+		AIPollInterval:              time.Duration(raw.AI.PollIntervalSeconds) * time.Second,
+		AIBuyAmountBKC:              strings.TrimSpace(raw.AI.BuyAmountBKC),
+		AIConfidenceMin:             raw.AI.ConfidenceMin,
+		AIHistoryMinPoints:          raw.AI.HistoryMinPoints,
+		AIHistoryMaxPoints:          raw.AI.HistoryMaxPoints,
+		AIKellyFraction:             raw.AI.KellyFraction,
+		AIMinEdgePercent:            raw.AI.MinEdgePercent,
+		AIMaxPositionPerMarketBKC:   strings.TrimSpace(raw.AI.MaxPositionPerMarketBKC),
+		AIAdaptiveCooldown:          raw.AI.AdaptiveCooldown,
+		SamplerPollInterval:         time.Duration(raw.Sampler.PollIntervalSeconds) * time.Second,
+		MySQLDSN:                    mysqlDSN,
+		MySQLMaxOpenConnections:     raw.MySQL.MaxOpenConnections,
+		MySQLMaxIdleConnections:     raw.MySQL.MaxIdleConnections,
+		MySQLConnectionMaxLifetime:  time.Duration(raw.MySQL.ConnectionMaxLifetimeSeconds) * time.Second,
+		AIOraclePollIntervalSeconds: raw.AIOracle.PollIntervalSeconds,
+		AIOracleConsensus:           oracleConsensus,
+		AIOracleNews:                oracleNews,
+		AIOracleProviders:           oracleProviders,
 	}, nil
+}
+
+func isPlaceholderSecret(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	return normalized == "sk-..." ||
+		normalized == "sk-ant-..." ||
+		strings.HasPrefix(normalized, "replace-with-") ||
+		strings.HasPrefix(normalized, "your-")
+}
+
+func validAIOracleProvider(provider string) bool {
+	switch provider {
+	case "deepseek", "openai", "anthropic", "glm", "minimax":
+		return true
+	default:
+		return false
+	}
 }
 
 func requireHTTPURL(field, value string) (string, error) {

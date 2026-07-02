@@ -158,6 +158,42 @@ func TestLoadFileReportsMissingFile(t *testing.T) {
 	}
 }
 
+func TestLoadFileIgnoresAIOraclePlaceholderProviders(t *testing.T) {
+	body := validYAML + `
+aioracle:
+  poll_interval_seconds: 300
+  consensus:
+    min_consensus_ratio: 0.66
+    min_confidence: 0.60
+    min_models_required: 1
+  news:
+    max_articles: 4
+    lookback_hours: 24
+    request_timeout_seconds: 10
+  providers:
+    - name: deepseek
+      model: deepseek-chat
+      api_key: real-test-key
+      provider: deepseek
+      weight: 1
+    - name: openai
+      model: gpt-4o
+      api_key: sk-...
+      provider: openai
+      weight: 1
+`
+	cfg, err := LoadFile(writeTestConfig(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.AIOracleProviders) != 1 || cfg.AIOracleProviders[0].Name != "deepseek" {
+		t.Fatalf("expected only usable provider, got %+v", cfg.AIOracleProviders)
+	}
+	if cfg.AIOracleNews.MaxArticles != 4 || cfg.AIOracleNews.LookbackHours != 24 {
+		t.Fatalf("unexpected AI oracle news config: %+v", cfg.AIOracleNews)
+	}
+}
+
 func TestRepositoryConfigurationArtifactsUseYAML(t *testing.T) {
 	root := filepath.Clean(filepath.Join("..", ".."))
 	example, err := os.ReadFile(filepath.Join(root, "config.example.yaml"))

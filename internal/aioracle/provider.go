@@ -40,10 +40,13 @@ var providerFactories = map[string]ProviderFactory{
 	"deepseek":  newDeepSeekProvider,
 	"openai":    newOpenAIProvider,
 	"anthropic": newAnthropicProvider,
+	// GLM and MiniMax both expose OpenAI-compatible chat completion APIs.
+	"glm":     newOpenAIProvider,
+	"minimax": newOpenAIProvider,
 }
 
 // NewProvider creates a ModelProvider from the given config.
-// cfg.Provider selects the implementation ("deepseek", "openai", "anthropic").
+// cfg.Provider selects the implementation.
 func NewProvider(cfg ProviderConfig) (ModelProvider, error) {
 	if cfg.Weight <= 0 {
 		cfg.Weight = 1.0
@@ -53,7 +56,7 @@ func NewProvider(cfg ProviderConfig) (ModelProvider, error) {
 	}
 	factory, ok := providerFactories[strings.ToLower(strings.TrimSpace(cfg.Provider))]
 	if !ok {
-		return nil, fmt.Errorf("unknown AI oracle provider type %q (supported: deepseek, openai, anthropic)", cfg.Provider)
+		return nil, fmt.Errorf("unknown AI oracle provider type %q (supported: deepseek, openai, anthropic, glm, minimax)", cfg.Provider)
 	}
 	return factory(cfg)
 }
@@ -127,7 +130,7 @@ func buildOraclePrompt(event Event, articles []NewsArticle) string {
 
 	sb.WriteString("## 新闻源\n\n")
 	if len(articles) == 0 {
-		sb.WriteString("（无可用新闻源，请基于你的训练数据判断）\n\n")
+		sb.WriteString("（无可用新闻源或新闻证据。不得仅凭训练数据确认事件；应降低 confidence。）\n\n")
 	} else {
 		for i, a := range articles {
 			sb.WriteString(fmt.Sprintf("### 新闻 %d\n", i+1))
@@ -163,6 +166,16 @@ reasoning (字符串) 和 sources (字符串数组)。不要输出任何其他�
 // parseOracleResponse extracts a structured opinion from the model's raw reply.
 func parseOracleResponse(modelName, content string) (*ModelOpinion, error) {
 	content = strings.TrimSpace(content)
+	// MiniMax reasoning models may wrap their hidden reasoning in <think>
+	// blocks before the requested JSON payload.
+	for {
+		start := strings.Index(content, "<think>")
+		end := strings.Index(content, "</think>")
+		if start < 0 || end < start {
+			break
+		}
+		content = strings.TrimSpace(content[:start] + content[end+len("</think>"):])
+	}
 	// Strip markdown code fences if present.
 	if strings.HasPrefix(content, "```") {
 		lines := strings.SplitN(content, "\n", 2)
@@ -264,8 +277,8 @@ func newDeepSeekProvider(cfg ProviderConfig) (ModelProvider, error) {
 }
 
 func (p *deepSeekProvider) Name() string    { return p.name }
-func (p *deepSeekProvider) ModelID() string  { return p.model }
-func (p *deepSeekProvider) Weight() float64  { return p.weight }
+func (p *deepSeekProvider) ModelID() string { return p.model }
+func (p *deepSeekProvider) Weight() float64 { return p.weight }
 
 func (p *deepSeekProvider) Query(ctx context.Context, event Event, articles []NewsArticle) (*ModelOpinion, error) {
 	userPrompt := buildOraclePrompt(event, articles)
@@ -358,7 +371,7 @@ func newOpenAIProvider(cfg ProviderConfig) (ModelProvider, error) {
 	}, nil
 }
 
-func (p *openAIProvider) Name() string   { return p.name }
+func (p *openAIProvider) Name() string    { return p.name }
 func (p *openAIProvider) ModelID() string { return p.model }
 func (p *openAIProvider) Weight() float64 { return p.weight }
 
@@ -434,11 +447,11 @@ type anthropicProvider struct {
 
 // anthropicRequest matches the Anthropic Messages API schema.
 type anthropicRequest struct {
-	Model       string              `json:"model"`
-	MaxTokens   int                 `json:"max_tokens"`
-	System      string              `json:"system"`
-	Messages    []anthropicMessage  `json:"messages"`
-	Temperature float64             `json:"temperature"`
+	Model       string             `json:"model"`
+	MaxTokens   int                `json:"max_tokens"`
+	System      string             `json:"system"`
+	Messages    []anthropicMessage `json:"messages"`
+	Temperature float64            `json:"temperature"`
 }
 
 type anthropicMessage struct {
@@ -477,7 +490,7 @@ func newAnthropicProvider(cfg ProviderConfig) (ModelProvider, error) {
 	}, nil
 }
 
-func (p *anthropicProvider) Name() string   { return p.name }
+func (p *anthropicProvider) Name() string    { return p.name }
 func (p *anthropicProvider) ModelID() string { return p.model }
 func (p *anthropicProvider) Weight() float64 { return p.weight }
 
@@ -580,6 +593,13 @@ func QueryAllModels(ctx context.Context, providers []ModelProvider, event Event,
 				return
 			}
 			if opinion != nil {
+				// Provider implementations historically returned the model ID in
+				// ModelName. Normalize it here because consensus weights and the
+				// tiebreak setting are keyed by the configured provider name.
+				if opinion.ModelID == "" {
+					opinion.ModelID = provider.ModelID()
+				}
+				opinion.ModelName = provider.Name()
 				results = append(results, *opinion)
 			}
 		}(p)

@@ -44,8 +44,13 @@ type NewsArticle struct {
 
 // ModelOpinion is a single AI model's judgment about whether an event occurred.
 type ModelOpinion struct {
-	// ModelName identifies the provider, e.g. "deepseek-chat", "claude-opus-4-8".
+	// ModelName identifies the configured provider, e.g. "deepseek", "claude".
+	// It is deliberately different from ModelID so provider weights and
+	// tiebreak configuration can be matched reliably.
 	ModelName string `json:"model_name"`
+
+	// ModelID is the provider-specific model identifier, e.g. "deepseek-chat".
+	ModelID string `json:"model_id,omitempty"`
 
 	// Occurred is the model's binary judgment.
 	Occurred bool `json:"occurred"`
@@ -63,6 +68,16 @@ type ModelOpinion struct {
 	Error string `json:"error,omitempty"`
 }
 
+// Decision is the tri-state settlement result. INDETERMINATE is intentionally
+// distinct from NO: a lack of evidence must never settle a market as NO.
+type Decision string
+
+const (
+	DecisionYes           Decision = "YES"
+	DecisionNo            Decision = "NO"
+	DecisionIndeterminate Decision = "INDETERMINATE"
+)
+
 // Verdict is the final consensus output produced by the oracle after
 // aggregating all model opinions.
 type Verdict struct {
@@ -70,7 +85,16 @@ type Verdict struct {
 	EventID string `json:"event_id"`
 
 	// Occurred is the final consensus judgment.
+	// Deprecated for settlement decisions: use Decision and Resolved so that
+	// NO can be distinguished from insufficient evidence.
 	Occurred bool `json:"occurred"`
+
+	// Decision is YES, NO, or INDETERMINATE.
+	Decision Decision `json:"decision"`
+
+	// Resolved is true only when all configured consensus and confidence
+	// thresholds were met. Only resolved verdicts are safe to settle.
+	Resolved bool `json:"resolved"`
 
 	// Confidence is the aggregated confidence (0.0 to 1.0).
 	Confidence float64 `json:"confidence"`

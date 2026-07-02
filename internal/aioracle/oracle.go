@@ -16,9 +16,11 @@ import (
 //  2. Continuous: call Run(ctx, events) to poll a list of events until their
 //     deadlines, issuing verdicts as soon as consensus confidence is reached.
 type Oracle struct {
-	newsFetcher NewsFetcher
-	consensus   *ConsensusEngine
-	pollTick    time.Duration
+	newsFetcher  NewsFetcher
+	consensus    *ConsensusEngine
+	pollTick     time.Duration
+	newsLookback time.Duration
+	maxArticles  int
 
 	mu       sync.RWMutex
 	verdicts map[string]*Verdict // eventID -> latest verdict
@@ -27,14 +29,40 @@ type Oracle struct {
 // NewOracle creates an AI oracle with the given news fetcher, consensus engine,
 // and polling interval (for continuous mode).
 func NewOracle(news NewsFetcher, consensus *ConsensusEngine, pollInterval time.Duration) *Oracle {
+	return NewOracleWithOptions(news, consensus, OracleOptions{
+		PollInterval: pollInterval,
+	})
+}
+
+// OracleOptions controls polling and evidence collection.
+type OracleOptions struct {
+	PollInterval time.Duration
+	NewsLookback time.Duration
+	MaxArticles  int
+}
+
+// NewOracleWithOptions creates an oracle whose news window and article limit
+// come from configuration instead of being hard-coded in Resolve.
+func NewOracleWithOptions(news NewsFetcher, consensus *ConsensusEngine, opts OracleOptions) *Oracle {
+	pollInterval := opts.PollInterval
 	if pollInterval <= 0 {
 		pollInterval = 5 * time.Minute
 	}
+	newsLookback := opts.NewsLookback
+	if newsLookback <= 0 {
+		newsLookback = 72 * time.Hour
+	}
+	maxArticles := opts.MaxArticles
+	if maxArticles <= 0 {
+		maxArticles = 10
+	}
 	return &Oracle{
-		newsFetcher: news,
-		consensus:   consensus,
-		pollTick:    pollInterval,
-		verdicts:    make(map[string]*Verdict),
+		newsFetcher:  news,
+		consensus:    consensus,
+		pollTick:     pollInterval,
+		newsLookback: newsLookback,
+		maxArticles:  maxArticles,
+		verdicts:     make(map[string]*Verdict),
 	}
 }
 
@@ -45,9 +73,9 @@ func (o *Oracle) Resolve(ctx context.Context, event Event) *Verdict {
 	// Fetch news.
 	var articles []NewsArticle
 	if o.newsFetcher != nil {
-		since := time.Now().Add(-72 * time.Hour) // default 3-day lookback
+		since := time.Now().Add(-o.newsLookback)
 		var err error
-		articles, err = o.newsFetcher.Fetch(ctx, event.Keywords, since, 10)
+		articles, err = o.newsFetcher.Fetch(ctx, event.Keywords, since, o.maxArticles)
 		if err != nil {
 			slog.Warn("aioracle: news fetch failed, proceeding without news",
 				"event_id", event.ID, "error", err)
@@ -62,6 +90,13 @@ func (o *Oracle) Resolve(ctx context.Context, event Event) *Verdict {
 	)
 
 	verdict := o.consensus.Judge(ctx, event, articles)
+	if len(articles) == 0 && verdict.Resolved {
+		candidateSummary := verdict.Summary
+		verdict.Occurred = false
+		verdict.Decision = DecisionIndeterminate
+		verdict.Resolved = false
+		verdict.Summary = "indeterminate: no external evidence was available; candidate consensus was: " + candidateSummary
+	}
 
 	o.mu.Lock()
 	o.verdicts[event.ID] = verdict
@@ -70,6 +105,8 @@ func (o *Oracle) Resolve(ctx context.Context, event Event) *Verdict {
 	slog.Info("aioracle: verdict reached",
 		"event_id", event.ID,
 		"occurred", verdict.Occurred,
+		"decision", verdict.Decision,
+		"resolved", verdict.Resolved,
 		"confidence", verdict.Confidence,
 		"consensus_ratio", verdict.ConsensusRatio,
 		"agreeing_models", fmt.Sprintf("%d/%d", verdict.AgreeingModels, len(verdict.Opinions)),
@@ -194,17 +231,17 @@ func (o *Oracle) resolvePending(ctx context.Context, pending map[string]Event, o
 			continue
 		}
 
-		// Emit verdict if confident enough OR past deadline.
-		cfg := o.consensus.ConsensusConfig()
-		isConfident := v.Occurred && v.Confidence >= cfg.MinConfidence && v.ConsensusRatio >= cfg.MinConsensusRatio
+		// A resolved NO is just as final as a resolved YES. An indeterminate
+		// verdict may be emitted at the deadline for audit/manual review, but
+		// Resolved remains false so callers cannot mistake it for NO.
 		isPastDeadline := now.After(ev.Deadline) || now.Equal(ev.Deadline)
 
-		if isConfident || isPastDeadline {
-			if isPastDeadline && !isConfident {
-				slog.Info("aioracle: event past deadline — emitting best-effort verdict",
+		if v.Resolved || isPastDeadline {
+			if isPastDeadline && !v.Resolved {
+				slog.Info("aioracle: event past deadline — emitting indeterminate verdict for manual review",
 					"event_id", v.EventID,
 					"confidence", v.Confidence,
-					"occurred", v.Occurred,
+					"decision", v.Decision,
 				)
 			}
 			delete(pending, v.EventID)
@@ -213,7 +250,7 @@ func (o *Oracle) resolvePending(ctx context.Context, pending map[string]Event, o
 			slog.Info("aioracle: event still pending — confidence insufficient",
 				"event_id", v.EventID,
 				"confidence", v.Confidence,
-				"min_confidence", cfg.MinConfidence,
+				"min_confidence", o.consensus.ConsensusConfig().MinConfidence,
 				"deadline", ev.Deadline.Format(time.RFC3339),
 			)
 		}

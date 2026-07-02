@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math/big"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"PredictionMarket/internal/chain"
@@ -47,6 +48,7 @@ type MarketHistorySampler struct {
 	interval        time.Duration
 	historyMax      int
 	cacheExt        SamplerCacheExt
+	round           atomic.Uint64
 }
 
 // NewMarketHistorySampler creates a sampler that records a data point for
@@ -105,6 +107,16 @@ func (s *MarketHistorySampler) Run(ctx context.Context) error {
 }
 
 func (s *MarketHistorySampler) sampleOnce(ctx context.Context) {
+	round := s.round.Add(1)
+	startedAt := time.Now()
+	slog.Info("sampler round started", "round", round)
+	defer func() {
+		slog.Info("sampler round completed",
+			"round", round,
+			"duration_ms", time.Since(startedAt).Milliseconds(),
+		)
+	}()
+
 	// Step 1: Fetch all games' metadata (one eth_call).
 	allGamesData := chain.EncodeGetAllGames()
 

@@ -1,0 +1,68 @@
+chain:
+  private_key: "replace-with-wallet-private-key"
+  contract_address: "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
+  rpc_url: ""
+  broker_chain_url: "https://dash.broker-chain.com:443/"
+  use_broker_chain: true
+
+server:
+  http_listen: ":8081"
+
+mysql:
+  dsn: "root:replace-with-mysql-password@tcp(127.0.0.1:3306)/brokerchain_db?charset=utf8mb4&parseTime=True&loc=Local"
+  max_open_connections: 100
+  max_idle_connections: 10
+  connection_max_lifetime_seconds: 300
+
+ipfs:
+  gateway: "http://127.0.0.1:8080/ipfs/"
+
+oracle:
+  gold_api_url: "https://api.gold-api.com/price/XAU"
+  sina_url: "https://hq.sinajs.cn/list=hf_XAU"
+  sina_referer: "https://finance.sina.com.cn"
+  user_agent: "PredictionMarket/1.0"
+  request_timeout_seconds: 10
+
+sentinel:
+  poll_interval_seconds: 30
+  resolve_delay_seconds: 5
+
+sampler:
+  poll_interval_seconds: 60
+
+ai:
+  api_key: "replace-with-ai-api-key"
+  base_url: "https://api.deepseek.com/chat/completions"
+  model: "deepseek-chat"
+  poll_interval_seconds: 60
+  buy_amount_bkc: "1"
+  confidence_min: 0.70
+  history_min_points: 3
+  history_max_points: 256
+  kelly_fraction: 0.25
+  min_edge_percent: 5.0
+  max_position_per_market_bkc: "50"
+  adaptive_cooldown: true
+
+# Optional multi-model text oracle. Add only providers with real credentials.
+# The current chain watcher does not automatically settle from these verdicts.
+# aioracle:
+#   poll_interval_seconds: 300
+#   consensus:
+#     min_consensus_ratio: 0.66
+#     min_confidence: 0.60
+#     min_models_required: 2
+#   news:
+#     rss_feeds:
+#       - "https://feeds.bbci.co.uk/news/business/rss.xml"
+#     max_articles: 10
+#     lookback_hours: 72
+#     request_timeout_seconds: 30
+#   providers:
+#     - name: "deepseek"
+#       model: "deepseek-chat"
+#       api_key: "replace-with-deepseek-api-key"
+#       provider: "deepseek"
+#       weight: 1.0
+#       timeout_seconds: 60
