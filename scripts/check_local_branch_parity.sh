@@ -9,7 +9,7 @@ if ! git rev-parse --verify "$reference_branch^{commit}" >/dev/null 2>&1; then
 fi
 
 unexpected=""
-for path in $(git diff --name-only "$reference_branch"...HEAD); do
+for path in $(git diff --name-only "$reference_branch" HEAD); do
     case "$path" in
         config.example.yaml|go.mod|go.sum|cmd/deploylocal/main.go|internal/chain/client.go|internal/chain/client_test.go|internal/config/config.go|internal/config/config_test.go|internal/config/runtime_profile.go|scripts/check_local_branch_parity.sh)
             ;;
