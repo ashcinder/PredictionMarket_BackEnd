@@ -1,15 +1,16 @@
 chain:
   private_key: "replace-with-wallet-private-key"
   contract_address: "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
-  rpc_url: ""
+  # Supervisor 的本地 Ethereum JSON-RPC；Android 模拟器侧对应 10.0.2.2:42515。
+  rpc_url: "http://127.0.0.1:42515"
   broker_chain_url: "https://dash.broker-chain.com:443/"
-  use_broker_chain: true
+  use_broker_chain: false
 
 server:
   http_listen: ":8081"
 
 mysql:
-  dsn: "root:replace-with-mysql-password@tcp(127.0.0.1:3306)/brokerchain_db?charset=utf8mb4&parseTime=True&loc=Local"
+  dsn: "root:replace-with-mysql-password@tcp(127.0.0.1:3306)/predictionmarket_local?charset=utf8mb4&parseTime=True&loc=Local"
   max_open_connections: 100
   max_idle_connections: 10
   connection_max_lifetime_seconds: 300

@@ -19,6 +19,8 @@ import (
 )
 
 const ConfigFileName = "config.yaml"
+const MySQLDSNEnvName = "PREDICTIONMARKET_MYSQL_DSN"
+const MySQLDatabaseEnvName = "PREDICTIONMARKET_MYSQL_DATABASE"
 
 type fileConfig struct {
 	Chain struct {
@@ -167,7 +169,38 @@ type ProviderConfig struct {
 
 func Load() (*Config, error) {
 	slog.Info("loading config from YAML file", "file", ConfigFileName)
-	return LoadFile(ConfigFileName)
+	cfg, err := LoadFile(ConfigFileName)
+	if err != nil {
+		return nil, err
+	}
+	if err := applyRuntimeOverrides(cfg); err != nil {
+		return nil, err
+	}
+	if err := applyBranchProfile(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func applyRuntimeOverrides(cfg *Config) error {
+	if dsn := strings.TrimSpace(os.Getenv(MySQLDSNEnvName)); dsn != "" {
+		parsed, parseErr := mysql.ParseDSN(dsn)
+		if parseErr != nil || strings.TrimSpace(parsed.DBName) == "" {
+			return fmt.Errorf("%s is invalid", MySQLDSNEnvName)
+		}
+		cfg.MySQLDSN = dsn
+		slog.Info("using MySQL DSN from environment", "variable", MySQLDSNEnvName, "database", parsed.DBName)
+	}
+	if database := strings.TrimSpace(os.Getenv(MySQLDatabaseEnvName)); database != "" {
+		parsed, parseErr := mysql.ParseDSN(cfg.MySQLDSN)
+		if parseErr != nil || strings.ContainsAny(database, "/?@") {
+			return fmt.Errorf("%s is invalid", MySQLDatabaseEnvName)
+		}
+		parsed.DBName = database
+		cfg.MySQLDSN = parsed.FormatDSN()
+		slog.Info("using MySQL database from environment", "variable", MySQLDatabaseEnvName, "database", database)
+	}
+	return nil
 }
 
 func LoadFile(path string) (*Config, error) {

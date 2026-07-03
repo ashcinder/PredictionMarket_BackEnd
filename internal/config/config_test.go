@@ -82,6 +82,54 @@ func TestLoadFileReadsCompleteYAML(t *testing.T) {
 	}
 }
 
+func TestRuntimeMySQLDSNOverride(t *testing.T) {
+	cfg, err := LoadFile(writeTestConfig(t, validYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const override = "local:secret@tcp(127.0.0.1:3306)/predictionmarket_local?parseTime=true"
+	t.Setenv(MySQLDSNEnvName, override)
+	if err := applyRuntimeOverrides(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MySQLDSN != override {
+		t.Fatalf("MySQL DSN=%q, want environment override", cfg.MySQLDSN)
+	}
+}
+
+func TestRuntimeMySQLDatabaseOverride(t *testing.T) {
+	cfg, err := LoadFile(writeTestConfig(t, validYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(MySQLDatabaseEnvName, "predictionmarket_local")
+	if err := applyRuntimeOverrides(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cfg.MySQLDSN, "/predictionmarket_local?") {
+		t.Fatalf("MySQL DSN did not use local database: %q", cfg.MySQLDSN)
+	}
+}
+
+func TestLocalSupervisorBranchProfile(t *testing.T) {
+	cfg, err := LoadFile(writeTestConfig(t, validYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := applyBranchProfile(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.UseBrokerChain {
+		t.Fatal("local branch unexpectedly enabled BrokerChain")
+	}
+	if cfg.RPCURL != "http://127.0.0.1:42515" {
+		t.Fatalf("RPC URL=%q", cfg.RPCURL)
+	}
+	if !strings.Contains(cfg.MySQLDSN, "/predictionmarket_local?") {
+		t.Fatalf("local branch database was not selected: %q", cfg.MySQLDSN)
+	}
+}
+
 func TestLoadFileRejectsInvalidConfiguration(t *testing.T) {
 	tests := map[string]string{
 		"wallet key": strings.Replace(validYAML,

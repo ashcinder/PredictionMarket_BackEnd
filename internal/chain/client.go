@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"golang.org/x/crypto/sha3"
 )
@@ -71,10 +73,11 @@ func (c *Client) EthCall(ctx context.Context, data string) (string, error) {
 		return c.brokerEthCall(ctx, data)
 	}
 	msg := map[string]interface{}{
-		"from": c.walletAddress,
-		"to":   c.contractAddress,
-		"data": data,
-		"gas":  fmt.Sprintf("0x%x", localCallGasLimit),
+		"from":  c.walletAddress,
+		"to":    c.contractAddress,
+		"data":  data,
+		"gas":   fmt.Sprintf("0x%x", localCallGasLimit),
+		"value": "0x0",
 	}
 	var result string
 	if err := c.rpcCall(ctx, "eth_call", []interface{}{msg, "latest"}, &result); err != nil {
@@ -90,19 +93,48 @@ func (c *Client) SendTransaction(ctx context.Context, data string, value *big.In
 	if c.useBrokerChain {
 		return c.brokerSendTransaction(ctx, data, value)
 	}
-	valueHex := "0x0"
-	if value != nil && value.Sign() > 0 {
-		valueHex = "0x" + value.Text(16)
+	if value == nil {
+		value = new(big.Int)
 	}
-	msg := map[string]interface{}{
-		"from":  c.walletAddress,
-		"to":    c.contractAddress,
-		"data":  data,
-		"value": valueHex,
-		"gas":   fmt.Sprintf("0x%x", localWriteGasLimit),
+
+	chainID, err := c.rpcBigInt(ctx, "eth_chainId", nil)
+	if err != nil {
+		return "", fmt.Errorf("get local chain id: %w", err)
 	}
+	nonce, err := c.rpcBigInt(ctx, "eth_getTransactionCount",
+		[]interface{}{c.walletAddress, "pending"})
+	if err != nil {
+		return "", fmt.Errorf("get local account nonce: %w", err)
+	}
+	gasPrice, err := c.rpcBigInt(ctx, "eth_gasPrice", nil)
+	if err != nil {
+		return "", fmt.Errorf("get local gas price: %w", err)
+	}
+	callData, err := hex.DecodeString(strings.TrimPrefix(data, "0x"))
+	if err != nil {
+		return "", fmt.Errorf("decode transaction data: %w", err)
+	}
+
+	unsigned := types.NewTransaction(
+		nonce.Uint64(),
+		common.HexToAddress(c.contractAddress),
+		value,
+		localWriteGasLimit,
+		gasPrice,
+		callData,
+	)
+	signed, err := types.SignTx(unsigned, types.NewLondonSigner(chainID), c.privateKey)
+	if err != nil {
+		return "", fmt.Errorf("sign local transaction: %w", err)
+	}
+	raw, err := signed.MarshalBinary()
+	if err != nil {
+		return "", fmt.Errorf("encode local transaction: %w", err)
+	}
+
 	var txHash string
-	if err := c.rpcCall(ctx, "eth_sendTransaction", []interface{}{msg}, &txHash); err != nil {
+	if err := c.rpcCall(ctx, "eth_sendRawTransaction",
+		[]interface{}{"0x" + hex.EncodeToString(raw)}, &txHash); err != nil {
 		return "", err
 	}
 	if txHash == "" {
@@ -112,6 +144,18 @@ func (c *Client) SendTransaction(ctx context.Context, data string, value *big.In
 		return txHash, err
 	}
 	return txHash, nil
+}
+
+func (c *Client) rpcBigInt(ctx context.Context, method string, params []interface{}) (*big.Int, error) {
+	var encoded string
+	if err := c.rpcCall(ctx, method, params, &encoded); err != nil {
+		return nil, err
+	}
+	value := new(big.Int)
+	if _, ok := value.SetString(strings.TrimPrefix(encoded, "0x"), 16); !ok {
+		return nil, fmt.Errorf("%s returned invalid hex quantity %q", method, encoded)
+	}
+	return value, nil
 }
 
 func (c *Client) rpcCall(ctx context.Context, method string, params []interface{}, out interface{}) error {
