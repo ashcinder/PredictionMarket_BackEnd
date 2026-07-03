@@ -146,8 +146,11 @@ func normalizeOptionalAddress(value string) string {
 	return normalizeAddress(value)
 }
 
+const millisecondTimestampThreshold int64 = 10_000_000_000
+
 func normalizeDeadlineSec(value int64) int64 {
-	if value > 10_000_000_000 {
+	// Supervisor 的 EVM TIMESTAMP 返回 UnixMilli；数据库/API 统一保存 Unix 秒。
+	if value > millisecondTimestampThreshold {
 		return value / 1000
 	}
 	return value

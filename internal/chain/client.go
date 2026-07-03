@@ -519,6 +519,7 @@ func RemainingSecondsUntilDeadline(rawDeadline int64, nowMillis int64) int64 {
 		return 0
 	}
 	deadline := rawDeadline
+	// 兼容标准 EVM 秒时间戳与 Supervisor EVM 的 UnixMilli 时间戳。
 	if rawDeadline <= 10_000_000_000 {
 		deadline = rawDeadline * 1000
 	}

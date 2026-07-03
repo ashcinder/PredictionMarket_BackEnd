@@ -51,6 +51,16 @@ func TestBrokerPostRetriesGatewayTimeout(t *testing.T) {
 	}
 }
 
+func TestRemainingSecondsSupportsSupervisorEVMMilliseconds(t *testing.T) {
+	const nowMillis int64 = 1_783_077_306_000
+	const sevenDaysMillis int64 = 7 * 24 * 60 * 60 * 1000
+
+	got := RemainingSecondsUntilDeadline(nowMillis+sevenDaysMillis, nowMillis)
+	if got != 7*24*60*60 {
+		t.Fatalf("remaining seconds=%d, want seven days", got)
+	}
+}
+
 func TestExtractHexResultFromBrokerTransactionEnvelope(t *testing.T) {
 	const want = "0x454821efbbf2e057f3955fc987409b25d2a2c584a4de7a392fe04a8cf8804195"
 	got := extractHexResult(`{"jsonrpc":"2.0","id":1,"result":"` + want + `"}`)
