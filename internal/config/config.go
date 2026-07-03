@@ -167,7 +167,14 @@ type ProviderConfig struct {
 
 func Load() (*Config, error) {
 	slog.Info("loading config from YAML file", "file", ConfigFileName)
-	return LoadFile(ConfigFileName)
+	cfg, err := LoadFile(ConfigFileName)
+	if err != nil {
+		return nil, err
+	}
+	if err := applyBranchProfile(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }
 
 func LoadFile(path string) (*Config, error) {

@@ -82,6 +82,30 @@ func TestLoadFileReadsCompleteYAML(t *testing.T) {
 	}
 }
 
+func TestAgentOracleBranchProfileForcesRemoteConnections(t *testing.T) {
+	cfg, err := LoadFile(writeTestConfig(t, validYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.UseBrokerChain = false
+	cfg.RPCURL = "http://127.0.0.1:42515"
+	if err := applyBranchProfile(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.UseBrokerChain {
+		t.Fatal("agent_oracle unexpectedly selected local RPC")
+	}
+	if cfg.BrokerChainURL != "https://dash.broker-chain.com:443/" {
+		t.Fatalf("BrokerChain URL=%q", cfg.BrokerChainURL)
+	}
+	if cfg.RPCURL != "" {
+		t.Fatalf("local RPC URL remained enabled: %q", cfg.RPCURL)
+	}
+	if !strings.Contains(cfg.MySQLDSN, "/brokerchain_db?") {
+		t.Fatalf("remote database was not selected: %q", cfg.MySQLDSN)
+	}
+}
+
 func TestLoadFileRejectsInvalidConfiguration(t *testing.T) {
 	tests := map[string]string{
 		"wallet key": strings.Replace(validYAML,
