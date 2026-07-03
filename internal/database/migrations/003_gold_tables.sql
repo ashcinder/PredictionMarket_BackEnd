@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS gold_games (
 -- migration:split
 CREATE TABLE IF NOT EXISTS gold_chain_states (
     game_id INTEGER NOT NULL,
+    contract_address VARCHAR(42) NOT NULL,
     total_pool VARBINARY(80) NULL,
     is_resolved TINYINT(1) NOT NULL DEFAULT 0,
     is_refunded TINYINT(1) NOT NULL DEFAULT 0,
@@ -25,7 +26,8 @@ CREATE TABLE IF NOT EXISTS gold_chain_states (
     reserve_yes VARBINARY(80) NULL,
     reserve_no VARBINARY(80) NULL,
     updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
-    PRIMARY KEY (game_id)
+    PRIMARY KEY (contract_address, game_id),
+    INDEX idx_gold_chain_states_game (game_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 -- migration:split
 CREATE TABLE IF NOT EXISTS gold_user_positions (
