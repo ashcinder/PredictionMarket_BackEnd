@@ -1,0 +1,98 @@
+chain:
+  private_key: "0f7597919f8d6442707e93d2723adca206e9090623914942bf876bd6b4f5e5c9"
+  contract_address: "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
+  rpc_url: ""
+  broker_chain_url: "https://dash.broker-chain.com:443/"
+  use_broker_chain: true
+
+server:
+  http_listen: ":8081"
+
+ipfs:
+  gateway: "http://127.0.0.1:8080/ipfs/"
+
+oracle:
+  gold_api_url: "https://api.gold-api.com/price/XAU"
+  sina_url: "https://hq.sinajs.cn/list=hf_XAU"
+  sina_referer: "https://finance.sina.com.cn"
+  user_agent: "PredictionMarket/1.0"
+  request_timeout_seconds: 10
+
+sentinel:
+  poll_interval_seconds: 30
+  resolve_delay_seconds: 5
+
+sampler:
+  poll_interval_seconds: 60
+
+ai:
+  api_key: "sk-b8da86ece249461b970cb803c5a655b6"
+  base_url: "https://api.deepseek.com/chat/completions"
+  model: "deepseek-chat"
+  poll_interval_seconds: 60
+  buy_amount_bkc: "1"
+  confidence_min: 0.70
+  history_min_points: 3
+  history_max_points: 256
+  kelly_fraction: 0.25           # Use 1/4 Kelly for safety (0.25 = quarter-Kelly)
+  min_edge_percent: 5.0          # Minimum 5% edge vs market price to trade
+  max_position_per_market_bkc: "50"  # Max total position per market
+  adaptive_cooldown: true        # Use adaptive cooldown based on market conditions
+
+# ---------------------------------------------------------------------------
+# AI Oracle — multi-model consensus for verifying real-world events.
+# When configured, the oracle queries all listed providers in parallel,
+# aggregates their opinions via weighted consensus, and issues a verdict
+# only when the confidence exceeds the configured threshold.
+#
+# This is OPTIONAL: remove or comment out the entire aioracle section to
+# disable the AI oracle. The server will start without it.
+# ---------------------------------------------------------------------------
+aioracle:
+  poll_interval_seconds: 300  # How often to re-evaluate pending events (5 min)
+
+  consensus:
+    min_consensus_ratio: 0.66   # At least 2/3 weighted vote must agree
+    min_confidence: 0.60        # Aggregated confidence must exceed this
+    min_models_required: 3      # All three independent models must respond
+
+  news:
+    # news_api_key: "your-newsapi-key"  # https://newsapi.org/ (optional)
+    # news_api_url: "https://newsapi.org/v2/everything"
+    rss_feeds:
+      - "https://cointelegraph.com/rss"
+      - "https://feeds.bbci.co.uk/news/business/rss.xml"
+    max_articles: 10
+    lookback_hours: 72
+    request_timeout_seconds: 30
+
+  providers:
+    - name: "deepseek"
+      model: "deepseek-chat"
+      api_key: "sk-b8da86ece249461b970cb803c5a655b6"
+      base_url: "https://api.deepseek.com/chat/completions"
+      provider: "deepseek"
+      weight: 1.0
+      timeout_seconds: 60
+
+    - name: "glm"
+      model: "glm-4-flash"
+      api_key: "cb837d424cbd4bf2be3a4fe7f487794f.MvN2RDhIpvp2hDy9"
+      base_url: "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+      provider: "glm"
+      weight: 1.0
+      timeout_seconds: 60
+
+    - name: "minimax"
+      model: "MiniMax-M2.7"
+      api_key: "sk-api-52QjmJKF90woB5oGvkFAdVHuahtwS3D8qyVu6dQD9UsRZMlld3eQIuiLfPWG8YolKZcV6oDc7961eqtYWe-P-4opM5HVQH-4D40BI5vZgdMsvCxhSAAHR3Q"
+      base_url: "https://api.minimaxi.com/v1/chat/completions"
+      provider: "minimax"
+      weight: 1.0
+      timeout_seconds: 60
+
+mysql:
+  dsn: "root:12345678@tcp(127.0.0.1:3306)/brokerchain_db?charset=utf8mb4&parseTime=True&loc=Local"
+  max_open_connections: 100
+  max_idle_connections: 10
+  connection_max_lifetime_seconds: 300
