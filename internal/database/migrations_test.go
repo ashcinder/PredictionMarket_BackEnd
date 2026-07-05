@@ -136,3 +136,41 @@ func TestEmbeddedMigrationDefinesPersistenceTables(t *testing.T) {
 		t.Fatalf("migrations do not repair historical probability orientation: %+v", migrations)
 	}
 }
+
+func TestGoldChainStateContractAddressIsAddedOnlyByMigrationNine(t *testing.T) {
+	migrations, err := embeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var migrationThree, migrationNine string
+	for _, item := range migrations {
+		switch item.Version {
+		case 3:
+			migrationThree = item.SQL
+		case 9:
+			migrationNine = item.SQL
+		}
+	}
+	if migrationThree == "" || migrationNine == "" {
+		t.Fatalf("required migrations missing: v3=%t v9=%t",
+			migrationThree != "", migrationNine != "")
+	}
+
+	var initialChainStateDDL string
+	for _, statement := range splitMigrationStatements(migrationThree) {
+		if strings.Contains(statement, "CREATE TABLE IF NOT EXISTS gold_chain_states") {
+			initialChainStateDDL = statement
+			break
+		}
+	}
+	if initialChainStateDDL == "" {
+		t.Fatal("migration 3 does not create gold_chain_states")
+	}
+	if strings.Contains(initialChainStateDDL, "contract_address") {
+		t.Fatal("migration 3 must keep the historical schema; migration 9 adds contract_address")
+	}
+	if !strings.Contains(migrationNine, "ADD COLUMN contract_address") {
+		t.Fatal("migration 9 does not add contract_address")
+	}
+}
