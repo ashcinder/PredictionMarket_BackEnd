@@ -4,13 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	mysql "github.com/go-sql-driver/mysql"
 )
 
 const (
@@ -138,6 +142,14 @@ applied_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
 		}
 		for index, statement := range splitMigrationStatements(item.SQL) {
 			if _, err := conn.ExecContext(ctx, statement); err != nil {
+				if isRecoverableMigrationNineError(item.Version, index, err) {
+					slog.Warn("recovering partially applied migration",
+						"version", item.Version,
+						"statement", index+1,
+						"mysql_error", mysqlErrorNumber(err),
+					)
+					continue
+				}
 				return fmt.Errorf("migration %d statement %d: %w", item.Version, index+1, err)
 			}
 		}
@@ -146,6 +158,36 @@ applied_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
 		}
 	}
 	return nil
+}
+
+// Migration 9 was briefly shipped after migration 3 had already been edited
+// to contain its final schema. Fresh databases therefore failed halfway with
+// duplicate column/index errors. These exact errors identify steps that are
+// already present and are safe to continue; all other migration errors remain
+// fatal.
+func isRecoverableMigrationNineError(version int64, statementIndex int, err error) bool {
+	if version != 9 {
+		return false
+	}
+	number := mysqlErrorNumber(err)
+	switch statementIndex {
+	case 0: // ADD COLUMN contract_address
+		return number == 1060 // Duplicate column name
+	case 2: // DROP PRIMARY KEY after a previously interrupted attempt
+		return number == 1091 // Can't DROP; key does not exist
+	case 4: // ADD INDEX idx_gold_chain_states_game
+		return number == 1061 // Duplicate key name
+	default:
+		return false
+	}
+}
+
+func mysqlErrorNumber(err error) uint16 {
+	var mysqlErr *mysql.MySQLError
+	if errors.As(err, &mysqlErr) {
+		return mysqlErr.Number
+	}
+	return 0
 }
 
 func splitMigrationStatements(raw string) []string {
