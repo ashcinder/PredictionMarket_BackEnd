@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	mysql "github.com/go-sql-driver/mysql"
 )
 
 func TestSplitMigrationStatements(t *testing.T) {
@@ -172,5 +173,33 @@ func TestGoldChainStateContractAddressIsAddedOnlyByMigrationNine(t *testing.T) {
 	}
 	if !strings.Contains(migrationNine, "ADD COLUMN contract_address") {
 		t.Fatal("migration 9 does not add contract_address")
+	}
+}
+
+func TestMigrationNineRecognizesOnlyKnownPartialMigrationErrors(t *testing.T) {
+	tests := []struct {
+		name      string
+		version   int64
+		statement int
+		number    uint16
+		want      bool
+	}{
+		{"duplicate contract column", 9, 0, 1060, true},
+		{"primary key already dropped", 9, 2, 1091, true},
+		{"duplicate game index", 9, 4, 1061, true},
+		{"wrong statement", 9, 1, 1060, false},
+		{"wrong migration", 8, 0, 1060, false},
+		{"unknown mysql error", 9, 0, 1045, false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := &mysql.MySQLError{Number: test.number, Message: "test"}
+			if got := isRecoverableMigrationNineError(
+				test.version, test.statement, err,
+			); got != test.want {
+				t.Fatalf("recoverable=%t, want %t", got, test.want)
+			}
+		})
 	}
 }
