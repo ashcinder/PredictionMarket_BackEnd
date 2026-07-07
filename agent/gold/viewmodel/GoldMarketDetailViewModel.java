@@ -97,7 +97,6 @@ public class GoldMarketDetailViewModel extends AndroidViewModel {
             public void onTiming(String source, long durationMs, boolean isFallback) {
                 if (!showLoading) return;
                 String msg = source + " | " + String.format(java.util.Locale.getDefault(), "%.2f秒", durationMs / 1000.0);
-                if (isFallback) msg = "🔄 " + msg;
                 debugToast.postValue(msg);
             }
         });
@@ -194,10 +193,8 @@ public class GoldMarketDetailViewModel extends AndroidViewModel {
             @Override public void onTxSent(String txHash) { txStatus.postValue("Sent: " + txHash); }
             @Override public void onConfirmed(String msg) {
                 txStatus.postValue("Confirmed: " + msg);
-                // 延迟 2 秒再刷新，确保后端 DB 同步完成 + 链上状态已更新
-                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
-                    loadGameInfo(gameId, contractAddress);
-                }, 2000);
+                // 核心交易缓存已在确认回调前写入，无需再固定等待 2 秒。
+                loadGameInfo(gameId, contractAddress);
             }
             @Override public void onError(String err) { tradeError.postValue(err); }
         });
@@ -212,9 +209,7 @@ public class GoldMarketDetailViewModel extends AndroidViewModel {
             @Override public void onTxSent(String txHash) { txStatus.postValue("Claim Sent"); }
             @Override public void onConfirmed(String msg) {
                 txStatus.postValue("Claim Success");
-                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
-                    loadGameInfo(gameId, contractAddress);
-                }, 2000);
+                loadGameInfo(gameId, contractAddress);
             }
             @Override public void onError(String err) { tradeError.postValue("领取失败：\n\n" + err); }
         });

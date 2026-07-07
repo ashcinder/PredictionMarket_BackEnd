@@ -57,7 +57,6 @@ public class GoldMyPositionsViewModel extends AndroidViewModel {
             public void onTiming(String source, long durationMs, boolean isFallback) {
                 if (!showLoading) return;
                 String msg = source + " | " + String.format(java.util.Locale.getDefault(), "%.2f秒", durationMs / 1000.0);
-                if (isFallback) msg = "🔄 " + msg;
                 debugToast.postValue(msg);
             }
         });

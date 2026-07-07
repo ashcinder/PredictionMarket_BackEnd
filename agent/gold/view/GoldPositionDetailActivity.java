@@ -20,6 +20,7 @@ import com.example.brokerfi.R;
 import com.example.brokerfi.xc.agent.gold.model.data.BackendApiClient;
 import com.example.brokerfi.xc.agent.gold.model.data.GoldMarketRepository;
 import com.example.brokerfi.xc.agent.gold.model.data.PinataClient;
+import com.example.brokerfi.xc.agent.gold.model.logic.GoldPositionHistoryPresenter;
 import com.example.brokerfi.xc.agent.gold.model.logic.GoldMarketStatusStyle;
 import com.example.brokerfi.xc.agent.gold.model.logic.GoldPositionValuation;
 import com.example.brokerfi.xc.agent.gold.viewmodel.GoldMarketDetailViewModel;
@@ -323,13 +324,8 @@ public class GoldPositionDetailActivity extends AppCompatActivity {
     private void updateTradeHistoryUI() {
         tradeHistoryContainer.removeAllViews();
 
-        // Filter to only BUY trades
-        List<BackendApiClient.TradeDTO> buyTrades = new ArrayList<>();
-        for (BackendApiClient.TradeDTO trade : tradeHistory) {
-            if ("BUY".equalsIgnoreCase(trade.tradeType)) {
-                buyTrades.add(trade);
-            }
-        }
+        List<BackendApiClient.TradeDTO> buyTrades =
+                GoldPositionHistoryPresenter.visibleRows(currentGame, tradeHistory);
 
         if (buyTrades.isEmpty()) {
             tvTradeEmpty.setVisibility(View.VISIBLE);
@@ -363,8 +359,15 @@ public class GoldPositionDetailActivity extends AppCompatActivity {
                 tvSideBadge.setBackgroundResource(R.drawable.bg_badge_no);
             }
 
+            boolean snapshotRow = GoldPositionHistoryPresenter.isSnapshotRow(trade);
+
             // AI Managed badge
-            if (trade.isAiManaged) {
+            if (snapshotRow) {
+                tvManagedBadge.setVisibility(View.VISIBLE);
+                tvManagedBadge.setText("持仓快照");
+                tvManagedBadge.setTextColor(0xFF64748B);
+                tvManagedBadge.setBackgroundResource(R.drawable.bg_badge_ai);
+            } else if (trade.isAiManaged) {
                 tvManagedBadge.setVisibility(View.VISIBLE);
                 tvManagedBadge.setText("AI托管");
             } else {
@@ -375,17 +378,21 @@ public class GoldPositionDetailActivity extends AppCompatActivity {
             }
 
             // Time
-            tvTradeTime.setText(formatTradeTime(trade.createdAt));
+            tvTradeTime.setText(snapshotRow ? "当前链上持仓" : formatTradeTime(trade.createdAt));
 
             // Amount in BKC
-            try {
-                BigInteger amountWei = new BigInteger(trade.amountWei);
-                BigDecimal bkc = new BigDecimal(amountWei).divide(
-                        new BigDecimal("1000000000000000000"), 2, RoundingMode.HALF_UP);
-                tvTradeAmount.setText(String.format(Locale.getDefault(), "%s BKC",
-                        bkc.stripTrailingZeros().toPlainString()));
-            } catch (NumberFormatException e) {
-                tvTradeAmount.setText("-- BKC");
+            if (snapshotRow) {
+                tvTradeAmount.setText("投入记录待同步");
+            } else {
+                try {
+                    BigInteger amountWei = new BigInteger(trade.amountWei);
+                    BigDecimal bkc = new BigDecimal(amountWei).divide(
+                            new BigDecimal("1000000000000000000"), 2, RoundingMode.HALF_UP);
+                    tvTradeAmount.setText(String.format(Locale.getDefault(), "%s BKC",
+                            bkc.stripTrailingZeros().toPlainString()));
+                } catch (NumberFormatException e) {
+                    tvTradeAmount.setText("-- BKC");
+                }
             }
 
             // Share amount

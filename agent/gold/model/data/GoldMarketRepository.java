@@ -1470,6 +1470,9 @@ public class GoldMarketRepository {
                         }
                     }
                 }
+                if (shouldFallbackToChainForPositions(allStates, myStates)) {
+                    throw new IllegalStateException("cached user positions are empty; checking chain directly");
+                }
 
                 List<GameModel> models = new ArrayList<>();
                 for (BackendApiClient.ChainStateDTO state : myStates) {
@@ -1616,6 +1619,13 @@ public class GoldMarketRepository {
                 postError(callback, "获取参与的市场异常: " + e.getMessage());
             }
         });
+    }
+
+    public static boolean shouldFallbackToChainForPositions(
+            List<BackendApiClient.ChainStateDTO> allStates,
+            List<BackendApiClient.ChainStateDTO> myStates) {
+        return allStates != null && !allStates.isEmpty()
+                && (myStates == null || myStates.isEmpty());
     }
 
     // ========================================================================
