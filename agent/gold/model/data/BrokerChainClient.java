@@ -2,6 +2,7 @@ package com.example.brokerfi.xc.agent.gold.model.data;
 
 import android.util.Log;
 
+import com.example.brokerfi.xc.agent.config.AgentConfig;
 import com.google.gson.Gson;
 import com.google.gson.annotations.SerializedName;
 
@@ -18,14 +19,9 @@ import org.bouncycastle.util.encoders.Hex;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.net.InetAddress;
-import java.net.UnknownHostException;
-import java.util.Collections;
-import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.UUID;
 
-import okhttp3.Dns;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -38,37 +34,17 @@ import okhttp3.Response;
  */
 public class BrokerChainClient {
     private static final String TAG = "BrokerChainClient";
-    public static final String SERVICE_HOST = "dash.broker-chain.com";
-    private static final String BASE_URL = "https://" + SERVICE_HOST + "/";
-    // Android 模拟器的系统 DNS（通常为 10.0.2.3）失效时使用。
-    // URL 仍保留域名，因此 HTTPS SNI 和证书主机名校验不会被绕过。
-    private static final byte[] SERVICE_FALLBACK_IPV4 =
-            new byte[] {43, (byte) 162, 111, (byte) 181};
+    public static final String SERVICE_HOST = AgentConfig.LOCAL_HOST;
+    private static final String BASE_URL = AgentConfig.BROKER_CHAIN_BASE_URL;
     private static final MediaType JSON = MediaType.parse("application/json; charset=utf-8");
     private static final Gson gson = new Gson();
     private static final OkHttpClient httpClient = new OkHttpClient.Builder()
-            .dns(new BrokerChainDns())
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(120, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             // 请求带一次性 UUID 和签名，原样重试会触发 replay attack。
             .retryOnConnectionFailure(false)
             .build();
-
-    private static final class BrokerChainDns implements Dns {
-        @Override
-        public List<InetAddress> lookup(String hostname) throws UnknownHostException {
-            try {
-                return Dns.SYSTEM.lookup(hostname);
-            } catch (UnknownHostException systemDnsError) {
-                if (!SERVICE_HOST.equalsIgnoreCase(hostname)) throw systemDnsError;
-                InetAddress fallback = InetAddress.getByAddress(hostname, SERVICE_FALLBACK_IPV4);
-                Log.w(TAG, "系统 DNS 解析失败，BrokerChain 使用备用地址 "
-                        + fallback.getHostAddress());
-                return Collections.singletonList(fallback);
-            }
-        }
-    }
 
     private static String doPost(String endpoint, Object requestBody) throws Exception {
         String jsonInputString = gson.toJson(requestBody);
@@ -202,6 +178,38 @@ public class BrokerChainClient {
         return doPost("eth_sendTransaction", req);
     }
 
+    /**
+     * 查询 BrokerChain 交易回执。
+     *
+     * @return null 表示仍在等待打包；true 表示执行成功；false 表示链上执行失败
+     */
+    public static Boolean getTransactionReceiptStatus(String privateKey, String txHash) throws Exception {
+        String normalizedHash = txHash == null ? "" : txHash.trim();
+        if (normalizedHash.startsWith("0x")) normalizedHash = normalizedHash.substring(2);
+        if (normalizedHash.isEmpty()) throw new IOException("交易哈希为空");
+
+        String uuid = UUID.randomUUID().toString();
+        String[] sign = signECDSA(privateKey, uuid + normalizedHash);
+
+        ReceiptReq req = new ReceiptReq();
+        req.setPublicKey(getPublicKeyFromPrivateKey(privateKey));
+        req.setRandomStr(uuid);
+        req.setUUID(normalizedHash);
+        req.setSign1(sign[0]);
+        req.setSign2(sign[1]);
+
+        return parseTransactionReceiptStatus(doPost("eth_getTransactionReceipt", req));
+    }
+
+    static Boolean parseTransactionReceiptStatus(String response) throws Exception {
+        ReceiptResponse root = gson.fromJson(response, ReceiptResponse.class);
+        if (root == null || root.result == null) return null;
+        String status = root.result.status == null ? "" : root.result.status;
+        if ("0x1".equalsIgnoreCase(status) || "1".equals(status)) return true;
+        if ("0x0".equalsIgnoreCase(status) || "0".equals(status)) return false;
+        return null;
+    }
+
     public static ReturnAccountState getAddrAndBalance(String privateKey) throws Exception {
         String uuid = UUID.randomUUID().toString();
         String rawAddress = getAddress(privateKey);
@@ -282,6 +290,33 @@ public class BrokerChainClient {
         public void setSign1(String s) { Sign1 = s; }
         public void setSign2(String s) { Sign2 = s; }
         public void setUUID(String u) { UUID = u; }
+    }
+
+    public static class ReceiptReq {
+        @SerializedName("uuid")
+        private String UUID;
+        @SerializedName("PublicKey")
+        private String PublicKey;
+        @SerializedName("RandomStr")
+        private String RandomStr;
+        @SerializedName("Sign1")
+        private String Sign1;
+        @SerializedName("Sign2")
+        private String Sign2;
+
+        public void setUUID(String value) { UUID = value; }
+        public void setPublicKey(String value) { PublicKey = value; }
+        public void setRandomStr(String value) { RandomStr = value; }
+        public void setSign1(String value) { Sign1 = value; }
+        public void setSign2(String value) { Sign2 = value; }
+    }
+
+    private static class ReceiptResponse {
+        ReceiptResult result;
+    }
+
+    private static class ReceiptResult {
+        String status;
     }
 
     public static class ReturnAccountState {

@@ -1,6 +1,7 @@
 package com.example.brokerfi.xc.agent.gold.view;
 
 import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -19,6 +20,7 @@ import com.example.brokerfi.R;
 import com.example.brokerfi.xc.agent.gold.model.data.BackendApiClient;
 import com.example.brokerfi.xc.agent.gold.model.data.GoldMarketRepository;
 import com.example.brokerfi.xc.agent.gold.model.data.PinataClient;
+import com.example.brokerfi.xc.agent.gold.model.logic.GoldMarketStatusStyle;
 import com.example.brokerfi.xc.agent.gold.model.logic.GoldPositionValuation;
 import com.example.brokerfi.xc.agent.gold.viewmodel.GoldMarketDetailViewModel;
 
@@ -191,20 +193,13 @@ public class GoldPositionDetailActivity extends AppCompatActivity {
             ivPoolIcon.setImageResource(R.drawable.apartment_icon);
         }
 
-        // Status Badge
-        if (currentGame.isRefunded) {
-            tvStatusBadge.setText("已退款");
-            tvStatusBadge.setTextColor(0xFFD97706);
-            tvStatusBadge.setBackgroundResource(R.drawable.bg_status_refunded);
-        } else if (currentGame.isResolved) {
-            tvStatusBadge.setText("已结算");
-            tvStatusBadge.setTextColor(0xFF7C3AED);
-            tvStatusBadge.setBackgroundResource(R.drawable.bg_status_resolved);
-        } else {
-            tvStatusBadge.setText("进行中");
-            tvStatusBadge.setTextColor(0xFF059669);
-            tvStatusBadge.setBackgroundResource(R.drawable.bg_status_active);
-        }
+        long remaining = GoldNoteMarketActivity.remainingSecondsUntilDeadline(
+                currentGame.deadlineSec, System.currentTimeMillis());
+        GoldMarketStatusStyle status = GoldMarketStatusStyle.forMarket(
+                currentGame.isResolved, currentGame.isRefunded, remaining);
+        tvStatusBadge.setText(status.label);
+        tvStatusBadge.setTextColor(status.textColor);
+        tvStatusBadge.setBackground(makeStatusBackground(status.backgroundColor));
 
         // Position Summary
         updatePositionUI();
@@ -213,6 +208,13 @@ public class GoldPositionDetailActivity extends AppCompatActivity {
         updateTradeHistoryUI();
 
         swipeRefresh.setRefreshing(false);
+    }
+
+    private GradientDrawable makeStatusBackground(int color) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(color);
+        drawable.setCornerRadius(999 * getResources().getDisplayMetrics().density);
+        return drawable;
     }
 
     private void updatePositionUI() {

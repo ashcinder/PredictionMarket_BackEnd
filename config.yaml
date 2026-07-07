@@ -1,15 +1,16 @@
 chain:
   private_key: "0f7597919f8d6442707e93d2723adca206e9090623914942bf876bd6b4f5e5c9"
   contract_address: "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
-  rpc_url: ""
-  broker_chain_url: "https://dash.broker-chain.com:443/"
-  use_broker_chain: true
+  rpc_url: "http://127.0.0.1:42515"
+  broker_chain_url: "http://127.0.0.1:56741/"
+  use_broker_chain: false
 
 server:
   http_listen: ":8081"
 
 ipfs:
-  gateway: "http://127.0.0.1:8080/ipfs/"
+  gateway: "http://127.0.0.1:8083/ipfs/"
+  fallback_gateways: []
 
 oracle:
   gold_api_url: "https://api.gold-api.com/price/XAU"
@@ -92,7 +93,7 @@ aioracle:
       timeout_seconds: 60
 
 mysql:
-  dsn: "root:12345678@tcp(127.0.0.1:3306)/brokerchain_db?charset=utf8mb4&parseTime=True&loc=Local"
+  dsn: "root:12345678@tcp(127.0.0.1:3306)/predictionmarket_local?charset=utf8mb4&parseTime=True&loc=Local"
   max_open_connections: 100
   max_idle_connections: 10
   connection_max_lifetime_seconds: 300

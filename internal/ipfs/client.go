@@ -23,13 +23,19 @@ type Metadata struct {
 }
 
 type Client struct {
-	gateway    string
-	httpClient *http.Client
+	gateway          string
+	fallbackGateways []string
+	httpClient       *http.Client
 }
 
-func NewClient(gateway string) *Client {
+func NewClient(gateway string, fallbackGateways ...[]string) *Client {
+	var fallbacks []string
+	if len(fallbackGateways) > 0 {
+		fallbacks = fallbackGateways[0]
+	}
 	return &Client{
-		gateway: gateway,
+		gateway:          gateway,
+		fallbackGateways: dedupeGateways(fallbacks),
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -47,19 +53,31 @@ func (c *Client) DownloadMetadata(cid string) (*Metadata, error) {
 		return parseInlineCID(cid)
 	}
 
-	// 普通 IPFS CID
-	url := c.gateway + cid
+	var attemptErrors []string
+	for _, gateway := range c.gatewaysForCID(cid) {
+		meta, err := c.downloadMetadataFromGateway(gateway, cid)
+		if err == nil {
+			return meta, nil
+		}
+		attemptErrors = append(attemptErrors, err.Error())
+	}
+
+	return nil, fmt.Errorf("download ipfs metadata for cid %s failed: %s", cid, strings.Join(attemptErrors, "; "))
+}
+
+func (c *Client) downloadMetadataFromGateway(gateway, cid string) (*Metadata, error) {
+	url := joinGatewayCID(gateway, cid)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: %w", url, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ipfs gateway HTTP %d for cid %s", resp.StatusCode, cid)
+		return nil, fmt.Errorf("%s returned HTTP %d", url, resp.StatusCode)
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -70,6 +88,45 @@ func (c *Client) DownloadMetadata(cid string) (*Metadata, error) {
 		return nil, fmt.Errorf("parse ipfs json: %w", err)
 	}
 	return &meta, nil
+}
+
+func (c *Client) gatewaysForCID(cid string) []string {
+	gateways := []string{c.gateway}
+	if looksLikeRemoteIPFSCID(cid) {
+		gateways = append(gateways, c.fallbackGateways...)
+	}
+	return dedupeGateways(gateways)
+}
+
+func dedupeGateways(gateways []string) []string {
+	seen := make(map[string]bool, len(gateways))
+	result := make([]string, 0, len(gateways))
+	for _, gateway := range gateways {
+		key := strings.TrimRight(strings.TrimSpace(gateway), "/")
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, ensureTrailingSlash(gateway))
+	}
+	return result
+}
+
+func looksLikeRemoteIPFSCID(cid string) bool {
+	cid = strings.TrimSpace(cid)
+	return strings.HasPrefix(cid, "Qm") || strings.HasPrefix(cid, "baf") || strings.HasPrefix(cid, "zb2")
+}
+
+func joinGatewayCID(gateway, cid string) string {
+	return strings.TrimRight(strings.TrimSpace(gateway), "/") + "/" + strings.TrimLeft(strings.TrimSpace(cid), "/")
+}
+
+func ensureTrailingSlash(gateway string) string {
+	gateway = strings.TrimSpace(gateway)
+	if strings.HasSuffix(gateway, "/") {
+		return gateway
+	}
+	return gateway + "/"
 }
 
 func parseInlineCID(cid string) (*Metadata, error) {

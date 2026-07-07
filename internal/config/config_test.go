@@ -23,6 +23,8 @@ mysql:
   connection_max_lifetime_seconds: 300
 ipfs:
   gateway: "http://127.0.0.1:8080/ipfs"
+  fallback_gateways:
+    - "http://127.0.0.1:8083/ipfs"
 oracle:
   gold_api_url: "https://api.gold-api.com/price/XAU"
   sina_url: "https://hq.sinajs.cn/list=hf_XAU"
@@ -64,6 +66,9 @@ func TestLoadFileReadsCompleteYAML(t *testing.T) {
 	}
 	if cfg.IPFSGateway != "http://127.0.0.1:8080/ipfs/" {
 		t.Fatalf("IPFS gateway was not normalized: %q", cfg.IPFSGateway)
+	}
+	if len(cfg.IPFSFallbackGateways) != 1 || cfg.IPFSFallbackGateways[0] != "http://127.0.0.1:8083/ipfs/" {
+		t.Fatalf("IPFS fallback gateways were not normalized: %#v", cfg.IPFSFallbackGateways)
 	}
 	if cfg.GoldAPIURL != "https://api.gold-api.com/price/XAU" ||
 		cfg.SinaURL != "https://hq.sinajs.cn/list=hf_XAU" ||

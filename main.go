@@ -17,6 +17,7 @@ import (
 	"PredictionMarket/internal/config"
 	"PredictionMarket/internal/database"
 	"PredictionMarket/internal/ipfs"
+	"PredictionMarket/internal/localcontent"
 	"PredictionMarket/internal/logging"
 	"PredictionMarket/internal/oracle"
 	"PredictionMarket/internal/sentinel"
@@ -64,7 +65,7 @@ func main() {
 	}
 	defer chainClient.Close()
 
-	ipfsClient := ipfs.NewClient(cfg.IPFSGateway)
+	ipfsClient := ipfs.NewClient(cfg.IPFSGateway, cfg.IPFSFallbackGateways)
 	goldOracle := oracle.NewGoldOracle(oracle.Config{
 		GoldAPIURL:     cfg.GoldAPIURL,
 		SinaURL:        cfg.SinaURL,
@@ -112,6 +113,7 @@ func main() {
 	managedServer.Register(mux)
 	historyHandler.Register(mux)
 	v1Server.Register(mux)
+	localcontent.NewServer("data/local-ipfs").Register(mux)
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPListen,
 		Handler:           withCORS(mux),

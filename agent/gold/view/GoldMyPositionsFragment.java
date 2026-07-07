@@ -4,6 +4,7 @@ import android.animation.ValueAnimator;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -29,6 +30,7 @@ import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 import com.example.brokerfi.R;
 import com.example.brokerfi.xc.agent.gold.model.data.GoldMarketRepository;
 import com.example.brokerfi.xc.agent.gold.model.data.PinataClient;
+import com.example.brokerfi.xc.agent.gold.model.logic.GoldMarketStatusStyle;
 import com.example.brokerfi.xc.agent.gold.model.logic.GoldPositionValuation;
 import com.example.brokerfi.xc.agent.gold.viewmodel.GoldMyPositionsViewModel;
 import com.bumptech.glide.Glide;
@@ -159,7 +161,12 @@ public class GoldMyPositionsFragment extends Fragment {
 
             GoldPositionValuation.MarketValue marketValue = GoldPositionValuation.calculateMarket(game);
             tvCurrentValue.setText(marketValue.isComplete() ? GoldNoteMarketActivity.formatBkc(marketValue.getValueWei()) + " BKC" : "暂不可估值");
-            tvProfit.setText(game.isRefunded ? "已退款" : (game.isResolved ? "已结算" : "AMM估值"));
+            long remaining = GoldNoteMarketActivity.remainingSecondsUntilDeadline(game.deadlineSec, System.currentTimeMillis());
+            GoldMarketStatusStyle status = GoldMarketStatusStyle.forMarket(game.isResolved, game.isRefunded, remaining);
+            tvProfit.setText(status.label);
+            tvProfit.setTextColor(status.textColor);
+            tvProfit.setBackground(makeRoundedBackground(status.backgroundColor, 999));
+            card.setBackground(makeRoundedBackground(status.backgroundColor, 12));
 
             card.setOnClickListener(v -> {
                 Intent intent = new Intent(requireContext(), GoldPositionDetailActivity.class);
@@ -171,13 +178,24 @@ public class GoldMyPositionsFragment extends Fragment {
         }
     }
 
+    private GradientDrawable makeRoundedBackground(int color, int radiusDp) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(color);
+        drawable.setCornerRadius(dp(radiusDp));
+        return drawable;
+    }
+
+    private float dp(int value) {
+        return value * getResources().getDisplayMetrics().density;
+    }
+
     private void updateSummary() {
         GoldPositionValuation.PortfolioValue portfolio = GoldPositionValuation.calculatePortfolio(myPositions);
         BigDecimal totalBkc = new BigDecimal(portfolio.getValueWei()).divide(new BigDecimal("1000000000000000000"), 6, RoundingMode.HALF_UP);
         animateBalance(totalBkc.doubleValue());
         String subtitle = String.format(Locale.getDefault(), "累计参与 %d 个博弈池", myPositions.size());
         if (portfolio.getUnavailableMarketCount() > 0) {
-            subtitle += String.format(Locale.getDefault(), " · %d 个持仓暂未计入估值", portfolio.getUnavailableMarketCount());
+            subtitle += String.format(Locale.getDefault(), " · %d 个持有暂未计入估值", portfolio.getUnavailableMarketCount());
         }
         tvTotalPnl.setText(subtitle);
     }

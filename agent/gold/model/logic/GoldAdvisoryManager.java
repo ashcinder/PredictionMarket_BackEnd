@@ -1,6 +1,7 @@
 package com.example.brokerfi.xc.agent.gold.model.logic;
 
 import com.example.brokerfi.xc.agent.ai.DeepSeekClient;
+import com.example.brokerfi.xc.agent.config.AgentConfig;
 import com.example.brokerfi.xc.agent.gold.model.data.AppExecutors;
 import com.example.brokerfi.xc.agent.gold.model.data.GoldMarketRepository;
 
@@ -99,10 +100,10 @@ public class GoldAdvisoryManager {
 
     static Advisory fetchGoldQuote() {
         try {
-            URL url = new URL("https://api.gold-api.com/price/XAU");
+            URL url = new URL(AgentConfig.GOLD_API_URL);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(5000);
-            conn.setReadTimeout(5000);
+            conn.setConnectTimeout(AgentConfig.MARKET_DATA_TIMEOUT_MS);
+            conn.setReadTimeout(AgentConfig.MARKET_DATA_TIMEOUT_MS);
             if (conn.getResponseCode() == 200) {
                 try (InputStream is = conn.getInputStream();
                      Scanner sc = new Scanner(is, "UTF-8").useDelimiter("\\A")) {
@@ -131,11 +132,11 @@ public class GoldAdvisoryManager {
         if (sinaPrevCloseFetched) return sinaPrevClose;
         sinaPrevCloseFetched = true;
         try {
-            URL url = new URL("https://hq.sinajs.cn/list=hf_XAU");
+            URL url = new URL(AgentConfig.SINA_GOLD_URL);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(5000); conn.setReadTimeout(5000);
-            conn.setRequestProperty("Referer", "https://finance.sina.com.cn");
-            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 12)");
+            conn.setConnectTimeout(AgentConfig.MARKET_DATA_TIMEOUT_MS); conn.setReadTimeout(AgentConfig.MARKET_DATA_TIMEOUT_MS);
+            conn.setRequestProperty("Referer", AgentConfig.SINA_REFERER);
+            conn.setRequestProperty("User-Agent", AgentConfig.MARKET_USER_AGENT);
             if (conn.getResponseCode() == 200) {
                 try (InputStream is = conn.getInputStream();
                      Scanner sc = new Scanner(is, "GBK").useDelimiter("\\A")) {
@@ -154,11 +155,11 @@ public class GoldAdvisoryManager {
 
     private static Advisory fetchGoldSina() {
         try {
-            URL url = new URL("https://hq.sinajs.cn/list=hf_XAU");
+            URL url = new URL(AgentConfig.SINA_GOLD_URL);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(5000); conn.setReadTimeout(5000);
-            conn.setRequestProperty("Referer", "https://finance.sina.com.cn");
-            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 12)");
+            conn.setConnectTimeout(AgentConfig.MARKET_DATA_TIMEOUT_MS); conn.setReadTimeout(AgentConfig.MARKET_DATA_TIMEOUT_MS);
+            conn.setRequestProperty("Referer", AgentConfig.SINA_REFERER);
+            conn.setRequestProperty("User-Agent", AgentConfig.MARKET_USER_AGENT);
             if (conn.getResponseCode() == 200) {
                 try (InputStream is = conn.getInputStream();
                      Scanner sc = new Scanner(is, "GBK").useDelimiter("\\A")) {
@@ -192,9 +193,9 @@ public class GoldAdvisoryManager {
 
     static double fetchUsdCny() {
         try {
-            URL url = new URL("https://open.er-api.com/v6/latest/USD");
+            URL url = new URL(AgentConfig.FX_USD_CNY_URL);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setConnectTimeout(5000); conn.setReadTimeout(5000);
+            conn.setConnectTimeout(AgentConfig.MARKET_DATA_TIMEOUT_MS); conn.setReadTimeout(AgentConfig.MARKET_DATA_TIMEOUT_MS);
             if (conn.getResponseCode() == 200) {
                 try (InputStream is = conn.getInputStream();
                      Scanner sc = new Scanner(is, "UTF-8").useDelimiter("\\A")) {

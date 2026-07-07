@@ -3,6 +3,7 @@ package com.example.brokerfi.xc.agent.gold.view;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -29,6 +30,7 @@ import com.example.brokerfi.xc.agent.ai.DeepSeekClient;
 import com.example.brokerfi.xc.agent.gold.model.data.GoldMarketRepository;
 import com.example.brokerfi.xc.agent.gold.model.data.PinataClient;
 import com.example.brokerfi.xc.agent.gold.model.logic.GoldAdvisoryManager;
+import com.example.brokerfi.xc.agent.gold.model.logic.GoldMarketStatusStyle;
 import com.example.brokerfi.xc.agent.gold.viewmodel.GoldMarketViewModel;
 import com.bumptech.glide.Glide;
 
@@ -138,11 +140,12 @@ public class GoldMarketListFragment extends Fragment {
 
             ((TextView) card.findViewById(R.id.tv_total_pool)).setText(GoldNoteMarketActivity.formatBkc(game.totalPool) + " BKC");
             long remaining = GoldNoteMarketActivity.remainingSecondsUntilDeadline(game.deadlineSec, System.currentTimeMillis());
-            String status = GoldNoteMarketActivity.formatMarketStatus(remaining);
+            GoldMarketStatusStyle status = GoldMarketStatusStyle.forMarket(game.isResolved, game.isRefunded, remaining);
             TextView tvStatus = card.findViewById(R.id.tv_market_status);
-            tvStatus.setText(status);
-            int statusColor = remaining < 0 ? 0xFFB45309 : (remaining > 0 ? 0xFF047857 : Color.RED);
-            tvStatus.setTextColor(statusColor);
+            tvStatus.setText(status.label);
+            tvStatus.setTextColor(status.textColor);
+            tvStatus.setBackground(makeRoundedBackground(status.backgroundColor, 999));
+            card.setBackground(makeRoundedBackground(status.backgroundColor, 12));
             ((TextView) card.findViewById(R.id.tv_deadline)).setText(GoldNoteMarketActivity.formatRemainingTime(remaining));
 
             if (game.virtualReserves != null && game.virtualReserves.size() >= 2) {
@@ -172,6 +175,17 @@ public class GoldMarketListFragment extends Fragment {
             });
             marketListContainer.addView(card);
         }
+    }
+
+    private GradientDrawable makeRoundedBackground(int color, int radiusDp) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(color);
+        drawable.setCornerRadius(dp(radiusDp));
+        return drawable;
+    }
+
+    private float dp(int value) {
+        return value * getResources().getDisplayMetrics().density;
     }
 
     private SpannableStringBuilder styleMarketTitle(String title) {

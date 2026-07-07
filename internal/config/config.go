@@ -40,7 +40,8 @@ type fileConfig struct {
 		ConnectionMaxLifetimeSeconds int    `yaml:"connection_max_lifetime_seconds"`
 	} `yaml:"mysql"`
 	IPFS struct {
-		Gateway string `yaml:"gateway"`
+		Gateway          string   `yaml:"gateway"`
+		FallbackGateways []string `yaml:"fallback_gateways"`
 	} `yaml:"ipfs"`
 	Oracle struct {
 		GoldAPIURL            string `yaml:"gold_api_url"`
@@ -104,6 +105,7 @@ type Config struct {
 	RPCURL                     string
 	BrokerChainURL             string
 	IPFSGateway                string
+	IPFSFallbackGateways       []string
 	GoldAPIURL                 string
 	SinaURL                    string
 	SinaReferer                string
@@ -359,6 +361,19 @@ func LoadFile(path string) (*Config, error) {
 	if !strings.HasSuffix(ipfsGateway, "/") {
 		ipfsGateway += "/"
 	}
+	ipfsFallbackGateways := make([]string, 0, len(raw.IPFS.FallbackGateways))
+	for i, fallbackGateway := range raw.IPFS.FallbackGateways {
+		normalized, err := requireHTTPURL(fmt.Sprintf("ipfs.fallback_gateways[%d]", i), fallbackGateway)
+		if err != nil {
+			return nil, err
+		}
+		if !strings.HasSuffix(normalized, "/") {
+			normalized += "/"
+		}
+		if normalized != ipfsGateway {
+			ipfsFallbackGateways = append(ipfsFallbackGateways, normalized)
+		}
+	}
 
 	// --- AI Oracle validation ---
 	hasAIOracle := len(raw.AIOracle.Providers) > 0
@@ -496,6 +511,7 @@ func LoadFile(path string) (*Config, error) {
 		RPCURL:                      rpcURL,
 		BrokerChainURL:              brokerURL,
 		IPFSGateway:                 ipfsGateway,
+		IPFSFallbackGateways:        ipfsFallbackGateways,
 		GoldAPIURL:                  goldAPIURL,
 		SinaURL:                     sinaURL,
 		SinaReferer:                 sinaReferer,

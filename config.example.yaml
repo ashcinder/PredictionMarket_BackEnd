@@ -3,7 +3,7 @@ chain:
   contract_address: "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
   # Supervisor 的本地 Ethereum JSON-RPC；Android 模拟器侧对应 10.0.2.2:42515。
   rpc_url: "http://127.0.0.1:42515"
-  broker_chain_url: "https://dash.broker-chain.com:443/"
+  broker_chain_url: "http://127.0.0.1:56741/"
   use_broker_chain: false
 
 server:
@@ -16,7 +16,9 @@ mysql:
   connection_max_lifetime_seconds: 300
 
 ipfs:
-  gateway: "http://127.0.0.1:8080/ipfs/"
+  gateway: "http://127.0.0.1:8083/ipfs/"
+  # Optional extra gateways tried after gateway for normal IPFS CIDs.
+  fallback_gateways: []
 
 oracle:
   gold_api_url: "https://api.gold-api.com/price/XAU"

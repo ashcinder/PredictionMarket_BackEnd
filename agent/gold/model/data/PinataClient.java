@@ -2,6 +2,8 @@ package com.example.brokerfi.xc.agent.gold.model.data;
 
 import android.util.Log;
 
+import com.example.brokerfi.xc.agent.config.AgentConfig;
+
 import org.json.JSONObject;
 
 import java.io.OutputStream;
@@ -18,13 +20,8 @@ import java.util.Scanner;
 public class PinataClient {
     private static final String TAG = "LocalIPFSClient";
 
-    // ---------------------------------------------------------
-    // IP 配置说明：
-    // 1. Android Studio 模拟器访问 Mac 宿主机，固定使用 10.0.2.2
-    // 2. 如果你是真机调试，请修改为 Mac 的局域网 IP (如 http://192.168.1.100:8080/ipfs/)
-    // ---------------------------------------------------------
-    public static final String IPFS_GATEWAY = "http://10.0.2.2:8080/ipfs/";
-    private static final String IPFS_API_ADD = "http://10.0.2.2:5001/api/v0/add";
+    public static final String IPFS_GATEWAY = AgentConfig.IPFS_GATEWAY_URL;
+    private static final String IPFS_API_ADD = AgentConfig.IPFS_API_ADD_URL;
 
     /**
      * 将 JSON 元数据上传到本地 IPFS 节点
@@ -88,9 +85,8 @@ public class PinataClient {
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("GET");
 
-        // 局域网内请求速度极快，超时时间可以设置得更短
-        conn.setConnectTimeout(5000);
-        conn.setReadTimeout(5000);
+        conn.setConnectTimeout(AgentConfig.IPFS_CONNECT_TIMEOUT_MS);
+        conn.setReadTimeout(AgentConfig.IPFS_READ_TIMEOUT_MS);
 
         if (conn.getResponseCode() != 200) {
             throw new Exception("本地 IPFS 读取失败: HTTP " + conn.getResponseCode());

@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.util.Log;
 
+import com.example.brokerfi.xc.agent.config.AgentConfig;
 import com.google.gson.Gson;
 import com.google.gson.annotations.SerializedName;
 
@@ -21,11 +22,11 @@ import java.util.concurrent.Executors;
 public class DeepSeekClient {
 
     private static final String TAG = "DeepSeekClient";
-    private static final String API_URL = "https://api.deepseek.com/chat/completions";
+    private static final String API_URL = AgentConfig.DEEPSEEK_API_URL;
     private static final String PREFS_NAME = "deepseek_prefs";
     private static final String KEY_API_KEY = "api_key";
-    private static final int CONNECT_TIMEOUT_MS = 15000;
-    private static final int READ_TIMEOUT_MS = 45000;
+    private static final int CONNECT_TIMEOUT_MS = AgentConfig.AI_CONNECT_TIMEOUT_MS;
+    private static final int READ_TIMEOUT_MS = AgentConfig.AI_READ_TIMEOUT_MS;
 
     private static Context appContext;
     private static final Gson gson = new Gson();
@@ -66,7 +67,7 @@ public class DeepSeekClient {
         messages.add(new Message("user", userMessage));
 
         ChatRequest request = new ChatRequest();
-        request.model = "deepseek-chat";
+        request.model = AgentConfig.DEEPSEEK_MODEL;
         request.messages = messages;
         request.temperature = 0.7;
         request.maxTokens = 1024;
@@ -86,7 +87,7 @@ public class DeepSeekClient {
         messages.add(new Message("user", userMessage));
 
         ChatRequest request = new ChatRequest();
-        request.model = "deepseek-chat";
+        request.model = AgentConfig.DEEPSEEK_MODEL;
         request.messages = messages;
         request.temperature = 0.1;
         request.maxTokens = 2048;

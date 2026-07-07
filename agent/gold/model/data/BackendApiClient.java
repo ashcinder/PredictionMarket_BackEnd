@@ -4,7 +4,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.util.Log;
 
-import com.example.brokerfi.BuildConfig;
+import com.example.brokerfi.xc.agent.config.AgentConfig;
 import com.google.gson.Gson;
 import com.google.gson.annotations.SerializedName;
 import com.google.gson.reflect.TypeToken;
@@ -34,26 +34,22 @@ import java.util.Scanner;
  * 后端 API 基础路径：{BASE_URL}/api/v1/gold/
  *
  * URL 自动切换规则：
- * - Debug 构建：http://10.0.2.2:8081  （Android 模拟器 → 宿主机 localhost）
- * - Release 构建：https://dash.broker-chain.com:440 （生产服务器）
+ * - local 分支默认：AgentConfig.BACKEND_BASE_URL（Android 模拟器 → 宿主机 localhost）
  * - 可手动覆盖：SharedPreferences "backend_prefs" → "base_url"
  */
 public class BackendApiClient {
     private static final String TAG = "BackendApiClient";
 
-    // ── URL 配置 ──
-    private static final String PROD_BASE_URL = "https://dash.broker-chain.com:440";
-    // Android 模拟器中 10.0.2.2 = 宿主机 localhost
-    // 真机调试请改为电脑局域网 IP，如 http://192.168.1.100:8081
-    private static final String DEV_BASE_URL = "http://10.0.2.2:8081";
     private static final String PREFS_NAME = "backend_prefs";
     private static final String KEY_BASE_URL = "base_url";
 
-    private static final String API_PREFIX = "/api/v1/gold";
+    private static final String API_PREFIX = AgentConfig.BACKEND_GOLD_API_PREFIX;
 
     private static final Gson gson = new Gson();
-    private static final int CONNECT_TIMEOUT_MS = 8000;
-    private static final int READ_TIMEOUT_MS = 10000;
+    private static final int CONNECT_TIMEOUT_MS = AgentConfig.HTTP_CONNECT_TIMEOUT_MS;
+    private static final int READ_TIMEOUT_MS = AgentConfig.HTTP_READ_TIMEOUT_MS;
+    private static final int FAST_WRITE_CONNECT_TIMEOUT_MS = AgentConfig.FAST_WRITE_CONNECT_TIMEOUT_MS;
+    private static final int FAST_WRITE_READ_TIMEOUT_MS = AgentConfig.FAST_WRITE_READ_TIMEOUT_MS;
 
     private static String cachedBaseUrl = null;
 
@@ -75,13 +71,9 @@ public class BackendApiClient {
             }
         }
 
-        // 2. 根据构建类型自动选择
-        if (BuildConfig.DEBUG) {
-            cachedBaseUrl = DEV_BASE_URL;
-        } else {
-            cachedBaseUrl = PROD_BASE_URL;
-        }
-        Log.d(TAG, "Base URL 自动选择: " + cachedBaseUrl + " (DEBUG=" + BuildConfig.DEBUG + ")");
+        // 2. local 分支始终使用本地后端，避免 Release 包回退到远程服务器
+        cachedBaseUrl = AgentConfig.BACKEND_BASE_URL;
+        Log.d(TAG, "Base URL 自动选择: " + cachedBaseUrl + " (local-supervisor)");
         return cachedBaseUrl;
     }
 
@@ -112,10 +104,10 @@ public class BackendApiClient {
     // ==================== 内部 HTTP 工具 ====================
 
     private static String resolveBaseUrl() {
-        // 无 Context 时的回退：优先 dev，因为这里主要被 GoldMarketRepository 调用
+        // 无 Context 时的回退：local 分支始终使用本地后端
         // GoldMarketRepository 有 Context，调用前会通过 getBaseUrl(ctx) 触发缓存
         if (cachedBaseUrl != null) return cachedBaseUrl;
-        return BuildConfig.DEBUG ? DEV_BASE_URL : PROD_BASE_URL;
+        return AgentConfig.BACKEND_BASE_URL;
     }
 
     private static String doGet(String path) throws Exception {
@@ -142,6 +134,11 @@ public class BackendApiClient {
     }
 
     private static String doPost(String path, String jsonBody) throws Exception {
+        return doPost(path, jsonBody, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS);
+    }
+
+    private static String doPost(String path, String jsonBody,
+                                 int connectTimeoutMs, int readTimeoutMs) throws Exception {
         String base = resolveBaseUrl();
         String fullUrl = base + API_PREFIX + path;
         Log.d(TAG, "POST " + fullUrl);
@@ -151,8 +148,8 @@ public class BackendApiClient {
         conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
         conn.setRequestProperty("Accept", "application/json");
         conn.setDoOutput(true);
-        conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
-        conn.setReadTimeout(READ_TIMEOUT_MS);
+        conn.setConnectTimeout(connectTimeoutMs);
+        conn.setReadTimeout(readTimeoutMs);
 
         try (OutputStream os = conn.getOutputStream()) {
             os.write(jsonBody.getBytes(StandardCharsets.UTF_8));
@@ -296,7 +293,9 @@ public class BackendApiClient {
      * Body: TradeSyncReq
      */
     public static boolean syncTrade(TradeSyncReq req) throws Exception {
-        String body = doPost("/trades/sync", gson.toJson(req));
+        // 交易已经链上确认；缓存写入不应因后端抖动长时间阻塞成功反馈。
+        String body = doPost("/trades/sync", gson.toJson(req),
+                FAST_WRITE_CONNECT_TIMEOUT_MS, FAST_WRITE_READ_TIMEOUT_MS);
         JSONObject json = new JSONObject(body);
         return json.optBoolean("success", false);
     }
