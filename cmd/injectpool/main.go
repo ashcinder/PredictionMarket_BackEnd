@@ -1,13 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	crand "crypto/rand"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"math"
 	"math/big"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -16,18 +22,24 @@ import (
 	"PredictionMarket/internal/database"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	mysql "github.com/go-sql-driver/mysql"
 	"gopkg.in/yaml.v3"
 )
 
 const (
-	defaultConfigPath        = "config.yaml"
-	defaultAmountBKC         = "1"
-	defaultTimeout           = 2 * time.Minute
-	defaultMySQLMaxOpenConns = 10
-	defaultMySQLMaxIdleConns = 2
-	defaultMySQLConnLifetime = 5 * time.Minute
+	defaultConfigPath         = "config.yaml"
+	defaultAmountBKC          = "1"
+	defaultTimeout            = 2 * time.Minute
+	defaultMySQLMaxOpenConns  = 10
+	defaultMySQLMaxIdleConns  = 2
+	defaultMySQLConnLifetime  = 5 * time.Minute
+	defaultRandomParticipants = 6
+	defaultRandomMinBKC       = "0.2"
+	defaultRandomMaxBKC       = "2"
+	generatedBuyGasLimit      = 8_000_000
+	nativeTransferGasLimit    = 21_000
 
 	mysqlDSNEnvName      = "PREDICTIONMARKET_MYSQL_DSN"
 	mysqlDatabaseEnvName = "PREDICTIONMARKET_MYSQL_DATABASE"
@@ -55,6 +67,8 @@ type options struct {
 	keysRaw        string
 	keysFile       string
 	amountBKC      string
+	randomMinBKC   string
+	randomMaxBKC   string
 	optionPattern  string
 	participants   int
 	contractAddr   string
@@ -73,6 +87,8 @@ type participant struct {
 	privateKey string
 	address    string
 	optionID   int
+	amountWei  *big.Int
+	generated  bool
 }
 
 type marketState struct {
@@ -136,6 +152,17 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("invalid -amount-bkc: %w", err)
 	}
+	randomMinWei, err := parseBKCToWei(opts.randomMinBKC)
+	if err != nil {
+		return fmt.Errorf("invalid -random-min-bkc: %w", err)
+	}
+	randomMaxWei, err := parseBKCToWei(opts.randomMaxBKC)
+	if err != nil {
+		return fmt.Errorf("invalid -random-max-bkc: %w", err)
+	}
+	if randomMinWei.Cmp(randomMaxWei) > 0 {
+		return errors.New("-random-min-bkc must be less than or equal to -random-max-bkc")
+	}
 	optionPattern, err := parseOptionPattern(opts.optionPattern)
 	if err != nil {
 		return err
@@ -144,21 +171,39 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if opts.participants > 0 {
+	if len(keys) > 0 && opts.participants > 0 {
 		if opts.participants > len(keys) {
 			return fmt.Errorf("-participants=%d but only %d private keys were provided", opts.participants, len(keys))
 		}
 		keys = keys[:opts.participants]
 	}
-	participants, err := buildParticipants(keys, optionPattern)
-	if err != nil {
-		return err
+
+	var participants []participant
+	if len(keys) == 0 {
+		count := opts.participants
+		if count <= 0 {
+			count = defaultRandomParticipants
+		}
+		participants, err = buildRandomParticipants(count, optionPattern, randomMinWei, randomMaxWei)
+		if err != nil {
+			return err
+		}
+	} else {
+		participants, err = buildParticipants(keys, optionPattern, amountWei)
+		if err != nil {
+			return err
+		}
 	}
 
-	fmt.Printf("injectpool: game_id=%d participants=%d amount=%s BKC contract=%s\n",
-		opts.gameID, len(participants), opts.amountBKC, normalizeAddress(cfg.Chain.ContractAddress))
+	fmt.Printf("injectpool: game_id=%d participants=%d contract=%s\n",
+		opts.gameID, len(participants), normalizeAddress(cfg.Chain.ContractAddress))
 	for i, p := range participants {
-		fmt.Printf("  #%d %s option=%s\n", i+1, p.address, optionName(p.optionID))
+		source := "provided"
+		if p.generated {
+			source = "generated"
+		}
+		fmt.Printf("  #%d %s option=%s amount_wei=%s source=%s\n",
+			i+1, p.address, optionName(p.optionID), bigIntString(p.amountWei), source)
 	}
 	if opts.dryRun {
 		fmt.Println("injectpool: dry-run enabled; no chain transaction or database write was executed")
@@ -167,6 +212,15 @@ func run() error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout)
 	defer cancel()
+
+	if hasGeneratedParticipants(participants) {
+		if cfg.Chain.UseBrokerChain {
+			return errors.New("automatic random participants require local RPC funding; use -local-rpc or provide funded keys for BrokerChain mode")
+		}
+		if err := fundGeneratedParticipants(ctx, cfg, participants); err != nil {
+			return err
+		}
+	}
 
 	db, err := database.OpenMySQL(ctx, database.Config{
 		DSN:                   cfg.MySQL.DSN,
@@ -186,7 +240,7 @@ func run() error {
 				return err
 			}
 		}
-		if err := injectParticipant(ctx, cfg, writer, opts.gameID, amountWei, p, i+1, len(participants)); err != nil {
+		if err := injectParticipant(ctx, cfg, writer, opts.gameID, p, i+1, len(participants)); err != nil {
 			return err
 		}
 	}
@@ -201,8 +255,10 @@ func parseFlags() *options {
 	flag.StringVar(&opts.keysRaw, "keys", "", "comma-separated participant private keys")
 	flag.StringVar(&opts.keysFile, "keys-file", "", "file with one participant private key per line")
 	flag.StringVar(&opts.amountBKC, "amount-bkc", defaultAmountBKC, "BKC amount each participant spends")
+	flag.StringVar(&opts.randomMinBKC, "random-min-bkc", defaultRandomMinBKC, "minimum random BKC amount when keys are omitted")
+	flag.StringVar(&opts.randomMaxBKC, "random-max-bkc", defaultRandomMaxBKC, "maximum random BKC amount when keys are omitted")
 	flag.StringVar(&opts.optionPattern, "options", "", "comma-separated option pattern: yes/no or 0/1; default alternates YES,NO")
-	flag.IntVar(&opts.participants, "participants", 0, "limit number of provided keys to use; default uses all")
+	flag.IntVar(&opts.participants, "participants", 0, "number of random participants when keys are omitted; otherwise limit provided keys")
 	flag.StringVar(&opts.contractAddr, "contract", "", "override chain.contract_address")
 	flag.StringVar(&opts.rpcURL, "rpc", "", "override chain.rpc_url")
 	flag.StringVar(&opts.brokerChainURL, "broker-url", "", "override chain.broker_chain_url")
@@ -320,13 +376,10 @@ func loadParticipantKeys(raw string, file string) ([]string, error) {
 			}
 		}
 	}
-	if len(keys) == 0 {
-		return nil, errors.New("provide participant private keys with -keys or -keys-file")
-	}
 	return keys, nil
 }
 
-func buildParticipants(keys []string, pattern []int) ([]participant, error) {
+func buildParticipants(keys []string, pattern []int, amountWei *big.Int) ([]participant, error) {
 	out := make([]participant, 0, len(keys))
 	seen := map[string]struct{}{}
 	for i, key := range keys {
@@ -344,9 +397,115 @@ func buildParticipants(keys []string, pattern []int) ([]participant, error) {
 			privateKey: canonicalKey,
 			address:    addr,
 			optionID:   optionForIndex(i, pattern),
+			amountWei:  new(big.Int).Set(amountWei),
 		})
 	}
 	return out, nil
+}
+
+func buildRandomParticipants(count int, pattern []int, minAmountWei *big.Int, maxAmountWei *big.Int) ([]participant, error) {
+	if count <= 0 {
+		return nil, errors.New("random participant count must be positive")
+	}
+	if minAmountWei == nil || maxAmountWei == nil || minAmountWei.Sign() <= 0 || maxAmountWei.Sign() <= 0 {
+		return nil, errors.New("random amount range must be positive")
+	}
+	if minAmountWei.Cmp(maxAmountWei) > 0 {
+		return nil, errors.New("random amount minimum exceeds maximum")
+	}
+
+	options, err := randomOptionIDs(count, pattern)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]participant, 0, count)
+	seen := map[string]struct{}{}
+	for i := 0; i < count; i++ {
+		key, err := crypto.GenerateKey()
+		if err != nil {
+			return nil, fmt.Errorf("generate participant key #%d: %w", i+1, err)
+		}
+		privateKeyHex := hex.EncodeToString(crypto.FromECDSA(key))
+		address := normalizeAddress(crypto.PubkeyToAddress(key.PublicKey).Hex())
+		if _, ok := seen[address]; ok {
+			i--
+			continue
+		}
+		seen[address] = struct{}{}
+
+		amountWei, err := randomAmountWeiInRange(minAmountWei, maxAmountWei)
+		if err != nil {
+			return nil, fmt.Errorf("generate participant amount #%d: %w", i+1, err)
+		}
+		out = append(out, participant{
+			privateKey: privateKeyHex,
+			address:    address,
+			optionID:   options[i],
+			amountWei:  amountWei,
+			generated:  true,
+		})
+	}
+	return out, nil
+}
+
+func randomOptionIDs(count int, pattern []int) ([]int, error) {
+	out := make([]int, count)
+	if len(pattern) > 0 {
+		for i := range out {
+			out[i] = optionForIndex(i, pattern)
+		}
+		return out, nil
+	}
+	for i := range out {
+		out[i] = i % 2
+	}
+	for i := len(out) - 1; i > 0; i-- {
+		jBig, err := crand.Int(crand.Reader, big.NewInt(int64(i+1)))
+		if err != nil {
+			return nil, err
+		}
+		j := int(jBig.Int64())
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
+}
+
+func randomBigIntInRange(min *big.Int, max *big.Int) (*big.Int, error) {
+	width := new(big.Int).Sub(max, min)
+	width.Add(width, big.NewInt(1))
+	offset, err := crand.Int(crand.Reader, width)
+	if err != nil {
+		return nil, err
+	}
+	return offset.Add(offset, min), nil
+}
+
+func randomAmountWeiInRange(min *big.Int, max *big.Int) (*big.Int, error) {
+	step := randomAmountStepWei()
+	minUnits := ceilDiv(min, step)
+	maxUnits := new(big.Int).Div(max, step)
+	if minUnits.Cmp(maxUnits) > 0 {
+		return randomBigIntInRange(min, max)
+	}
+	unit, err := randomBigIntInRange(minUnits, maxUnits)
+	if err != nil {
+		return nil, err
+	}
+	return unit.Mul(unit, step), nil
+}
+
+func randomAmountStepWei() *big.Int {
+	value, _ := parseBKCToWei("0.01")
+	return value
+}
+
+func ceilDiv(value *big.Int, divisor *big.Int) *big.Int {
+	result := new(big.Int).Div(value, divisor)
+	remainder := new(big.Int).Mod(value, divisor)
+	if remainder.Sign() > 0 {
+		result.Add(result, big.NewInt(1))
+	}
+	return result
 }
 
 func optionForIndex(index int, pattern []int) int {
@@ -422,7 +581,194 @@ func isDecimalDigits(value string) bool {
 	return true
 }
 
-func injectParticipant(ctx context.Context, cfg *rawConfig, writer *dbWriter, gameID int, amountWei *big.Int, p participant, index int, total int) error {
+func hasGeneratedParticipants(participants []participant) bool {
+	for _, p := range participants {
+		if p.generated {
+			return true
+		}
+	}
+	return false
+}
+
+func fundGeneratedParticipants(ctx context.Context, cfg *rawConfig, participants []participant) error {
+	funderKey := strings.TrimPrefix(strings.TrimSpace(cfg.Chain.PrivateKey), "0x")
+	funder, err := crypto.HexToECDSA(funderKey)
+	if err != nil {
+		return fmt.Errorf("chain.private_key is required and must be valid to fund generated random participants: %w", err)
+	}
+	funderAddress := normalizeAddress(crypto.PubkeyToAddress(funder.PublicKey).Hex())
+	rpc := &localRPCClient{
+		url:    cfg.Chain.RPCURL,
+		client: &http.Client{Timeout: 30 * time.Second},
+	}
+	gasPrice, err := rpc.quantity(ctx, "eth_gasPrice", nil)
+	if err != nil {
+		return fmt.Errorf("read local gas price for generated participants: %w", err)
+	}
+	for i, p := range participants {
+		if !p.generated {
+			continue
+		}
+		amount := generatedParticipantFunding(p.amountWei, gasPrice)
+		fmt.Printf("injectpool: funding generated participant #%d %s with %s wei from %s\n",
+			i+1, p.address, amount.String(), funderAddress)
+		txHash, err := rpc.sendNativeTransfer(ctx, funderKey, p.address, amount)
+		if err != nil {
+			return fmt.Errorf("fund generated participant #%d: %w", i+1, err)
+		}
+		fmt.Printf("injectpool: funded generated participant #%d tx=%s\n", i+1, txHash)
+	}
+	return nil
+}
+
+func generatedParticipantFunding(stakeWei *big.Int, gasPrice *big.Int) *big.Int {
+	amount := new(big.Int)
+	if stakeWei != nil {
+		amount.Set(stakeWei)
+	}
+	if gasPrice != nil && gasPrice.Sign() > 0 {
+		amount.Add(amount, new(big.Int).Mul(gasPrice, big.NewInt(generatedBuyGasLimit)))
+	}
+	amount.Add(amount, generatedFundingBufferWei())
+	return amount
+}
+
+func generatedFundingBufferWei() *big.Int {
+	value, _ := parseBKCToWei("0.02")
+	return value
+}
+
+type localRPCClient struct {
+	url    string
+	client interface {
+		Do(*http.Request) (*http.Response, error)
+	}
+}
+
+type localRPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+func (c *localRPCClient) call(ctx context.Context, method string, params []interface{}, out interface{}) error {
+	payload, err := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  method,
+		"params":  params,
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	var envelope struct {
+		Result json.RawMessage `json:"result"`
+		Error  *localRPCError  `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return fmt.Errorf("decode %s response: %w", method, err)
+	}
+	if envelope.Error != nil {
+		return fmt.Errorf("%s RPC error %d: %s", method, envelope.Error.Code, envelope.Error.Message)
+	}
+	if out == nil {
+		return nil
+	}
+	return json.Unmarshal(envelope.Result, out)
+}
+
+func (c *localRPCClient) quantity(ctx context.Context, method string, params []interface{}) (*big.Int, error) {
+	var encoded string
+	if err := c.call(ctx, method, params, &encoded); err != nil {
+		return nil, err
+	}
+	value := new(big.Int)
+	if _, ok := value.SetString(strings.TrimPrefix(encoded, "0x"), 16); !ok {
+		return nil, fmt.Errorf("%s returned invalid quantity %q", method, encoded)
+	}
+	return value, nil
+}
+
+func (c *localRPCClient) sendNativeTransfer(ctx context.Context, privateKeyHex string, toAddress string, value *big.Int) (string, error) {
+	privateKey, err := crypto.HexToECDSA(strings.TrimPrefix(strings.TrimSpace(privateKeyHex), "0x"))
+	if err != nil {
+		return "", err
+	}
+	from := crypto.PubkeyToAddress(privateKey.PublicKey).Hex()
+	chainID, err := c.quantity(ctx, "eth_chainId", nil)
+	if err != nil {
+		return "", err
+	}
+	nonce, err := c.quantity(ctx, "eth_getTransactionCount", []interface{}{from, "pending"})
+	if err != nil {
+		return "", err
+	}
+	gasPrice, err := c.quantity(ctx, "eth_gasPrice", nil)
+	if err != nil {
+		return "", err
+	}
+	tx := types.NewTransaction(
+		nonce.Uint64(),
+		common.HexToAddress(toAddress),
+		value,
+		nativeTransferGasLimit,
+		gasPrice,
+		nil,
+	)
+	signed, err := types.SignTx(tx, types.NewLondonSigner(chainID), privateKey)
+	if err != nil {
+		return "", err
+	}
+	raw, err := signed.MarshalBinary()
+	if err != nil {
+		return "", err
+	}
+	var txHash string
+	if err := c.call(ctx, "eth_sendRawTransaction", []interface{}{"0x" + hex.EncodeToString(raw)}, &txHash); err != nil {
+		return "", err
+	}
+	if txHash == "" {
+		return "", errors.New("local rpc returned empty transfer tx hash")
+	}
+	if err := c.waitForReceipt(ctx, txHash); err != nil {
+		return txHash, err
+	}
+	return txHash, nil
+}
+
+func (c *localRPCClient) waitForReceipt(ctx context.Context, txHash string) error {
+	for i := 0; i < 12; i++ {
+		var receipt struct {
+			Status string `json:"status"`
+		}
+		err := c.call(ctx, "eth_getTransactionReceipt", []interface{}{txHash}, &receipt)
+		if err == nil && receipt.Status != "" {
+			if receipt.Status == "0x0" {
+				return errors.New("native transfer reverted on chain")
+			}
+			return nil
+		}
+		if err := sleepWithContext(ctx, 2500*time.Millisecond); err != nil {
+			return err
+		}
+	}
+	return errors.New("native transfer not confirmed within timeout")
+}
+
+func injectParticipant(ctx context.Context, cfg *rawConfig, writer *dbWriter, gameID int, p participant, index int, total int) error {
 	client, err := chain.NewClient(
 		p.privateKey,
 		cfg.Chain.ContractAddress,
@@ -436,7 +782,7 @@ func injectParticipant(ctx context.Context, cfg *rawConfig, writer *dbWriter, ga
 	defer client.Close()
 
 	fmt.Printf("injectpool: [%d/%d] %s buying %s with %s wei\n",
-		index, total, p.address, optionName(p.optionID), amountWei.String())
+		index, total, p.address, optionName(p.optionID), p.amountWei.String())
 
 	preState, err := queryMarketState(ctx, client, gameID, p.address)
 	if err != nil {
@@ -447,7 +793,7 @@ func injectParticipant(ctx context.Context, cfg *rawConfig, writer *dbWriter, ga
 	if err != nil {
 		return fmt.Errorf("participant #%d encode buyShares: %w", index, err)
 	}
-	txHash, err := client.SendTransaction(ctx, data, amountWei)
+	txHash, err := client.SendTransaction(ctx, data, p.amountWei)
 	if err != nil {
 		return fmt.Errorf("participant #%d send transaction: %w", index, err)
 	}
@@ -468,7 +814,7 @@ func injectParticipant(ctx context.Context, cfg *rawConfig, writer *dbWriter, ga
 		contractAddress:  normalizeAddress(cfg.Chain.ContractAddress),
 		userAddress:      p.address,
 		optionID:         p.optionID,
-		amountWei:        new(big.Int).Set(amountWei),
+		amountWei:        new(big.Int).Set(p.amountWei),
 		shareAmountWei:   shareDelta,
 		txHash:           txHash,
 		timestampSec:     time.Now().Unix(),

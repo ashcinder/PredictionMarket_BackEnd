@@ -54,6 +54,85 @@ func TestParseOptionPattern(t *testing.T) {
 	}
 }
 
+func TestLoadParticipantKeysAllowsAutomaticRandomMode(t *testing.T) {
+	keys, err := loadParticipantKeys("", "")
+	if err != nil {
+		t.Fatalf("loadParticipantKeys returned error: %v", err)
+	}
+	if len(keys) != 0 {
+		t.Fatalf("loadParticipantKeys returned %d keys, want 0", len(keys))
+	}
+}
+
+func TestBuildRandomParticipantsUsesReasonableRanges(t *testing.T) {
+	minAmount, err := parseBKCToWei("0.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	maxAmount, err := parseBKCToWei("2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepAmount, err := parseBKCToWei("0.01")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	participants, err := buildRandomParticipants(7, nil, minAmount, maxAmount)
+	if err != nil {
+		t.Fatalf("buildRandomParticipants error: %v", err)
+	}
+	if len(participants) != 7 {
+		t.Fatalf("participant count = %d, want 7", len(participants))
+	}
+
+	seenAddresses := map[string]struct{}{}
+	yesCount := 0
+	noCount := 0
+	for _, p := range participants {
+		if p.privateKey == "" {
+			t.Fatal("generated participant has empty private key")
+		}
+		if p.address == "" {
+			t.Fatal("generated participant has empty address")
+		}
+		if _, ok := seenAddresses[p.address]; ok {
+			t.Fatalf("duplicate generated address %s", p.address)
+		}
+		seenAddresses[p.address] = struct{}{}
+		if p.amountWei.Cmp(minAmount) < 0 || p.amountWei.Cmp(maxAmount) > 0 {
+			t.Fatalf("amount %s outside range [%s,%s]", p.amountWei, minAmount, maxAmount)
+		}
+		if new(big.Int).Mod(p.amountWei, stepAmount).Sign() != 0 {
+			t.Fatalf("amount %s is not aligned to 0.01 BKC", p.amountWei)
+		}
+		switch p.optionID {
+		case 0:
+			yesCount++
+		case 1:
+			noCount++
+		default:
+			t.Fatalf("optionID = %d, want 0 or 1", p.optionID)
+		}
+	}
+	if yesCount < 3 || noCount < 3 {
+		t.Fatalf("options are not balanced enough: yes=%d no=%d", yesCount, noCount)
+	}
+}
+
+func TestGeneratedParticipantFundingCoversStakeAndBuyGas(t *testing.T) {
+	stake := big.NewInt(1_000_000_000_000_000_000)
+	gasPrice := big.NewInt(2)
+	got := generatedParticipantFunding(stake, gasPrice)
+
+	want := new(big.Int).Set(stake)
+	want.Add(want, new(big.Int).Mul(gasPrice, big.NewInt(generatedBuyGasLimit)))
+	want.Add(want, generatedFundingBufferWei())
+	if got.Cmp(want) != 0 {
+		t.Fatalf("generatedParticipantFunding = %s, want %s", got, want)
+	}
+}
+
 func TestShareDeltaForOption(t *testing.T) {
 	before := &chain.GameExtraData{MySharesYESNO: []*big.Int{big.NewInt(10), big.NewInt(4)}}
 	after := &chain.GameExtraData{MySharesYESNO: []*big.Int{big.NewInt(17), big.NewInt(4)}}
