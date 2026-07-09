@@ -87,6 +87,27 @@ func TestLoadFileReadsCompleteYAML(t *testing.T) {
 	}
 }
 
+func TestLoadFileAcceptsTestInjectionSection(t *testing.T) {
+	body := validYAML + `
+test_injection:
+  enabled: false
+  game_id: 1
+  participants: 6
+  amount_bkc: "1"
+  random_min_bkc: "0.2"
+  random_max_bkc: "2"
+  options: "yes,no"
+  keys:
+    - "0xabc"
+  keys_file: "participants.keys"
+  pause_seconds: 0.5
+  timeout_seconds: 120
+`
+	if _, err := LoadFile(writeTestConfig(t, body)); err != nil {
+		t.Fatalf("LoadFile rejected test_injection section: %v", err)
+	}
+}
+
 func TestRuntimeMySQLDSNOverride(t *testing.T) {
 	cfg, err := LoadFile(writeTestConfig(t, validYAML))
 	if err != nil {
@@ -260,7 +281,8 @@ func TestRepositoryConfigurationArtifactsUseYAML(t *testing.T) {
 	usable = strings.ReplaceAll(usable, "replace-with-mysql-password", "test-mysql-password")
 	for _, field := range []string{
 		"history_min_points", "history_max_points", "dsn", "max_open_connections",
-		"max_idle_connections", "connection_max_lifetime_seconds",
+		"max_idle_connections", "connection_max_lifetime_seconds", "test_injection",
+		"random_max_bkc", "participants",
 	} {
 		if !strings.Contains(string(example), field) {
 			t.Fatalf("example config does not mention %s", field)

@@ -8,6 +8,19 @@ chain:
 server:
   http_listen: ":8081"
 
+test_injection:
+  enabled: false
+  game_id: 0
+  participants: 6
+  amount_bkc: "1"
+  random_min_bkc: "0.2"
+  random_max_bkc: "2"
+  options: ""
+  keys: []
+  keys_file: ""
+  pause_seconds: 0
+  timeout_seconds: 120
+
 ipfs:
   gateway: "http://127.0.0.1:8083/ipfs/"
   fallback_gateways: []

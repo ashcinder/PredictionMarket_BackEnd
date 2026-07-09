@@ -97,6 +97,19 @@ type fileConfig struct {
 			TimeoutSeconds int     `yaml:"timeout_seconds"`
 		} `yaml:"providers"`
 	} `yaml:"aioracle"`
+	TestInjection struct {
+		Enabled        bool     `yaml:"enabled"`
+		GameID         int      `yaml:"game_id"`
+		Participants   int      `yaml:"participants"`
+		AmountBKC      string   `yaml:"amount_bkc"`
+		RandomMinBKC   string   `yaml:"random_min_bkc"`
+		RandomMaxBKC   string   `yaml:"random_max_bkc"`
+		Options        string   `yaml:"options"`
+		Keys           []string `yaml:"keys"`
+		KeysFile       string   `yaml:"keys_file"`
+		PauseSeconds   float64  `yaml:"pause_seconds"`
+		TimeoutSeconds int      `yaml:"timeout_seconds"`
+	} `yaml:"test_injection"`
 }
 
 type Config struct {

@@ -15,6 +15,20 @@ mysql:
   max_idle_connections: 10
   connection_max_lifetime_seconds: 300
 
+# Optional local-only tool config for injecting simulated pool participation.
+test_injection:
+  enabled: false
+  game_id: 0
+  participants: 6
+  amount_bkc: "1"
+  random_min_bkc: "0.2"
+  random_max_bkc: "2"
+  options: ""
+  keys: []
+  keys_file: ""
+  pause_seconds: 0
+  timeout_seconds: 120
+
 ipfs:
   gateway: "http://127.0.0.1:8083/ipfs/"
   # Optional extra gateways tried after gateway for normal IPFS CIDs.
