@@ -1,0 +1,58 @@
+# Copy this file to config.yaml and adjust values for your test environment.
+runtime:
+  enabled: true
+  # true: call createGame/buyShares on chain and then sync DB.
+  # false: only write simulated market/trade data to DB.
+  on_chain: false
+  # true: print the randomly generated plan only; no DB writes and no chain tx.
+  dry_run: true
+
+chain:
+  # Required only when runtime.on_chain=true. This account funds random users first.
+  private_key: "replace-with-funded-private-key"
+  contract_address: "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
+  rpc_url: "http://127.0.0.1:8545"
+  broker_chain_url: "https://dash.broker-chain.com:440/"
+  use_broker_chain: false
+
+mysql:
+  # Required when runtime.dry_run=false.
+  dsn: ""
+  max_open_connections: 10
+  max_idle_connections: 2
+  connection_max_lifetime_seconds: 300
+
+scenario:
+  # create_and_trade: random users create new markets and then buy.
+  # trade_existing: random users only buy configured existing_game_ids.
+  type: "create_and_trade"
+  market_count: 3
+  existing_game_ids: []
+  participants: 8
+  trades_per_market_min: 5
+  trades_per_market_max: 15
+
+market:
+  # Empty means use all supported types.
+  types:
+    - "TYPE_PRICE"
+    - "TYPE_VOLATILITY"
+    - "TYPE_VOLUME"
+    - "TYPE_TECHNICAL"
+    - "TYPE_TOUCH"
+    - "TYPE_RELATIVE"
+    - "TYPE_PRICE_THRESHOLD"
+    - "TYPE_EVENT"
+  initial_liquidity_min_bkc: "3"
+  initial_liquidity_max_bkc: "12"
+  duration_min_seconds: 3600
+  duration_max_seconds: 86400
+
+trade:
+  buy_min_bkc: "0.2"
+  buy_max_bkc: "2"
+  creator_also_trades: false
+
+timing:
+  pause_seconds: 0.2
+  timeout_seconds: 120
