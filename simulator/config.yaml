@@ -1,8 +1,11 @@
-# Local simulator config. The default is dry-run and safe to execute.
+# Local simulator config. The default only generates a reviewable preview plan.
 runtime:
   enabled: true
+  mode: "preview"
   on_chain: false
-  dry_run: true
+  plan_file: "out/simulator-plan.json"
+  approve_on_chain: false
+  dry_run: false
 
 chain:
   private_key: "replace-with-funded-private-key"

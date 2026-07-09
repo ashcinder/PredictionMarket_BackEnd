@@ -10,8 +10,11 @@ import (
 func TestLoadReadsSimulatorConfig(t *testing.T) {
 	path := writeConfig(t, `runtime:
   enabled: true
+  mode: "preview"
   on_chain: false
   dry_run: true
+  plan_file: "out/custom-plan.json"
+  approve_on_chain: false
 chain:
   private_key: "replace-with-private-key"
   contract_address: "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
@@ -49,6 +52,9 @@ timing:
 	if !cfg.Runtime.Enabled || cfg.Runtime.OnChain || !cfg.Runtime.DryRun {
 		t.Fatalf("unexpected runtime config: %+v", cfg.Runtime)
 	}
+	if cfg.Runtime.Mode != ModePreview || cfg.Runtime.PlanFile != "out/custom-plan.json" || cfg.Runtime.ApproveOnChain {
+		t.Fatalf("unexpected preview runtime config: %+v", cfg.Runtime)
+	}
 	if cfg.Scenario.Type != ScenarioCreateAndTrade || cfg.Scenario.MarketCount != 2 || cfg.Scenario.Participants != 5 {
 		t.Fatalf("unexpected scenario config: %+v", cfg.Scenario)
 	}
@@ -85,6 +91,53 @@ mysql:
 	}
 	if len(cfg.Market.Types) != 8 {
 		t.Fatalf("default market types = %d, want 8", len(cfg.Market.Types))
+	}
+	if cfg.Runtime.Mode != ModeExecute {
+		t.Fatalf("default runtime mode = %q, want %q", cfg.Runtime.Mode, ModeExecute)
+	}
+	if cfg.Runtime.PlanFile == "" {
+		t.Fatal("default runtime plan file is empty")
+	}
+}
+
+func TestLoadPreviewModeDoesNotRequireExecutionCredentials(t *testing.T) {
+	path := writeConfig(t, `runtime:
+  enabled: true
+  mode: "preview"
+  on_chain: true
+  plan_file: "out/preview.json"
+chain:
+  private_key: "replace-with-funded-private-key"
+  contract_address: "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
+  rpc_url: ""
+mysql:
+  dsn: ""
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Runtime.Mode != ModePreview || !cfg.Runtime.OnChain {
+		t.Fatalf("unexpected runtime config: %+v", cfg.Runtime)
+	}
+}
+
+func TestLoadRejectsExecuteOnChainWithoutApproval(t *testing.T) {
+	path := writeConfig(t, `runtime:
+  enabled: true
+  mode: "execute"
+  on_chain: true
+  plan_file: "out/preview.json"
+  approve_on_chain: false
+chain:
+  private_key: "abc123"
+  contract_address: "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
+  rpc_url: "http://127.0.0.1:8545"
+mysql:
+  dsn: "root:secret@tcp(127.0.0.1:3306)/predictionmarket_local?parseTime=true"
+`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load succeeded, want on-chain approval error")
 	}
 }
 

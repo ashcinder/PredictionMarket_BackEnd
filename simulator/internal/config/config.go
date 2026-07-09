@@ -19,13 +19,19 @@ import (
 const (
 	ScenarioCreateAndTrade = "create_and_trade"
 	ScenarioTradeExisting  = "trade_existing"
+
+	ModePreview = "preview"
+	ModeExecute = "execute"
 )
 
 type rawConfig struct {
 	Runtime struct {
-		Enabled bool `yaml:"enabled"`
-		OnChain bool `yaml:"on_chain"`
-		DryRun  bool `yaml:"dry_run"`
+		Enabled        bool   `yaml:"enabled"`
+		Mode           string `yaml:"mode"`
+		OnChain        bool   `yaml:"on_chain"`
+		DryRun         bool   `yaml:"dry_run"`
+		PlanFile       string `yaml:"plan_file"`
+		ApproveOnChain bool   `yaml:"approve_on_chain"`
 	} `yaml:"runtime"`
 	Chain struct {
 		PrivateKey      string `yaml:"private_key"`
@@ -77,9 +83,12 @@ type Config struct {
 }
 
 type RuntimeConfig struct {
-	Enabled bool
-	OnChain bool
-	DryRun  bool
+	Enabled        bool
+	Mode           string
+	OnChain        bool
+	DryRun         bool
+	PlanFile       string
+	ApproveOnChain bool
 }
 
 type ChainConfig struct {
@@ -144,6 +153,16 @@ func Load(path string) (*Config, error) {
 }
 
 func applyDefaults(raw *rawConfig) {
+	if strings.TrimSpace(raw.Runtime.Mode) == "" {
+		if raw.Runtime.DryRun {
+			raw.Runtime.Mode = ModePreview
+		} else {
+			raw.Runtime.Mode = ModeExecute
+		}
+	}
+	if strings.TrimSpace(raw.Runtime.PlanFile) == "" {
+		raw.Runtime.PlanFile = "out/simulator-plan.json"
+	}
 	if strings.TrimSpace(raw.Scenario.Type) == "" {
 		raw.Scenario.Type = ScenarioCreateAndTrade
 	}
@@ -195,6 +214,17 @@ func applyDefaults(raw *rawConfig) {
 }
 
 func validate(raw *rawConfig) error {
+	switch raw.Runtime.Mode {
+	case ModePreview, ModeExecute:
+	default:
+		return fmt.Errorf("runtime.mode must be %q or %q", ModePreview, ModeExecute)
+	}
+	if raw.Runtime.Mode == ModeExecute && raw.Runtime.DryRun {
+		return errors.New("runtime.dry_run cannot be true when runtime.mode is execute")
+	}
+	if strings.TrimSpace(raw.Runtime.PlanFile) == "" {
+		return errors.New("runtime.plan_file is required")
+	}
 	switch raw.Scenario.Type {
 	case ScenarioCreateAndTrade, ScenarioTradeExisting:
 	default:
@@ -203,8 +233,8 @@ func validate(raw *rawConfig) error {
 	if raw.Scenario.TradesPerMarketMin > raw.Scenario.TradesPerMarketMax {
 		return errors.New("scenario.trades_per_market_min must be <= trades_per_market_max")
 	}
-	if raw.Scenario.Type == ScenarioTradeExisting && !raw.Runtime.OnChain && !raw.Runtime.DryRun {
-		return errors.New("scenario.type=trade_existing requires runtime.on_chain=true or runtime.dry_run=true")
+	if raw.Scenario.Type == ScenarioTradeExisting && !raw.Runtime.OnChain && raw.Runtime.Mode == ModeExecute {
+		return errors.New("scenario.type=trade_existing requires runtime.on_chain=true when runtime.mode is execute")
 	}
 	if raw.Scenario.Participants < 2 && !raw.Trade.CreatorAlsoTrades {
 		return errors.New("scenario.participants must be at least 2 when trade.creator_also_trades is false")
@@ -226,16 +256,19 @@ func validate(raw *rawConfig) error {
 	if !common.IsHexAddress(raw.Chain.ContractAddress) {
 		return errors.New("chain.contract_address is invalid")
 	}
-	if raw.Runtime.OnChain {
+	if raw.Runtime.Mode == ModeExecute && raw.Runtime.OnChain {
+		if !raw.Runtime.ApproveOnChain {
+			return errors.New("runtime.approve_on_chain must be true to execute on-chain transactions")
+		}
 		if strings.TrimSpace(raw.Chain.PrivateKey) == "" || strings.HasPrefix(raw.Chain.PrivateKey, "replace-with-") {
-			return errors.New("chain.private_key is required when runtime.on_chain is true")
+			return errors.New("chain.private_key is required when executing on-chain transactions")
 		}
 		if raw.Chain.UseBrokerChain {
 			if strings.TrimSpace(raw.Chain.BrokerChainURL) == "" {
 				return errors.New("chain.broker_chain_url is required when use_broker_chain is true")
 			}
 		} else if strings.TrimSpace(raw.Chain.RPCURL) == "" {
-			return errors.New("chain.rpc_url is required when runtime.on_chain is true")
+			return errors.New("chain.rpc_url is required when executing on-chain transactions")
 		}
 	}
 	if strings.TrimSpace(raw.MySQL.DSN) != "" {
@@ -244,8 +277,8 @@ func validate(raw *rawConfig) error {
 			return errors.New("mysql.dsn is invalid")
 		}
 	}
-	if !raw.Runtime.DryRun && strings.TrimSpace(raw.MySQL.DSN) == "" {
-		return errors.New("mysql.dsn is required when runtime.dry_run is false")
+	if raw.Runtime.Mode == ModeExecute && strings.TrimSpace(raw.MySQL.DSN) == "" {
+		return errors.New("mysql.dsn is required when runtime.mode is execute")
 	}
 	return nil
 }
@@ -271,9 +304,12 @@ func validateBKCAmountRange(name string, minRaw string, maxRaw string) error {
 func buildConfig(raw *rawConfig) *Config {
 	return &Config{
 		Runtime: RuntimeConfig{
-			Enabled: raw.Runtime.Enabled,
-			OnChain: raw.Runtime.OnChain,
-			DryRun:  raw.Runtime.DryRun,
+			Enabled:        raw.Runtime.Enabled,
+			Mode:           raw.Runtime.Mode,
+			OnChain:        raw.Runtime.OnChain,
+			DryRun:         raw.Runtime.DryRun || raw.Runtime.Mode == ModePreview,
+			PlanFile:       strings.TrimSpace(raw.Runtime.PlanFile),
+			ApproveOnChain: raw.Runtime.ApproveOnChain,
 		},
 		Chain: ChainConfig{
 			PrivateKey:      strings.TrimSpace(raw.Chain.PrivateKey),

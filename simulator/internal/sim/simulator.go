@@ -51,31 +51,138 @@ func New(cfg *config.Config, logger Logger) *Simulator {
 }
 
 func (s *Simulator) Run(ctx context.Context) error {
-	if !s.cfg.Runtime.Enabled && !s.cfg.Runtime.DryRun {
-		return errors.New("runtime.enabled is false; set it true or run with runtime.dry_run=true")
+	if !s.cfg.Runtime.Enabled && s.cfg.Runtime.Mode != config.ModePreview {
+		return errors.New("runtime.enabled is false; set it true or run in runtime.mode=preview")
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.cfg.Timing.Timeout)
 	defer cancel()
 
-	participants, err := buildParticipants(s.cfg.Scenario.Participants)
-	if err != nil {
-		return err
-	}
-	s.logf("simulator: participants=%d on_chain=%t dry_run=%t scenario=%s",
-		len(participants), s.cfg.Runtime.OnChain, s.cfg.Runtime.DryRun, s.cfg.Scenario.Type)
-
-	var writer *dbwriter.Writer
-	if !s.cfg.Runtime.DryRun {
-		writer, err = dbwriter.Open(ctx, s.cfg.MySQL, s.cfg.Chain.ContractAddress)
+	if s.cfg.Runtime.Mode == config.ModePreview {
+		plan, err := s.buildPlan()
 		if err != nil {
 			return err
 		}
-		defer writer.Close()
+		if err := writePlan(s.cfg.Runtime.PlanFile, plan); err != nil {
+			return err
+		}
+		s.logPlan(plan)
+		s.logf("simulator: preview plan saved to %s; no database writes or chain transactions were sent", s.cfg.Runtime.PlanFile)
+		return nil
 	}
 
-	var funder *chain.Client
+	plan, err := readPlan(s.cfg.Runtime.PlanFile)
+	if err != nil {
+		return err
+	}
+	return s.executePlan(ctx, plan)
+}
+
+func (s *Simulator) buildPlan() (*Plan, error) {
+	participants, err := buildParticipants(s.cfg.Scenario.Participants)
+	if err != nil {
+		return nil, err
+	}
+	plan := newPlan(s.cfg.Scenario.Type)
+	for i, p := range participants {
+		plan.Participants = append(plan.Participants, PlanParticipant{
+			Index:      i,
+			Address:    p.address,
+			PrivateKey: p.privateKey,
+		})
+	}
+
+	switch s.cfg.Scenario.Type {
+	case config.ScenarioCreateAndTrade:
+		for i := 0; i < s.cfg.Scenario.MarketCount; i++ {
+			creatorIndex := i % len(participants)
+			creator := participants[creatorIndex]
+			market, initialWei, err := s.buildMarket(i, creator.address)
+			if err != nil {
+				return nil, err
+			}
+			pm := planMarketFromScenario(i+1, i+1, creatorIndex, market, initialWei)
+			pm.Trades, err = s.buildPlannedTrades(participants, creatorIndex)
+			if err != nil {
+				return nil, err
+			}
+			plan.Markets = append(plan.Markets, pm)
+		}
+	case config.ScenarioTradeExisting:
+		if len(s.cfg.Scenario.ExistingGameIDs) == 0 {
+			return nil, errors.New("scenario.existing_game_ids is required for trade_existing")
+		}
+		for i, gameID := range s.cfg.Scenario.ExistingGameIDs {
+			trades, err := s.buildPlannedTrades(participants, -1)
+			if err != nil {
+				return nil, err
+			}
+			plan.Markets = append(plan.Markets, PlanMarket{
+				Index:          i + 1,
+				ExistingGameID: gameID,
+				Trades:         trades,
+			})
+		}
+	default:
+		return nil, fmt.Errorf("unsupported scenario %q", s.cfg.Scenario.Type)
+	}
+	return plan, nil
+}
+
+func (s *Simulator) buildPlannedTrades(participants []participant, creatorIndex int) ([]PlanTrade, error) {
+	tradeCount := randomIntInRange(s.rng, s.cfg.Scenario.TradesPerMarketMin, s.cfg.Scenario.TradesPerMarketMax)
+	minWei, err := amount.ParseBKCToWei(s.cfg.Trade.BuyMinBKC)
+	if err != nil {
+		return nil, err
+	}
+	maxWei, err := amount.ParseBKCToWei(s.cfg.Trade.BuyMaxBKC)
+	if err != nil {
+		return nil, err
+	}
+	trades := make([]PlanTrade, 0, tradeCount)
+	for i := 0; i < tradeCount; i++ {
+		userIndex := s.rng.Intn(len(participants))
+		if !s.cfg.Trade.CreatorAlsoTrades && creatorIndex >= 0 {
+			for userIndex == creatorIndex {
+				userIndex = (userIndex + 1) % len(participants)
+			}
+		}
+		optionID := i % 2
+		if s.rng.Intn(2) == 1 {
+			optionID = 1 - optionID
+		}
+		amountWei, err := amount.RandomWeiInRange(minWei, maxWei)
+		if err != nil {
+			return nil, err
+		}
+		trades = append(trades, PlanTrade{
+			Index:     i + 1,
+			UserIndex: userIndex,
+			User:      participants[userIndex].address,
+			OptionID:  optionID,
+			Option:    optionName(optionID),
+			AmountBKC: weiToDisplayBKC(amountWei),
+			AmountWei: amountWei.String(),
+		})
+	}
+	return trades, nil
+}
+
+func (s *Simulator) executePlan(ctx context.Context, plan *Plan) error {
+	participants, err := participantsFromPlan(plan)
+	if err != nil {
+		return err
+	}
+	s.logf("simulator: executing plan=%s participants=%d on_chain=%t scenario=%s",
+		s.cfg.Runtime.PlanFile, len(participants), s.cfg.Runtime.OnChain, plan.Scenario)
+
+	writer, err := dbwriter.Open(ctx, s.cfg.MySQL, s.cfg.Chain.ContractAddress)
+	if err != nil {
+		return err
+	}
+	defer writer.Close()
+
 	if s.cfg.Runtime.OnChain {
-		funder, err = chain.NewClient(
+		funder, err := chain.NewClient(
 			s.cfg.Chain.PrivateKey,
 			s.cfg.Chain.ContractAddress,
 			s.cfg.Chain.RPCURL,
@@ -85,35 +192,40 @@ func (s *Simulator) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if !s.cfg.Runtime.DryRun {
-			if err := s.fundParticipants(ctx, funder, participants); err != nil {
-				return err
-			}
+		if err := s.fundParticipantsForPlan(ctx, funder, participants, plan); err != nil {
+			return err
 		}
 	}
 
-	switch s.cfg.Scenario.Type {
+	switch plan.Scenario {
 	case config.ScenarioCreateAndTrade:
-		return s.runCreateAndTrade(ctx, writer, participants)
+		return s.executeCreateAndTradePlan(ctx, writer, participants, plan)
 	case config.ScenarioTradeExisting:
-		return s.runTradeExisting(ctx, writer, participants)
+		return s.executeExistingTradePlan(ctx, writer, participants, plan)
 	default:
-		return fmt.Errorf("unsupported scenario %q", s.cfg.Scenario.Type)
+		return fmt.Errorf("unsupported plan scenario %q", plan.Scenario)
 	}
 }
 
-func (s *Simulator) runCreateAndTrade(ctx context.Context, writer *dbwriter.Writer, participants []participant) error {
+func (s *Simulator) executeCreateAndTradePlan(ctx context.Context, writer *dbwriter.Writer, participants []participant, plan *Plan) error {
 	nextOffchainID := 1
-	if writer != nil && !s.cfg.Runtime.OnChain {
+	if !s.cfg.Runtime.OnChain {
 		id, err := writer.NextGameID(ctx)
 		if err != nil {
 			return err
 		}
 		nextOffchainID = id
 	}
-	for i := 0; i < s.cfg.Scenario.MarketCount; i++ {
-		creator := participants[i%len(participants)]
-		market, initialWei, err := s.buildMarket(i, creator.address)
+	for i, plannedMarket := range plan.Markets {
+		market, err := scenarioMarketFromPlan(plannedMarket)
+		if err != nil {
+			return err
+		}
+		initialWei, err := parseWei(plannedMarket.InitialLiquidityWei, "initial_liquidity_wei")
+		if err != nil {
+			return err
+		}
+		creator, err := participantAt(participants, plannedMarket.CreatorIndex)
 		if err != nil {
 			return err
 		}
@@ -122,98 +234,88 @@ func (s *Simulator) runCreateAndTrade(ctx context.Context, writer *dbwriter.Writ
 		var offchain *offchainMarketState
 
 		s.logf("simulator: create market #%d type=%s creator=%s initial=%s BKC cid=%s",
-			i+1, market.Type, creator.address, market.InitialLiquidity, market.IPFSCID)
+			plannedMarket.Index, market.Type, creator.address, market.InitialLiquidity, market.IPFSCID)
 		if s.cfg.Runtime.OnChain {
-			if s.cfg.Runtime.DryRun {
-				gameID = i + 1
-			} else {
-				client, err := chain.NewClient(creator.privateKey, s.cfg.Chain.ContractAddress, s.cfg.Chain.RPCURL, s.cfg.Chain.BrokerChainURL, s.cfg.Chain.UseBrokerChain)
-				if err != nil {
+			client, err := chain.NewClient(creator.privateKey, s.cfg.Chain.ContractAddress, s.cfg.Chain.RPCURL, s.cfg.Chain.BrokerChainURL, s.cfg.Chain.UseBrokerChain)
+			if err != nil {
+				return err
+			}
+			tx, err := client.CreateGame(ctx, market.IPFSCID, market.DurationSeconds, initialWei)
+			if err != nil {
+				return fmt.Errorf("create market #%d: %w", plannedMarket.Index, err)
+			}
+			s.logf("simulator: created market tx=%s", tx)
+			if s.cfg.Chain.UseBrokerChain {
+				if err := sleepWithContext(ctx, 8*time.Second); err != nil {
 					return err
 				}
-				tx, err := client.CreateGame(ctx, market.IPFSCID, market.DurationSeconds, initialWei)
-				if err != nil {
-					return fmt.Errorf("create market #%d: %w", i+1, err)
-				}
-				s.logf("simulator: created market tx=%s", tx)
-				gameID, err = client.GameCount(ctx)
-				if err != nil {
-					return fmt.Errorf("read gameCount after create: %w", err)
-				}
-				info, err = client.GetGameInfo(ctx, gameID)
-				if err != nil {
-					return fmt.Errorf("read created game info: %w", err)
-				}
+			}
+			gameID, err = client.GameCount(ctx)
+			if err != nil {
+				return fmt.Errorf("read gameCount after create: %w", err)
+			}
+			info, err = client.GetGameInfo(ctx, gameID)
+			if err != nil {
+				return fmt.Errorf("read created game info: %w", err)
 			}
 		} else {
 			offchain = newOffchainMarketState(gameID, market.IPFSCID, initialWei, time.Now().Add(time.Duration(market.DurationSeconds)*time.Second).Unix())
 			info = offchain.info
 		}
-		if writer != nil {
-			if err := writer.SyncCreatedMarket(ctx, gameID, market, info, initialWei, time.Now().Unix()); err != nil {
-				return err
-			}
+		if err := writer.SyncCreatedMarket(ctx, gameID, market, info, initialWei, time.Now().Unix()); err != nil {
+			return err
 		}
-		if err := s.runTradesForMarket(ctx, writer, participants, creator.address, gameID, offchain); err != nil {
+		if err := s.executePlannedTradesForMarket(ctx, writer, participants, gameID, offchain, plannedMarket.Trades); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Simulator) runTradeExisting(ctx context.Context, writer *dbwriter.Writer, participants []participant) error {
-	if len(s.cfg.Scenario.ExistingGameIDs) == 0 {
-		return errors.New("scenario.existing_game_ids is required for trade_existing")
+func (s *Simulator) executeExistingTradePlan(ctx context.Context, writer *dbwriter.Writer, participants []participant, plan *Plan) error {
+	if !s.cfg.Runtime.OnChain {
+		return errors.New("trade_existing execution requires runtime.on_chain=true")
 	}
-	for _, gameID := range s.cfg.Scenario.ExistingGameIDs {
-		if err := s.runTradesForMarket(ctx, writer, participants, "", gameID, nil); err != nil {
+	for _, plannedMarket := range plan.Markets {
+		if plannedMarket.ExistingGameID <= 0 {
+			return fmt.Errorf("market #%d missing existing_game_id", plannedMarket.Index)
+		}
+		if err := s.executePlannedTradesForMarket(ctx, writer, participants, plannedMarket.ExistingGameID, nil, plannedMarket.Trades); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Simulator) runTradesForMarket(ctx context.Context, writer *dbwriter.Writer, participants []participant, creatorAddress string, gameID int, offchain *offchainMarketState) error {
-	trades := randomIntInRange(s.rng, s.cfg.Scenario.TradesPerMarketMin, s.cfg.Scenario.TradesPerMarketMax)
-	minWei, err := amount.ParseBKCToWei(s.cfg.Trade.BuyMinBKC)
-	if err != nil {
-		return err
-	}
-	maxWei, err := amount.ParseBKCToWei(s.cfg.Trade.BuyMaxBKC)
-	if err != nil {
-		return err
-	}
-	for i := 0; i < trades; i++ {
-		p := participants[s.rng.Intn(len(participants))]
-		if !s.cfg.Trade.CreatorAlsoTrades && creatorAddress != "" && equalAddress(p.address, creatorAddress) {
-			p = participants[(i+1)%len(participants)]
+func (s *Simulator) executePlannedTradesForMarket(ctx context.Context, writer *dbwriter.Writer, participants []participant, gameID int, offchain *offchainMarketState, trades []PlanTrade) error {
+	for _, trade := range trades {
+		p, err := participantAt(participants, trade.UserIndex)
+		if err != nil {
+			return err
 		}
-		optionID := i % 2
-		if s.rng.Intn(2) == 1 {
-			optionID = 1 - optionID
+		if trade.User != "" && !strings.EqualFold(trade.User, p.address) {
+			return fmt.Errorf("trade #%d user does not match participant index %d", trade.Index, trade.UserIndex)
 		}
-		amountWei, err := amount.RandomWeiInRange(minWei, maxWei)
+		if trade.OptionID != 0 && trade.OptionID != 1 {
+			return fmt.Errorf("trade #%d has invalid option_id %d", trade.Index, trade.OptionID)
+		}
+		amountWei, err := parseWei(trade.AmountWei, "amount_wei")
 		if err != nil {
 			return err
 		}
 		s.logf("simulator: game=%d trade #%d user=%s option=%s amount_wei=%s",
-			gameID, i+1, p.address, optionName(optionID), amountWei.String())
-		if s.cfg.Runtime.DryRun {
-			continue
-		}
+			gameID, trade.Index, p.address, optionName(trade.OptionID), amountWei.String())
 		var record *dbwriter.TradeRecord
 		if s.cfg.Runtime.OnChain {
-			record, err = s.executeOnchainTrade(ctx, p, gameID, optionID, amountWei)
+			record, err = s.executeOnchainTrade(ctx, p, gameID, trade.OptionID, amountWei)
 		} else {
-			record, err = executeOffchainTrade(offchain, p.address, optionID, amountWei)
+			record, err = executeOffchainTrade(offchain, p.address, trade.OptionID, amountWei)
 		}
 		if err != nil {
 			return err
 		}
-		if writer != nil {
-			if err := writer.SyncTrade(ctx, record); err != nil {
-				return err
-			}
+		if err := writer.SyncTrade(ctx, record); err != nil {
+			return err
 		}
 		if err := sleepWithContext(ctx, s.cfg.Timing.Pause); err != nil {
 			return err
@@ -341,22 +443,41 @@ func (s *Simulator) buildMarket(index int, creator string) (*scenario.Market, *b
 	return market, initialWei, nil
 }
 
-func (s *Simulator) fundParticipants(ctx context.Context, funder *chain.Client, participants []participant) error {
-	initialMax, err := amount.ParseBKCToWei(s.cfg.Market.InitialLiquidityMaxBKC)
-	if err != nil {
-		return err
+func (s *Simulator) fundParticipantsForPlan(ctx context.Context, funder *chain.Client, participants []participant, plan *Plan) error {
+	required := make([]*big.Int, len(participants))
+	for i := range required {
+		required[i] = big.NewInt(0)
 	}
-	buyMax, err := amount.ParseBKCToWei(s.cfg.Trade.BuyMaxBKC)
-	if err != nil {
-		return err
+	for _, market := range plan.Markets {
+		if market.InitialLiquidityWei != "" {
+			initialWei, err := parseWei(market.InitialLiquidityWei, "initial_liquidity_wei")
+			if err != nil {
+				return err
+			}
+			if market.CreatorIndex < 0 || market.CreatorIndex >= len(required) {
+				return fmt.Errorf("market #%d creator index out of range", market.Index)
+			}
+			required[market.CreatorIndex].Add(required[market.CreatorIndex], initialWei)
+		}
+		for _, trade := range market.Trades {
+			amountWei, err := parseWei(trade.AmountWei, "amount_wei")
+			if err != nil {
+				return err
+			}
+			if trade.UserIndex < 0 || trade.UserIndex >= len(required) {
+				return fmt.Errorf("trade #%d user index out of range", trade.Index)
+			}
+			required[trade.UserIndex].Add(required[trade.UserIndex], amountWei)
+		}
 	}
 	buffer, _ := amount.ParseBKCToWei("0.1")
-	perAccount := new(big.Int).Set(initialMax)
-	perAccount.Add(perAccount, new(big.Int).Mul(buyMax, big.NewInt(int64(s.cfg.Scenario.TradesPerMarketMax+1))))
-	perAccount.Add(perAccount, buffer)
 	for i, p := range participants {
-		s.logf("simulator: funding participant #%d %s with %s wei", i+1, p.address, perAccount.String())
-		if _, err := funder.SendNativeTransfer(ctx, p.address, perAccount); err != nil {
+		required[i].Add(required[i], buffer)
+		if required[i].Sign() <= 0 {
+			continue
+		}
+		s.logf("simulator: funding participant #%d %s with %s wei", i+1, p.address, required[i].String())
+		if _, err := funder.SendNativeTransfer(ctx, p.address, required[i]); err != nil {
 			return fmt.Errorf("fund participant #%d: %w", i+1, err)
 		}
 	}
@@ -364,6 +485,50 @@ func (s *Simulator) fundParticipants(ctx context.Context, funder *chain.Client, 
 		return sleepWithContext(ctx, 8*time.Second)
 	}
 	return nil
+}
+
+func participantsFromPlan(plan *Plan) ([]participant, error) {
+	if plan == nil {
+		return nil, errors.New("plan is nil")
+	}
+	out := make([]participant, 0, len(plan.Participants))
+	for i, item := range plan.Participants {
+		if item.Address == "" {
+			return nil, fmt.Errorf("participant #%d missing address", i+1)
+		}
+		if item.PrivateKey == "" {
+			return nil, fmt.Errorf("participant #%d missing private_key", i+1)
+		}
+		out = append(out, participant{
+			privateKey: item.PrivateKey,
+			address:    item.Address,
+		})
+	}
+	return out, nil
+}
+
+func participantAt(participants []participant, index int) (participant, error) {
+	if index < 0 || index >= len(participants) {
+		return participant{}, fmt.Errorf("participant index %d out of range", index)
+	}
+	return participants[index], nil
+}
+
+func (s *Simulator) logPlan(plan *Plan) {
+	s.logf("simulator: preview participants=%d markets=%d scenario=%s target_on_chain=%t",
+		len(plan.Participants), len(plan.Markets), plan.Scenario, s.cfg.Runtime.OnChain)
+	for _, market := range plan.Markets {
+		if market.ExistingGameID > 0 {
+			s.logf("simulator: preview existing game=%d trades=%d", market.ExistingGameID, len(market.Trades))
+		} else {
+			s.logf("simulator: preview create market #%d type=%s creator=%s initial=%s BKC trades=%d cid=%s",
+				market.Index, market.Type, market.CreatorAddress, market.InitialLiquidityBKC, len(market.Trades), market.IPFSCID)
+		}
+		for _, trade := range market.Trades {
+			s.logf("simulator: preview trade #%d user=%s option=%s amount=%s BKC",
+				trade.Index, trade.User, trade.Option, trade.AmountBKC)
+		}
+	}
 }
 
 func buildParticipants(count int) ([]participant, error) {
@@ -452,10 +617,6 @@ func optionName(optionID int) string {
 		return "YES"
 	}
 	return "NO"
-}
-
-func equalAddress(a string, b string) bool {
-	return strings.EqualFold(a, b)
 }
 
 func sleepWithContext(ctx context.Context, delay time.Duration) error {

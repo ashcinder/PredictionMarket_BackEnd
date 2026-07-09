@@ -1,14 +1,21 @@
 # Copy this file to config.yaml and adjust values for your test environment.
 runtime:
   enabled: true
-  # true: call createGame/buyShares on chain and then sync DB.
-  # false: only write simulated market/trade data to DB.
+  # preview: generate a reviewable plan file only.
+  # execute: read plan_file and apply the exact same data.
+  mode: "preview"
+  # true during execute: call createGame/buyShares on chain and sync DB.
+  # false during execute: write the approved simulated data to DB only.
   on_chain: false
-  # true: print the randomly generated plan only; no DB writes and no chain tx.
-  dry_run: true
+  plan_file: "out/simulator-plan.json"
+  # Must be true together with mode=execute and on_chain=true.
+  approve_on_chain: false
+  # Legacy alias for preview mode. Keep false when using runtime.mode.
+  dry_run: false
 
 chain:
-  # Required only when runtime.on_chain=true. This account funds random users first.
+  # Required only when mode=execute and on_chain=true.
+  # This account funds random users first.
   private_key: "replace-with-funded-private-key"
   contract_address: "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
   rpc_url: "http://127.0.0.1:8545"
@@ -16,7 +23,7 @@ chain:
   use_broker_chain: false
 
 mysql:
-  # Required when runtime.dry_run=false.
+  # Required when mode=execute.
   dsn: ""
   max_open_connections: 10
   max_idle_connections: 2

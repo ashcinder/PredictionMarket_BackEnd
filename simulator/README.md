@@ -2,18 +2,67 @@
 
 这是一个独立的测试数据模拟器，用来模拟多个用户创建博弈池、给新池注入初始流动性、再由多个随机账户参与购买。
 
-它不依赖后端服务启动，直接按 `config.yaml` 的配置执行：
+默认不会直接写数据库，也不会直接上链。它会先生成一份可检查的计划文件，你确认后再决定这批数据是只落库，还是发真实链上交易。
+
+## 两步流程
+
+第一步：生成预览计划。
 
 ```bash
 cd simulator
 go run ./cmd/simulator -config config.yaml
 ```
 
-## 两种运行模式
+默认配置是：
 
-`runtime.on_chain: false`
+```yaml
+runtime:
+  mode: "preview"
+  plan_file: "out/simulator-plan.json"
+```
 
-只写数据库，不发链上交易。模拟器会自己生成随机账户、随机创建博弈池、随机购买 YES/NO，并把结果写入：
+运行后会打印本次随机生成的账户、博弈池、交易，并保存到 `out/simulator-plan.json`。
+
+第二步：你看完计划后，再选择执行方式。
+
+只写数据库，不上链：
+
+```yaml
+runtime:
+  mode: "execute"
+  on_chain: false
+  plan_file: "out/simulator-plan.json"
+mysql:
+  dsn: "..."
+```
+
+真实上链并同步数据库：
+
+```yaml
+runtime:
+  mode: "execute"
+  on_chain: true
+  approve_on_chain: true
+  plan_file: "out/simulator-plan.json"
+chain:
+  private_key: "..."
+mysql:
+  dsn: "..."
+```
+
+`approve_on_chain: true` 是额外确认开关。没有这个开关，即使 `on_chain: true`，模拟器也不会允许执行链上交易。
+
+## 执行模式
+
+`runtime.mode: preview`
+
+只生成并展示计划，不写数据库，不发链上交易。计划文件里保存了随机账户、博弈池和交易金额，所以后续执行的是你已经看过的同一批数据。
+
+注意：计划文件包含模拟账户私钥，只用于本地测试，不要提交或分享。`out/` 已经被 `.gitignore` 忽略。
+
+`runtime.mode: execute` + `runtime.on_chain: false`
+
+只写数据库，不发链上交易。模拟器会读取你已经预览过的计划，按计划创建博弈池、购买 YES/NO，并把结果写入：
 
 - `gold_games`
 - `gold_chain_states`
@@ -24,7 +73,7 @@ go run ./cmd/simulator -config config.yaml
 
 这适合快速给前端和后端接口准备展示数据。注意：这种模式下链上合约并不知道这些 `game_id`。
 
-`runtime.on_chain: true`
+`runtime.mode: execute` + `runtime.on_chain: true`
 
 先发真实链上交易，再同步数据库。流程是：
 
@@ -71,19 +120,31 @@ scenario:
 
 `runtime.enabled`
 
-是否允许运行。设为 `false` 且不是 `dry_run` 时会直接停止，防止误执行。
+是否允许运行。设为 `false` 且处于 `execute` 模式时会直接停止，防止误执行。
+
+`runtime.mode`
+
+`preview` 表示只生成计划文件；`execute` 表示读取计划文件并执行。
 
 `runtime.on_chain`
 
-是否发真实链上交易。`false` 是 DB-only 模拟，`true` 是真实调用合约。
+执行阶段是否发真实链上交易。`false` 是 DB-only 模拟，`true` 是真实调用合约。
+
+`runtime.plan_file`
+
+预览阶段写入、执行阶段读取的计划文件。执行阶段不会重新随机生成数据。
+
+`runtime.approve_on_chain`
+
+上链执行的确认开关。只有 `mode: execute`、`on_chain: true`、`approve_on_chain: true` 同时满足时，才会发链上交易。
 
 `runtime.dry_run`
 
-只打印计划，不写数据库，不发交易。第一次运行建议保持 `true`。
+旧版预览开关。现在推荐使用 `runtime.mode: preview`。
 
 `chain.private_key`
 
-上链模式需要。这个账户会先给随机模拟账户转测试币，随机账户再各自创建和购买。
+上链执行模式需要。这个账户会先给随机模拟账户转测试币，随机账户再各自创建和购买。
 
 `chain.contract_address`
 
@@ -99,7 +160,7 @@ scenario:
 
 `mysql.dsn`
 
-数据库连接串。`dry_run: false` 时必须填写。
+数据库连接串。`mode: execute` 时必须填写。
 
 `scenario.market_count`
 
