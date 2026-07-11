@@ -27,8 +27,8 @@ sentinel:
   resolve_delay_seconds: 5
 
 sampler:
-  # true 时以链上池列表为准同步并清理 MySQL 中未上链的测试池；本地 DB-only 测试建议关闭。
-  chain_sync_enabled: true
+  # 是否定时从链上读取池状态并回写 MySQL；本地 DB-only 测试建议关闭，避免覆盖模拟数据。
+  chain_sync_enabled: false
   poll_interval_seconds: 60
 
 ai:
