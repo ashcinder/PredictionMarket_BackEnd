@@ -154,9 +154,11 @@ type mockSamplerHistory struct {
 }
 
 type mockSamplerCacheExt struct {
-	mu        sync.Mutex
-	discovers int
-	samples   int
+	mu         sync.Mutex
+	discovers  int
+	samples    int
+	reconciles int
+	games      []chain.GameOnChain
 }
 
 func (m *mockSamplerCacheExt) OnDiscover(context.Context, chain.GameOnChain) {
@@ -169,6 +171,14 @@ func (m *mockSamplerCacheExt) OnSample(context.Context, chain.GameOnChain, []*bi
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.samples++
+}
+
+func (m *mockSamplerCacheExt) ReconcileChainGames(_ context.Context, games []chain.GameOnChain) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reconciles++
+	m.games = append([]chain.GameOnChain(nil), games...)
+	return nil
 }
 
 func (m *mockSamplerHistory) MergeAndList(ctx context.Context, market MarketIdentity, seed []HistoryObservation, current HistoryObservation, limit int) ([]HistoryObservation, error) {
@@ -284,6 +294,36 @@ func TestSamplerStopsBeforeCacheWritesWhenBatchCallExhaustsCycle(t *testing.T) {
 	if cache.discovers != 0 || cache.samples != 0 || histories.mergeCount() != 0 {
 		t.Fatalf("expired cycle performed cache work: discovers=%d samples=%d history=%d",
 			cache.discovers, cache.samples, histories.mergeCount())
+	}
+}
+
+func TestSamplerReconcilesCacheAgainstCompleteChainGameList(t *testing.T) {
+	games := []chain.GameOnChain{activeGame(1), resolvedGame(2)}
+	chainMock := &mockSamplerChain{
+		wallet: "0x1111111111111111111111111111111111111111",
+		ethCallFn: func(context.Context, string) (string, error) {
+			return encodeGetAllGamesResult(games), nil
+		},
+		batchExtraFn: func(context.Context, string) (string, error) {
+			return encodeGetAllGamesExtraDataResult(&chain.AllGamesExtraData{
+				ResNO:       []*big.Int{big.NewInt(400), big.NewInt(500)},
+				ResYES:      []*big.Int{big.NewInt(600), big.NewInt(500)},
+				MySharesYES: []*big.Int{big.NewInt(0), big.NewInt(0)},
+				MySharesNO:  []*big.Int{big.NewInt(0), big.NewInt(0)},
+			}), nil
+		},
+	}
+	cache := &mockSamplerCacheExt{}
+	sampler := NewMarketHistorySampler(chainMock, &mockSamplerHistory{}, "0xContract", time.Minute, 256)
+	sampler.SetCacheExt(cache)
+
+	sampler.sampleOnce(context.Background())
+
+	if cache.reconciles != 1 {
+		t.Fatalf("cache reconciles = %d, want 1", cache.reconciles)
+	}
+	if len(cache.games) != len(games) || cache.games[0].ID != 1 || cache.games[1].ID != 2 {
+		t.Fatalf("reconciled games = %+v, want complete chain game list", cache.games)
 	}
 }
 

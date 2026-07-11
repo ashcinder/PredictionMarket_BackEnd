@@ -437,6 +437,44 @@ func (s *Store) DisableForContract(gameID int, userAddress, contractAddress stri
 	}
 }
 
+// PruneMissingMarkets removes in-memory AI-managed entries whose games are
+// absent from a successful chain inventory for the given contract.
+func (s *Store) PruneMissingMarkets(contractAddress string, games []chain.GameOnChain) int {
+	if !common.IsHexAddress(contractAddress) {
+		return 0
+	}
+	contract := common.HexToAddress(contractAddress).Hex()
+	knownGames := make(map[int]struct{}, len(games))
+	for _, game := range games {
+		knownGames[game.ID] = struct{}{}
+	}
+
+	var deleted []entry
+	s.mu.Lock()
+	for key, item := range s.entries {
+		if !strings.EqualFold(item.ContractAddress, contract) {
+			continue
+		}
+		if _, exists := knownGames[item.GameID]; exists {
+			continue
+		}
+		deleted = append(deleted, *item)
+		delete(s.entries, key)
+	}
+	repository := s.persist
+	s.mu.Unlock()
+
+	if repository != nil {
+		for _, item := range deleted {
+			if err := repository.DeleteManagedEntry(context.Background(),
+				MarketIdentity{ContractAddress: item.ContractAddress, GameID: item.GameID}, item.UserAddress); err != nil {
+				slog.Warn("ai-managed persist prune failed", "game_id", item.GameID, "contract", item.ContractAddress, "user", item.UserAddress, "error", err)
+			}
+		}
+	}
+	return len(deleted)
+}
+
 func (s *Store) IsEnabled(gameID int, userAddress string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

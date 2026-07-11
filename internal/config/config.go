@@ -55,7 +55,8 @@ type fileConfig struct {
 		ResolveDelaySeconds int `yaml:"resolve_delay_seconds"`
 	} `yaml:"sentinel"`
 	Sampler struct {
-		PollIntervalSeconds int `yaml:"poll_interval_seconds"`
+		ChainSyncEnabled    bool `yaml:"chain_sync_enabled"`
+		PollIntervalSeconds int  `yaml:"poll_interval_seconds"`
 	} `yaml:"sampler"`
 	AI struct {
 		APIKey                  string  `yaml:"api_key"`
@@ -128,6 +129,7 @@ type Config struct {
 	AIMaxPositionPerMarketBKC  string
 	AIAdaptiveCooldown         bool
 	SamplerPollInterval        time.Duration
+	SamplerChainSyncEnabled    bool
 	MySQLDSN                   string
 	MySQLMaxOpenConnections    int
 	MySQLMaxIdleConnections    int
@@ -534,6 +536,7 @@ func LoadFile(path string) (*Config, error) {
 		AIMaxPositionPerMarketBKC:   strings.TrimSpace(raw.AI.MaxPositionPerMarketBKC),
 		AIAdaptiveCooldown:          raw.AI.AdaptiveCooldown,
 		SamplerPollInterval:         time.Duration(raw.Sampler.PollIntervalSeconds) * time.Second,
+		SamplerChainSyncEnabled:     raw.Sampler.ChainSyncEnabled,
 		MySQLDSN:                    mysqlDSN,
 		MySQLMaxOpenConnections:     raw.MySQL.MaxOpenConnections,
 		MySQLMaxIdleConnections:     raw.MySQL.MaxIdleConnections,

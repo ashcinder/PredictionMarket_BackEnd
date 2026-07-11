@@ -25,6 +25,15 @@ type samplerCacheExt struct {
 	history      PriceHistoryRepository
 	positions    UserPositionRepository
 	contractAddr string
+	managedStore managedMarketPruner
+}
+
+type chainGameReconciler interface {
+	ReconcileChainGames(ctx context.Context, contractAddress string, games []chain.GameOnChain) (int, error)
+}
+
+type managedMarketPruner interface {
+	PruneMissingMarkets(contractAddress string, games []chain.GameOnChain) int
 }
 
 // NewSamplerCacheExt creates a SamplerCacheExt that writes to the v1 cache
@@ -35,13 +44,19 @@ func NewSamplerCacheExt(
 	history PriceHistoryRepository,
 	positions UserPositionRepository,
 	contractAddr string,
+	managedStores ...managedMarketPruner,
 ) aimanaged.SamplerCacheExt {
+	var managedStore managedMarketPruner
+	if len(managedStores) > 0 {
+		managedStore = managedStores[0]
+	}
 	return &samplerCacheExt{
 		games:        games,
 		chainStates:  chainStates,
 		history:      history,
 		positions:    positions,
 		contractAddr: contractAddr,
+		managedStore: managedStore,
 	}
 }
 
@@ -66,6 +81,28 @@ func (e *samplerCacheExt) OnDiscover(ctx context.Context, game chain.GameOnChain
 	if err := e.chainStates.UpsertChainState(ctx, state); err != nil {
 		slog.Warn("apiv1: sampler ext discover upsert chain state failed", "game_id", game.ID, "error", err)
 	}
+}
+
+// ReconcileChainGames removes cache rows for this contract that do not appear
+// in the latest successful getAllGames response.
+func (e *samplerCacheExt) ReconcileChainGames(ctx context.Context, games []chain.GameOnChain) error {
+	reconciler, ok := e.games.(chainGameReconciler)
+	if !ok {
+		return nil
+	}
+	removed, err := reconciler.ReconcileChainGames(ctx, e.contractAddr, games)
+	if err != nil {
+		return err
+	}
+	if removed > 0 {
+		slog.Info("apiv1: removed cache rows absent from chain", "contract", e.contractAddr, "games", removed)
+	}
+	if e.managedStore != nil {
+		if pruned := e.managedStore.PruneMissingMarkets(e.contractAddr, games); pruned > 0 {
+			slog.Info("apiv1: removed AI-managed entries absent from chain", "contract", e.contractAddr, "entries", pruned)
+		}
+	}
+	return nil
 }
 
 func (e *samplerCacheExt) OnSample(

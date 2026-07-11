@@ -35,6 +35,7 @@ sentinel:
   poll_interval_seconds: 30
   resolve_delay_seconds: 5
 sampler:
+  chain_sync_enabled: false
   poll_interval_seconds: 60
 ai:
   api_key: "test-ai-key"
@@ -78,12 +79,26 @@ func TestLoadFileReadsCompleteYAML(t *testing.T) {
 	if cfg.PollInterval != 30*time.Second || cfg.AIPollInterval != 120*time.Second || cfg.SamplerPollInterval != 60*time.Second {
 		t.Fatalf("unexpected intervals: poll=%s ai=%s sampler=%s", cfg.PollInterval, cfg.AIPollInterval, cfg.SamplerPollInterval)
 	}
+	if cfg.SamplerChainSyncEnabled {
+		t.Fatal("sampler.chain_sync_enabled = true, want false")
+	}
 	if cfg.AIHistoryMinPoints != 3 || cfg.AIHistoryMaxPoints != 256 {
 		t.Fatalf("unexpected AI history settings: min=%d max=%d", cfg.AIHistoryMinPoints, cfg.AIHistoryMaxPoints)
 	}
 	if cfg.MySQLDSN == "" || cfg.MySQLMaxOpenConnections != 10 ||
 		cfg.MySQLMaxIdleConnections != 5 || cfg.MySQLConnectionMaxLifetime != 300*time.Second {
 		t.Fatalf("unexpected MySQL config: %+v", cfg)
+	}
+}
+
+func TestLoadFileEnablesSamplerChainSync(t *testing.T) {
+	body := strings.Replace(validYAML, "chain_sync_enabled: false", "chain_sync_enabled: true", 1)
+	cfg, err := LoadFile(writeTestConfig(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.SamplerChainSyncEnabled {
+		t.Fatal("sampler.chain_sync_enabled = false, want true")
 	}
 }
 
@@ -151,7 +166,7 @@ func TestLoadFileRejectsInvalidConfiguration(t *testing.T) {
 			"https://api.gold-api.com/price/XAU", "ftp://invalid", 1),
 		"poll interval": strings.Replace(validYAML,
 			"poll_interval_seconds: 30", "poll_interval_seconds: 0", 1),
-		"sampler poll interval": strings.Replace(validYAML, "sampler:\n  poll_interval_seconds: 60", "sampler:\n  poll_interval_seconds: 0", 1),
+		"sampler poll interval": strings.Replace(validYAML, "sampler:\n  chain_sync_enabled: false\n  poll_interval_seconds: 60", "sampler:\n  chain_sync_enabled: false\n  poll_interval_seconds: 0", 1),
 		"confidence": strings.Replace(validYAML,
 			"confidence_min: 0.70", "confidence_min: 1.1", 1),
 		"NaN confidence": strings.Replace(validYAML,

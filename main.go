@@ -103,7 +103,7 @@ func main() {
 	)
 
 	// Extend the sampler to also keep the v1 cache tables fresh.
-	samplerExt := apiv1.NewSamplerCacheExt(v1Repo, v1Repo, v1Repo, v1Repo, cfg.ContractAddress)
+	samplerExt := apiv1.NewSamplerCacheExt(v1Repo, v1Repo, v1Repo, v1Repo, cfg.ContractAddress, managedStore)
 	sampler.SetCacheExt(samplerExt)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -140,11 +140,15 @@ func main() {
 			errCh <- err
 		}
 	}()
-	go func() {
-		if err := sampler.Run(ctx); err != nil && err != context.Canceled {
-			errCh <- err
-		}
-	}()
+	if cfg.SamplerChainSyncEnabled {
+		go func() {
+			if err := sampler.Run(ctx); err != nil && err != context.Canceled {
+				errCh <- err
+			}
+		}()
+	} else {
+		slog.Info("chain-to-database sampler disabled by config", "setting", "sampler.chain_sync_enabled")
+	}
 
 	select {
 	case <-ctx.Done():

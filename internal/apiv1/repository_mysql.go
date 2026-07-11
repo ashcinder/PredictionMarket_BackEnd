@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"PredictionMarket/internal/chain"
 	"PredictionMarket/internal/database"
 )
 
@@ -43,6 +44,13 @@ const (
 		avatar_url, detailed_info, option_yes, option_no, creator_address,
 		deadline_sec)
 		VALUES (?, ?, ?, '', '', '', '', 'YES', 'NO', '', 0)`
+
+	deleteUserPositionsForStaleGamesSQL = `DELETE p FROM gold_user_positions p
+		INNER JOIN gold_games g ON g.game_id = p.game_id
+		WHERE g.contract_address = ?`
+	deletePriceHistoryForStaleGamesSQL = `DELETE h FROM gold_price_history h
+		INNER JOIN gold_games g ON g.game_id = h.game_id
+		WHERE g.contract_address = ?`
 
 	// gold_chain_states
 	selectChainStateSQL = `SELECT game_id, contract_address, total_pool, is_resolved, is_refunded,
@@ -270,6 +278,85 @@ func (r *MySQLRepository) insertGameStub(ctx context.Context, gameID int, contra
 		return fmt.Errorf("insert game stub %d: %w", gameID, err)
 	}
 	return nil
+}
+
+// ReconcileChainGames removes cache data for the given contract when its game
+// ID is absent from a successful getAllGames chain response. It keeps DB-only
+// test pools from remaining visible once chain synchronization is enabled.
+func (r *MySQLRepository) ReconcileChainGames(ctx context.Context, contractAddress string, games []chain.GameOnChain) (int, error) {
+	removed, err := r.reconcileChainGames(ctx, contractAddress, games)
+	if err != nil && r.retryAfterRecover(err, "") {
+		return r.reconcileChainGames(ctx, contractAddress, games)
+	}
+	return removed, err
+}
+
+func (r *MySQLRepository) reconcileChainGames(ctx context.Context, contractAddress string, games []chain.GameOnChain) (int, error) {
+	contractAddress = normalizeOptionalAddress(firstNonEmpty(contractAddress, r.defaultContractAddress))
+	if contractAddress == "" {
+		return 0, fmt.Errorf("reconcile chain games: contract address is required")
+	}
+	gameIDs := make([]int, 0, len(games))
+	for _, game := range games {
+		gameIDs = append(gameIDs, game.ID)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, repoTimeout)
+	defer cancel()
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("reconcile chain games: begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	filter, ids := staleGameFilter("game_id", gameIDs)
+	cleanupByContract := []string{
+		"DELETE FROM ai_managed_entries WHERE contract_address = ?",
+		"DELETE FROM ai_decisions WHERE contract_address = ?",
+		"DELETE FROM market_sync_state WHERE contract_address = ?",
+		"DELETE FROM gold_trades WHERE contract_address = ?",
+		"DELETE FROM market_history WHERE contract_address = ?",
+		"DELETE FROM gold_chain_states WHERE contract_address = ?",
+	}
+	for _, statement := range cleanupByContract {
+		if _, err := tx.ExecContext(ctx, statement+filter, append([]any{contractAddress}, ids...)...); err != nil {
+			return 0, fmt.Errorf("reconcile chain games: %w", err)
+		}
+	}
+
+	gameFilter, gameIDsArgs := staleGameFilter("g.game_id", gameIDs)
+	if _, err := tx.ExecContext(ctx, deleteUserPositionsForStaleGamesSQL+gameFilter, append([]any{contractAddress}, gameIDsArgs...)...); err != nil {
+		return 0, fmt.Errorf("reconcile chain games: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, deletePriceHistoryForStaleGamesSQL+gameFilter, append([]any{contractAddress}, gameIDsArgs...)...); err != nil {
+		return 0, fmt.Errorf("reconcile chain games: %w", err)
+	}
+
+	result, err := tx.ExecContext(ctx, "DELETE FROM gold_games WHERE contract_address = ?"+filter, append([]any{contractAddress}, ids...)...)
+	if err != nil {
+		return 0, fmt.Errorf("reconcile chain games: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("reconcile chain games: commit transaction: %w", err)
+	}
+	removed, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("reconcile chain games: read affected rows: %w", err)
+	}
+	return int(removed), nil
+}
+
+func staleGameFilter(column string, gameIDs []int) (string, []any) {
+	if len(gameIDs) == 0 {
+		return "", nil
+	}
+	placeholders := make([]string, len(gameIDs))
+	args := make([]any, len(gameIDs))
+	for i, gameID := range gameIDs {
+		placeholders[i] = "?"
+		args[i] = gameID
+	}
+	return " AND " + column + " NOT IN (" + strings.Join(placeholders, ", ") + ")", args
 }
 
 func (r *MySQLRepository) UpsertGame(ctx context.Context, game *gameRow) (int, error) {

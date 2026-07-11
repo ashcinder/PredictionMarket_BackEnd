@@ -38,6 +38,12 @@ type SamplerCacheExt interface {
 	OnDiscover(ctx context.Context, game chain.GameOnChain)
 }
 
+// samplerCacheReconciler is an optional cache extension implemented by
+// backends that can remove rows for games no longer present on chain.
+type samplerCacheReconciler interface {
+	ReconcileChainGames(ctx context.Context, games []chain.GameOnChain) error
+}
+
 // MarketHistorySampler periodically reads reserves from all active games on
 // chain and persists a snapshot to market_history. It runs independently of
 // user activity so the chart history is always continuous.
@@ -132,6 +138,11 @@ func (s *MarketHistorySampler) sampleOnce(ctx context.Context) {
 	if err != nil {
 		slog.Warn("sampler: decode getAllGames failed", "error", err)
 		return
+	}
+	if reconciler, ok := s.cacheExt.(samplerCacheReconciler); ok {
+		if err := reconciler.ReconcileChainGames(ctx, games); err != nil {
+			slog.Warn("sampler: reconcile cache with chain failed", "error", err)
+		}
 	}
 
 	now := time.Now()

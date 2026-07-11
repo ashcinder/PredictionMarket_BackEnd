@@ -219,6 +219,9 @@ func (s *Server) hydrateGameFromIPFS(game *GameMetaDTO) {
 	if s.metadata == nil || game == nil || strings.TrimSpace(game.IPFSCID) == "" || !needsMetadataHydration(game) {
 		return
 	}
+	if strings.HasPrefix(strings.TrimSpace(game.IPFSCID), "sim-") {
+		return
+	}
 
 	meta, err := s.metadata.DownloadMetadata(game.IPFSCID)
 	if err != nil {

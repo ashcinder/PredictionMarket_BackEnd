@@ -16,9 +16,11 @@ mysql:
   connection_max_lifetime_seconds: 300
 
 ipfs:
-  gateway: "http://127.0.0.1:8083/ipfs/"
-  # Optional extra gateways tried after gateway for normal IPFS CIDs.
-  fallback_gateways: []
+  # 本地模拟器上传的 local-v1 CID 由本服务的本地内容接口读取。
+  gateway: "http://127.0.0.1:8081/api/v1/ipfs/"
+  # 真实 Kubo/IPFS CID 可回退到本地网关读取。
+  fallback_gateways:
+    - "http://127.0.0.1:8083/ipfs/"
 
 oracle:
   gold_api_url: "https://api.gold-api.com/price/XAU"
@@ -32,6 +34,8 @@ sentinel:
   resolve_delay_seconds: 5
 
 sampler:
+  # true 时以链上池列表为准同步并清理 MySQL 中未上链的测试池；本地 DB-only 测试建议关闭。
+  chain_sync_enabled: false
   poll_interval_seconds: 60
 
 ai:

@@ -1166,3 +1166,35 @@ func TestEngineAuditFailureAfterSuccessfulBroadcastDoesNotResend(t *testing.T) {
 		t.Fatalf("audit finalization failure was not recorded in store: %+v", entries)
 	}
 }
+
+func TestStorePruneMissingMarketsRemovesOnlyGamesAbsentFromChain(t *testing.T) {
+	store, err := NewStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract := "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
+	user := "0x0000000000000000000000000000000000000001"
+	store.Restore([]PersistentManagedEntry{
+		{
+			Market:        MarketIdentity{ContractAddress: contract, GameID: 1},
+			UserAddress:   user,
+			KeyNonce:      []byte{1},
+			KeyCiphertext: []byte{2},
+		},
+		{
+			Market:        MarketIdentity{ContractAddress: contract, GameID: 2},
+			UserAddress:   user,
+			KeyNonce:      []byte{3},
+			KeyCiphertext: []byte{4},
+		},
+	})
+
+	removed := store.PruneMissingMarkets(contract, []chain.GameOnChain{{ID: 2}})
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	entries := store.Entries()
+	if len(entries) != 1 || entries[0].GameID != 2 {
+		t.Fatalf("entries after prune = %+v, want only game 2", entries)
+	}
+}
