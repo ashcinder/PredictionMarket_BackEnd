@@ -106,6 +106,15 @@ const (
 		yes_price=VALUES(yes_price), no_price=VALUES(no_price),
 		total_pool=VALUES(total_pool)`
 
+	selectPortfolioHistorySQL = `SELECT timestamp_sec, total_value_wei, active_market_count
+		FROM gold_portfolio_history WHERE user_address = ?
+		ORDER BY timestamp_sec DESC LIMIT ?`
+	upsertPortfolioHistorySQL = `INSERT INTO gold_portfolio_history
+		(user_address, timestamp_sec, total_value_wei, active_market_count)
+		VALUES (?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE total_value_wei=VALUES(total_value_wei),
+		active_market_count=VALUES(active_market_count)`
+
 	// gold_trades
 	insertTradeSQL = `INSERT INTO gold_trades
 		(game_id, contract_address, user_address, trade_type, option_id, amount_wei,
@@ -707,6 +716,69 @@ func (r *MySQLRepository) appendHistory(ctx context.Context, point *priceHistory
 	)
 	if err != nil {
 		return fmt.Errorf("append price history %d: %w", point.GameID, err)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// PortfolioHistoryRepository
+// ---------------------------------------------------------------------------
+
+func (r *MySQLRepository) ListPortfolioHistory(ctx context.Context, userAddress string, limit int) ([]PortfolioHistoryPointDTO, error) {
+	points, err := r.listPortfolioHistory(ctx, userAddress, limit)
+	if err != nil && r.retryAfterRecover(err, "gold_portfolio_history") {
+		points, err = r.listPortfolioHistory(ctx, userAddress, limit)
+	}
+	return points, err
+}
+
+func (r *MySQLRepository) listPortfolioHistory(ctx context.Context, userAddress string, limit int) ([]PortfolioHistoryPointDTO, error) {
+	ctx, cancel := context.WithTimeout(ctx, repoTimeout)
+	defer cancel()
+	rows, err := r.db.QueryContext(ctx, selectPortfolioHistorySQL, normalizeAddress(userAddress), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list portfolio history %s: %w", userAddress, err)
+	}
+	defer rows.Close()
+	var out []PortfolioHistoryPointDTO
+	for rows.Next() {
+		var point PortfolioHistoryPointDTO
+		var value []byte
+		if err := rows.Scan(&point.TimestampSec, &value, &point.ActiveMarketCount); err != nil {
+			return nil, fmt.Errorf("scan portfolio history: %w", err)
+		}
+		parsed, err := parseBigIntFromDB(value)
+		if err != nil {
+			return nil, fmt.Errorf("parse portfolio history value: %w", err)
+		}
+		point.TotalValueWei = bigIntOrZero(parsed)
+		out = append(out, point)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate portfolio history: %w", err)
+	}
+	for left, right := 0, len(out)-1; left < right; left, right = left+1, right-1 {
+		out[left], out[right] = out[right], out[left]
+	}
+	return out, nil
+}
+
+func (r *MySQLRepository) UpsertPortfolioHistory(ctx context.Context, point *portfolioHistoryRow) error {
+	err := r.upsertPortfolioHistory(ctx, point)
+	if err != nil && r.retryAfterRecover(err, "gold_portfolio_history") {
+		err = r.upsertPortfolioHistory(ctx, point)
+	}
+	return err
+}
+
+func (r *MySQLRepository) upsertPortfolioHistory(ctx context.Context, point *portfolioHistoryRow) error {
+	ctx, cancel := context.WithTimeout(ctx, repoTimeout)
+	defer cancel()
+	_, err := r.db.ExecContext(ctx, upsertPortfolioHistorySQL,
+		normalizeAddress(point.UserAddress), point.TimestampSec,
+		bigIntToDBBytes(point.TotalValueWei), point.ActiveMarketCount)
+	if err != nil {
+		return fmt.Errorf("upsert portfolio history %s: %w", point.UserAddress, err)
 	}
 	return nil
 }

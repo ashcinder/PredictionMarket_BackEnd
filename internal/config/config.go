@@ -21,6 +21,7 @@ import (
 const ConfigFileName = "config.yaml"
 const MySQLDSNEnvName = "PREDICTIONMARKET_MYSQL_DSN"
 const MySQLDatabaseEnvName = "PREDICTIONMARKET_MYSQL_DATABASE"
+const GoldAPIKeyEnvName = "PREDICTIONMARKET_GOLD_API_KEY"
 
 type fileConfig struct {
 	Chain struct {
@@ -45,6 +46,8 @@ type fileConfig struct {
 	} `yaml:"ipfs"`
 	Oracle struct {
 		GoldAPIURL            string `yaml:"gold_api_url"`
+		HistoricalBaseURL     string `yaml:"historical_base_url"`
+		HistoricalAPIKey      string `yaml:"historical_api_key"`
 		SinaURL               string `yaml:"sina_url"`
 		SinaReferer           string `yaml:"sina_referer"`
 		UserAgent             string `yaml:"user_agent"`
@@ -108,6 +111,8 @@ type Config struct {
 	IPFSGateway                string
 	IPFSFallbackGateways       []string
 	GoldAPIURL                 string
+	HistoricalGoldAPIBaseURL   string
+	HistoricalGoldAPIKey       string
 	SinaURL                    string
 	SinaReferer                string
 	OracleUserAgent            string
@@ -187,6 +192,10 @@ func Load() (*Config, error) {
 }
 
 func applyRuntimeOverrides(cfg *Config) error {
+	if key := strings.TrimSpace(os.Getenv(GoldAPIKeyEnvName)); key != "" {
+		cfg.HistoricalGoldAPIKey = key
+		slog.Info("using historical Gold API key from environment", "variable", GoldAPIKeyEnvName)
+	}
 	if dsn := strings.TrimSpace(os.Getenv(MySQLDSNEnvName)); dsn != "" {
 		parsed, parseErr := mysql.ParseDSN(dsn)
 		if parseErr != nil || strings.TrimSpace(parsed.DBName) == "" {
@@ -349,6 +358,14 @@ func LoadFile(path string) (*Config, error) {
 		return nil, err
 	}
 	goldAPIURL, err := requireHTTPURL("oracle.gold_api_url", raw.Oracle.GoldAPIURL)
+	if err != nil {
+		return nil, err
+	}
+	historicalBaseURL := strings.TrimSpace(raw.Oracle.HistoricalBaseURL)
+	if historicalBaseURL == "" {
+		historicalBaseURL = "https://api.gold-api.com"
+	}
+	historicalBaseURL, err = requireHTTPURL("oracle.historical_base_url", historicalBaseURL)
 	if err != nil {
 		return nil, err
 	}
@@ -515,6 +532,8 @@ func LoadFile(path string) (*Config, error) {
 		IPFSGateway:                 ipfsGateway,
 		IPFSFallbackGateways:        ipfsFallbackGateways,
 		GoldAPIURL:                  goldAPIURL,
+		HistoricalGoldAPIBaseURL:    strings.TrimRight(historicalBaseURL, "/"),
+		HistoricalGoldAPIKey:        strings.TrimSpace(raw.Oracle.HistoricalAPIKey),
 		SinaURL:                     sinaURL,
 		SinaReferer:                 sinaReferer,
 		OracleUserAgent:             strings.TrimSpace(raw.Oracle.UserAgent),

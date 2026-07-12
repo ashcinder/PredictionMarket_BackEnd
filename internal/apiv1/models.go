@@ -106,6 +106,21 @@ type AddHistoryRequest struct {
 	TotalPool    string  `json:"total_pool"`
 }
 
+// PortfolioHistoryPointDTO is one persisted total-portfolio valuation.
+type PortfolioHistoryPointDTO struct {
+	TimestampSec      int64  `json:"timestamp_sec"`
+	TotalValueWei     string `json:"total_value_wei"`
+	ActiveMarketCount int    `json:"active_market_count"`
+}
+
+// AddPortfolioHistoryRequest records the latest valuation calculated from
+// the user's current cached positions.
+type AddPortfolioHistoryRequest struct {
+	UserAddress       string `json:"user_address"`
+	TotalValueWei     string `json:"total_value_wei"`
+	ActiveMarketCount int    `json:"active_market_count"`
+}
+
 // SyncTradeRequest is the request body for POST /api/v1/gold/trades/sync.
 type SyncTradeRequest struct {
 	GameID       int    `json:"game_id"`
@@ -235,6 +250,13 @@ type priceHistoryRow struct {
 	TotalPool    *big.Int
 }
 
+type portfolioHistoryRow struct {
+	UserAddress       string
+	TimestampSec      int64
+	TotalValueWei     *big.Int
+	ActiveMarketCount int
+}
+
 type tradeRow struct {
 	ID               int64
 	GameID           int
@@ -308,6 +330,13 @@ type UserPositionRepository interface {
 type PriceHistoryRepository interface {
 	ListHistory(ctx context.Context, gameID int, limit int) ([]PricePointDTO, error)
 	AppendHistory(ctx context.Context, point *priceHistoryRow) error
+}
+
+// PortfolioHistoryRepository stores wallet-level valuation snapshots for the
+// personal holdings chart.
+type PortfolioHistoryRepository interface {
+	ListPortfolioHistory(ctx context.Context, userAddress string, limit int) ([]PortfolioHistoryPointDTO, error)
+	UpsertPortfolioHistory(ctx context.Context, point *portfolioHistoryRow) error
 }
 
 // TradeRepository records every buy/sell/claim/resolve trade synced by the

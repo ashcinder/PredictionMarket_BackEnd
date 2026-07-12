@@ -246,6 +246,18 @@ var ensureTableDDLs = []string{
 	INDEX idx_history_game_time (game_id, timestamp_sec DESC)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
+	// Per-wallet portfolio valuation snapshots used by the holdings chart.
+	`CREATE TABLE IF NOT EXISTS gold_portfolio_history (
+	user_address VARCHAR(42) NOT NULL,
+	timestamp_sec BIGINT NOT NULL,
+	total_value_wei VARBINARY(80) NOT NULL,
+	active_market_count INT UNSIGNED NOT NULL DEFAULT 0,
+	created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+	updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+	PRIMARY KEY (user_address, timestamp_sec),
+	INDEX idx_portfolio_history_user_time (user_address, timestamp_sec DESC)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
 	// Trade records (DApp v1 API).
 	`CREATE TABLE IF NOT EXISTS gold_trades (
 	id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

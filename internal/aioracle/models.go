@@ -28,6 +28,10 @@ type Event struct {
 	// Keywords help the news fetcher find relevant articles.
 	Keywords []string `json:"keywords"`
 
+	// AuthoritativeSources are immutable HTTPS sources committed by the market
+	// template. Only allowlisted official domains are fetched.
+	AuthoritativeSources []string `json:"authoritative_sources,omitempty"`
+
 	// Deadline is the cutoff time after which the oracle will issue a final
 	// verdict regardless of confidence (timeout resolution).
 	Deadline time.Time `json:"deadline"`

@@ -2,6 +2,7 @@ package sentinel
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -14,19 +15,29 @@ import (
 	"PredictionMarket/internal/chain"
 	"PredictionMarket/internal/config"
 	"PredictionMarket/internal/ipfs"
+	"PredictionMarket/internal/judge"
 )
 
 type EventResolver interface {
 	Resolve(ctx context.Context, event aioracle.Event) *aioracle.Verdict
 }
 
+type QuantitativeResolver interface {
+	Resolve(ctx context.Context, rule judge.Rule) judge.Result
+}
+
 type Watcher struct {
-	cfg       *config.Config
-	chain     *chain.Client
-	ipfs      *ipfs.Client
-	oracle    EventResolver
-	resolving sync.Map
-	round     atomic.Uint64
+	cfg          *config.Config
+	chain        *chain.Client
+	ipfs         *ipfs.Client
+	oracle       EventResolver
+	quantitative QuantitativeResolver
+	resolving    sync.Map
+	round        atomic.Uint64
+}
+
+func (w *Watcher) SetQuantitativeResolver(resolver QuantitativeResolver) {
+	w.quantitative = resolver
 }
 
 const aiResolutionTimeout = 90 * time.Second
@@ -46,7 +57,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 		"wallet", w.chain.WalletAddress(),
 		"poll_interval", w.cfg.PollInterval.String(),
 		"use_broker_chain", w.cfg.UseBrokerChain,
-		"resolution_mode", "ai_consensus_only",
+		"resolution_mode", "deterministic_market_data_then_ai_events",
 	)
 
 	ticker := time.NewTicker(w.cfg.PollInterval)
@@ -128,6 +139,26 @@ func (w *Watcher) resolveGame(ctx context.Context, game chain.GameOnChain) error
 		return fmt.Errorf("game %d has empty condition in ipfs metadata", game.ID)
 	}
 
+	if len(meta.ResolutionRule) > 0 {
+		var rule judge.Rule
+		if err := json.Unmarshal(meta.ResolutionRule, &rule); err != nil {
+			return fmt.Errorf("game %d has invalid structured resolution rule: %w", game.ID, err)
+		}
+		if rule.Type != judge.TypeEvent {
+			if w.quantitative == nil {
+				return fmt.Errorf("game %d: quantitative resolver is not configured", game.ID)
+			}
+			result := w.quantitative.Resolve(ctx, rule)
+			if !result.Determinate || result.Winner < 0 {
+				return fmt.Errorf("game %d: quantitative evidence is indeterminate: %s", game.ID, result.Summary)
+			}
+			return w.settle(ctx, game, meta, result.Winner, 1, 1, "deterministic evidence: "+result.Summary)
+		}
+		if len(meta.AuthoritativeSources) == 0 {
+			return fmt.Errorf("game %d: structured event has no authoritative sources", game.ID)
+		}
+	}
+
 	if w.oracle == nil {
 		return fmt.Errorf("game %d: AI oracle is not configured", game.ID)
 	}
@@ -150,18 +181,19 @@ func (w *Watcher) resolveGame(ctx context.Context, game chain.GameOnChain) error
 		)
 		return fmt.Errorf("game %d: %w", game.ID, err)
 	}
-	winnerName := optionName(meta, winner)
+	return w.settle(ctx, game, meta, winner, verdict.Confidence, verdict.ConsensusRatio, verdict.Summary)
+}
 
-	slog.Info("game evaluated by AI consensus",
+func (w *Watcher) settle(ctx context.Context, game chain.GameOnChain, meta *ipfs.Metadata, winner int, confidence, consensusRatio float64, summary string) error {
+	winnerName := optionName(meta, winner)
+	slog.Info("game evaluated for settlement",
 		"game_id", game.ID,
-		"condition", condition,
+		"condition", meta.Condition,
 		"winner_index", winner,
 		"winner", winnerName,
-		"confidence", verdict.Confidence,
-		"consensus_ratio", verdict.ConsensusRatio,
-		"agreeing_models", verdict.AgreeingModels,
-		"total_models", verdict.TotalModels,
-		"summary", verdict.Summary,
+		"confidence", confidence,
+		"consensus_ratio", consensusRatio,
+		"summary", summary,
 	)
 
 	if w.cfg.ResolveDelay > 0 {
@@ -216,11 +248,12 @@ func buildAIEvent(game chain.GameOnChain, meta *ipfs.Metadata) aioracle.Event {
 	description.WriteString("仅当充分证据确认条件未满足时 occurred=false（NO）。证据不足时必须降低 confidence，禁止猜测。")
 
 	return aioracle.Event{
-		ID:          fmt.Sprintf("game-%d", game.ID),
-		Title:       title,
-		Description: description.String(),
-		Keywords:    eventKeywords(meta),
-		Deadline:    deadlineTime(game.DeadlineRaw),
+		ID:                   fmt.Sprintf("game-%d", game.ID),
+		Title:                title,
+		Description:          description.String(),
+		Keywords:             eventKeywords(meta),
+		AuthoritativeSources: append([]string(nil), meta.AuthoritativeSources...),
+		Deadline:             deadlineTime(game.DeadlineRaw),
 	}
 }
 

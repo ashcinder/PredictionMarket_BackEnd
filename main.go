@@ -19,6 +19,7 @@ import (
 	"PredictionMarket/internal/ipfs"
 	"PredictionMarket/internal/localcontent"
 	"PredictionMarket/internal/logging"
+	"PredictionMarket/internal/marketdata"
 	"PredictionMarket/internal/oracle"
 	"PredictionMarket/internal/sentinel"
 )
@@ -79,6 +80,9 @@ func main() {
 		os.Exit(1)
 	}
 	watcher := sentinel.NewWatcher(cfg, chainClient, ipfsClient, aiOracle)
+	historicalClient := marketdata.NewGoldAPIClient(
+		cfg.HistoricalGoldAPIBaseURL, cfg.HistoricalGoldAPIKey, cfg.OracleRequestTimeout)
+	watcher.SetQuantitativeResolver(marketdata.NewStructuredResolver(historicalClient))
 	managedStore, err := aimanaged.NewStoreWithSecret(cfg.PrivateKey)
 	if err != nil {
 		slog.Error("init ai-managed store failed", "error", err)

@@ -21,16 +21,17 @@ type metadataClient interface {
 // Server serves the /api/v1/gold/... HTTP endpoints that provide the DApp
 // cache layer (MySQL-first reads with chain+IPFS fallback).
 type Server struct {
-	games        GameMetadataRepository
-	chainStates  ChainStateRepository
-	positions    UserPositionRepository
-	history      PriceHistoryRepository
-	trades       TradeRepository
-	aiStore      *aimanaged.Store
-	chain        chainClient    // optional, may be nil
-	metadata     metadataClient // optional, may be nil
-	contractAddr string
-	historyMax   int
+	games            GameMetadataRepository
+	chainStates      ChainStateRepository
+	positions        UserPositionRepository
+	history          PriceHistoryRepository
+	portfolioHistory PortfolioHistoryRepository
+	trades           TradeRepository
+	aiStore          *aimanaged.Store
+	chain            chainClient    // optional, may be nil
+	metadata         metadataClient // optional, may be nil
+	contractAddr     string
+	historyMax       int
 }
 
 // NewServer creates a v1 API server. The same *MySQLRepository can be passed
@@ -48,7 +49,7 @@ func NewServer(
 	contractAddr string,
 	historyMax int,
 ) *Server {
-	return &Server{
+	server := &Server{
 		games:        games,
 		chainStates:  chainStates,
 		positions:    positions,
@@ -60,6 +61,10 @@ func NewServer(
 		contractAddr: contractAddr,
 		historyMax:   historyMax,
 	}
+	if repository, ok := positions.(PortfolioHistoryRepository); ok {
+		server.portfolioHistory = repository
+	}
+	return server
 }
 
 // Register mounts all v1 routes on mux using Go 1.22+ pattern syntax.
@@ -82,6 +87,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 	// Price history
 	mux.HandleFunc("GET /api/v1/gold/games/{id}/history", s.handleGetHistory)
 	mux.HandleFunc("POST /api/v1/gold/games/{id}/history", s.handleAddHistory)
+	mux.HandleFunc("GET /api/v1/gold/portfolio-history", s.handleGetPortfolioHistory)
+	mux.HandleFunc("POST /api/v1/gold/portfolio-history", s.handleAddPortfolioHistory)
 
 	// Trade history & sync
 	mux.HandleFunc("GET /api/v1/gold/trades", s.handleGetTrades)

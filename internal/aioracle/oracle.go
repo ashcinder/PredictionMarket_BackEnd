@@ -71,14 +71,18 @@ func NewOracleWithOptions(news NewsFetcher, consensus *ConsensusEngine, opts Ora
 // for concurrent resolution of multiple events.
 func (o *Oracle) Resolve(ctx context.Context, event Event) *Verdict {
 	// Fetch news.
-	var articles []NewsArticle
-	if o.newsFetcher != nil {
+	articles, officialErr := fetchAuthoritativeEvidence(ctx, event.AuthoritativeSources)
+	if officialErr != nil {
+		slog.Warn("aioracle: authoritative evidence fetch failed", "event_id", event.ID, "error", officialErr)
+	}
+	if o.newsFetcher != nil && len(articles) < o.maxArticles {
 		since := time.Now().Add(-o.newsLookback)
-		var err error
-		articles, err = o.newsFetcher.Fetch(ctx, event.Keywords, since, o.maxArticles)
+		general, err := o.newsFetcher.Fetch(ctx, event.Keywords, since, o.maxArticles-len(articles))
 		if err != nil {
 			slog.Warn("aioracle: news fetch failed, proceeding without news",
 				"event_id", event.ID, "error", err)
+		} else {
+			articles = append(articles, general...)
 		}
 	}
 

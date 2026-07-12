@@ -11,15 +11,17 @@ import (
 )
 
 type Metadata struct {
-	Desc                 string         `json:"desc"`
-	Condition            string         `json:"condition"`
-	AvatarURL            string         `json:"avatarUrl"`
-	DetailedInfo         string         `json:"detailedInfo"`
-	OptionYES            string         `json:"optionYES"`
-	OptionNO             string         `json:"optionNO"`
-	Keywords             []string       `json:"keywords,omitempty"`
-	AuthoritativeSources []string       `json:"authoritativeSources,omitempty"`
-	History              []HistoryPoint `json:"-"`
+	Type                 string          `json:"type,omitempty"`
+	Desc                 string          `json:"desc"`
+	Condition            string          `json:"condition"`
+	AvatarURL            string          `json:"avatarUrl"`
+	DetailedInfo         string          `json:"detailedInfo"`
+	OptionYES            string          `json:"optionYES"`
+	OptionNO             string          `json:"optionNO"`
+	Keywords             []string        `json:"keywords,omitempty"`
+	AuthoritativeSources []string        `json:"authoritativeSources,omitempty"`
+	ResolutionRule       json.RawMessage `json:"resolutionRule,omitempty"`
+	History              []HistoryPoint  `json:"-"`
 }
 
 type Client struct {

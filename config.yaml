@@ -17,6 +17,10 @@ ipfs:
 
 oracle:
   gold_api_url: "https://api.gold-api.com/price/XAU"
+  # 历史 OHLC/价格序列用于确定性裁决。API key 推荐通过
+  # PREDICTIONMARKET_GOLD_API_KEY 环境变量注入，不要提交真实密钥。
+  historical_base_url: "https://api.gold-api.com"
+  historical_api_key: ""
   sina_url: "https://hq.sinajs.cn/list=hf_XAU"
   sina_referer: "https://finance.sina.com.cn"
   user_agent: "PredictionMarket/1.0"

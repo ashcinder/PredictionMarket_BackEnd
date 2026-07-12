@@ -91,16 +91,16 @@ func TestEvaluateWinner_Template3_Volume(t *testing.T) {
 	}{
 		// 模板3: 交易量
 		{
-			name:     "成交量大于100吨 - 满足（当前模拟400）",
+			name:     "成交量缺少真实数据",
 			cond:     "博弈指定日成交量 大于 (Above) 100 吨 (2026-06-15)",
 			quote:    &oracle.Quote{PriceUSD: 4150},
-			expected: 0,
+			expected: -1,
 		},
 		{
 			name:     "成交量大于500吨 - 不满足",
 			cond:     "博弈指定日成交量 大于 (Above) 500 吨 (2026-06-15)",
 			quote:    &oracle.Quote{PriceUSD: 4150},
-			expected: 1,
+			expected: -1,
 		},
 	}
 
@@ -126,19 +126,19 @@ func TestEvaluateWinner_Template4_Indicator(t *testing.T) {
 			name:     "指标RSI大于70 - 当前65不满足",
 			cond:     "指标 RSI (14) 大于 (Above) 70 (Indicator Option)",
 			quote:    &oracle.Quote{PriceUSD: 4150},
-			expected: 1,
+			expected: -1,
 		},
 		{
 			name:     "指标RSI大于60 - 当前65满足",
 			cond:     "指标 RSI (14) 大于 (Above) 60 (Indicator Option)",
 			quote:    &oracle.Quote{PriceUSD: 4150},
-			expected: 0,
+			expected: -1,
 		},
 		{
 			name:     "指标MACD交叉向上",
 			cond:     "指标 MACD 交叉向上 (Indicator Option)",
 			quote:    &oracle.Quote{PriceUSD: 4150},
-			expected: 0,
+			expected: -1,
 		},
 	}
 
@@ -164,13 +164,13 @@ func TestEvaluateWinner_Template5_Touch(t *testing.T) {
 			name:     "触及4000 USD - 满足",
 			cond:     "金价曾触及 4000 USD (One-Touch Option)",
 			quote:    &oracle.Quote{PriceUSD: 4150},
-			expected: 0,
+			expected: -1,
 		},
 		{
 			name:     "触及4500 USD - 不满足",
 			cond:     "金价曾触及 4500 USD (One-Touch Option)",
 			quote:    &oracle.Quote{PriceUSD: 4150},
-			expected: 1,
+			expected: -1,
 		},
 	}
 
@@ -196,7 +196,7 @@ func TestEvaluateWinner_Template6_Outperform(t *testing.T) {
 			name:     "黄金跑赢BTC",
 			cond:     "黄金收益率跑赢 BTC (Outperformance Option)",
 			quote:    &oracle.Quote{PriceUSD: 4150},
-			expected: 0,
+			expected: -1,
 		},
 	}
 
@@ -233,7 +233,7 @@ func TestEvaluateWinner_InvalidCases(t *testing.T) {
 			name:     "未知条件",
 			cond:     "未知条件",
 			quote:    &oracle.Quote{PriceUSD: 4150},
-			expected: 1,
+			expected: -1,
 		},
 	}
 
