@@ -21,6 +21,7 @@ import (
 	"PredictionMarket/internal/logging"
 	"PredictionMarket/internal/marketdata"
 	"PredictionMarket/internal/oracle"
+	"PredictionMarket/internal/research"
 	"PredictionMarket/internal/sentinel"
 )
 
@@ -105,6 +106,8 @@ func main() {
 		v1Repo, v1Repo, v1Repo, v1Repo, v1Repo,
 		managedStore, chainClient, ipfsClient, cfg.ContractAddress, cfg.AIHistoryMaxPoints,
 	)
+	v1Server.SetQuoteProvider(goldOracle)
+	v1Server.SetResearchProvider(buildResearchClient(cfg))
 
 	// Extend the sampler to also keep the v1 cache tables fresh.
 	samplerExt := apiv1.NewSamplerCacheExt(v1Repo, v1Repo, v1Repo, v1Repo, cfg.ContractAddress, managedStore)
@@ -166,6 +169,30 @@ func main() {
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		slog.Warn("http api shutdown failed", "error", err)
 	}
+}
+
+func buildResearchClient(cfg *config.Config) research.Researcher {
+	providers := make([]research.Researcher, 0, 1+len(cfg.AIOracleProviders))
+	seen := make(map[string]bool)
+	add := func(baseURL, apiKey, model string, timeout time.Duration) {
+		key := baseURL + "\x00" + model + "\x00" + apiKey
+		if seen[key] || baseURL == "" || apiKey == "" || model == "" {
+			return
+		}
+		seen[key] = true
+		providers = append(providers, research.NewClient(baseURL, apiKey, model, timeout))
+	}
+	add(cfg.AIBaseURL, cfg.AIAPIKey, cfg.AIModel, 60*time.Second)
+	for _, provider := range cfg.AIOracleProviders {
+		// Anthropic uses a different request envelope. The configured DeepSeek,
+		// GLM, MiniMax and OpenAI providers are OpenAI-compatible.
+		if provider.Provider == "anthropic" {
+			continue
+		}
+		timeout := time.Duration(provider.TimeoutSeconds) * time.Second
+		add(provider.BaseURL, provider.APIKey, provider.Model, timeout)
+	}
+	return research.NewFailover(providers...)
 }
 
 func buildAIOracle(cfg *config.Config, goldOracle *oracle.GoldOracle) (*aioracle.Oracle, error) {

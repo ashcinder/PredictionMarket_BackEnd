@@ -6,6 +6,7 @@ import (
 
 	"PredictionMarket/internal/aimanaged"
 	"PredictionMarket/internal/ipfs"
+	"PredictionMarket/internal/oracle"
 )
 
 // chainClient is the subset of chain.Client used by the v1 API handlers.
@@ -16,6 +17,14 @@ type chainClient interface {
 
 type metadataClient interface {
 	DownloadMetadata(cid string) (*ipfs.Metadata, error)
+}
+
+type quoteProvider interface {
+	FetchQuote() (*oracle.Quote, error)
+}
+
+type researchProvider interface {
+	Research(ctx context.Context, systemPrompt, userMessage string) (string, error)
 }
 
 // Server serves the /api/v1/gold/... HTTP endpoints that provide the DApp
@@ -30,8 +39,22 @@ type Server struct {
 	aiStore          *aimanaged.Store
 	chain            chainClient    // optional, may be nil
 	metadata         metadataClient // optional, may be nil
+	quote            quoteProvider
+	research         researchProvider
 	contractAddr     string
 	historyMax       int
+}
+
+// SetQuoteProvider enables the backend-mediated quote route used by Android
+// clients whose emulator DNS cannot reliably resolve public market-data hosts.
+func (s *Server) SetQuoteProvider(provider quoteProvider) {
+	s.quote = provider
+}
+
+// SetResearchProvider enables the backend-mediated research route. The
+// provider owns the upstream API credential; the Android app never receives it.
+func (s *Server) SetResearchProvider(provider researchProvider) {
+	s.research = provider
 }
 
 // NewServer creates a v1 API server. The same *MySQLRepository can be passed
@@ -89,6 +112,11 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/gold/games/{id}/history", s.handleAddHistory)
 	mux.HandleFunc("GET /api/v1/gold/portfolio-history", s.handleGetPortfolioHistory)
 	mux.HandleFunc("POST /api/v1/gold/portfolio-history", s.handleAddPortfolioHistory)
+
+	// Public-data and AI gateways used by the Android app. Keeping these calls
+	// behind 10.0.2.2 avoids broken public DNS inside some emulator images.
+	mux.HandleFunc("GET /api/v1/gold/quote", s.handleGetQuote)
+	mux.HandleFunc("POST /api/v1/gold/research", s.handleResearch)
 
 	// Trade history & sync
 	mux.HandleFunc("GET /api/v1/gold/trades", s.handleGetTrades)
