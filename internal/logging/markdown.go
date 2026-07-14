@@ -92,7 +92,7 @@ func NewMarkdownRouter(console slog.Handler, dir string) (*MarkdownRouter, error
 				return nil, fmt.Errorf("initialize markdown log %s: %w", path, err)
 			}
 		}
-		session := fmt.Sprintf("\n---\n\n## 🚀 后端会话 · %s\n\n### 启动阶段\n\n",
+		session := fmt.Sprintf("\n---\n\n## 后端会话 · %s\n\n### 启动阶段\n\n",
 			time.Now().In(shanghaiLocation).Format("2006-01-02 15:04:05"),
 		)
 		if _, err := file.WriteString(session); err != nil {
@@ -184,7 +184,7 @@ func (s *markdownSink) write(record slog.Record, baseAttrs []slog.Attr, groups [
 		if round == "" {
 			round = "?"
 		}
-		section := fmt.Sprintf("\n---\n\n### 🔄 第 %s 轮\n\n**开始时间：** %s\n\n",
+		section := fmt.Sprintf("\n---\n\n### 第 %s 轮\n\n**开始时间：** %s\n\n",
 			markdownEscape(round),
 			timestamp.Format("2006-01-02 15:04:05"),
 		)
@@ -199,8 +199,7 @@ func (s *markdownSink) write(record slog.Record, baseAttrs []slog.Attr, groups [
 	}
 
 	level := strings.ToUpper(record.Level.String())
-	line := fmt.Sprintf("#### %s %s · %s\n\n**事件：** %s\n\n",
-		levelIcon(record.Level),
+	line := fmt.Sprintf("#### %s · %s\n\n**事件：** %s\n\n",
 		markdownEscape(level),
 		timestamp.Format("15:04:05.000"),
 		markdownEscape(redactText(record.Message)),
@@ -215,19 +214,6 @@ func (s *markdownSink) write(record slog.Record, baseAttrs []slog.Attr, groups [
 	defer s.mu.Unlock()
 	_, err := s.file.WriteString(line)
 	return err
-}
-
-func levelIcon(level slog.Level) string {
-	switch {
-	case level >= slog.LevelError:
-		return "🔴"
-	case level >= slog.LevelWarn:
-		return "🟠"
-	case level >= slog.LevelInfo:
-		return "🔵"
-	default:
-		return "⚪"
-	}
 }
 
 func attrsWithout(attrs []slog.Attr, excludedKey string) []slog.Attr {

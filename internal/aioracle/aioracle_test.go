@@ -802,6 +802,20 @@ func TestTruncateContent(t *testing.T) {
 	}
 }
 
+func TestQuantitativeOraclePromptsRequireIndependentReturnCalculation(t *testing.T) {
+	event := Event{ID: "relative", Title: "黄金 跑赢 BTC", Description: "TYPE_RELATIVE"}
+	articles := []NewsArticle{{Source: "GOLD_API + COINBASE_EXCHANGE", Content: "XAU open 1 close 2; BTC open 1 close 3"}}
+	peerPrompt := buildOraclePrompt(event, articles)
+	finalPrompt := buildFinalArbiterPrompt(event, articles, []ModelOpinion{{ModelName: "peer", Decision: DecisionNo}})
+	for name, prompt := range map[string]string{"peer": peerPrompt, "final": finalPrompt} {
+		for _, expected := range []string{"(截止价-起始价)/起始价", "分别计算", "候选结果", "不得直接照抄"} {
+			if !strings.Contains(prompt, expected) {
+				t.Fatalf("%s prompt missing %q: %s", name, expected, prompt)
+			}
+		}
+	}
+}
+
 func TestNewProviders_SkipsInvalid(t *testing.T) {
 	configs := []ProviderConfig{
 		{Name: "valid", Model: "deepseek-chat", APIKey: "sk-test", Provider: "deepseek", Weight: 1.0},

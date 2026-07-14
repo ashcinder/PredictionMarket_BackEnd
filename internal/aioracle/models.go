@@ -35,6 +35,10 @@ type Event struct {
 	// Deadline is the cutoff time after which the oracle will issue a final
 	// verdict regardless of confidence (timeout resolution).
 	Deadline time.Time `json:"deadline"`
+
+	// Evidence contains backend-verified, machine-readable market data. It is
+	// supplied directly to every independent reviewer and the final arbiter.
+	Evidence []NewsArticle `json:"evidence,omitempty"`
 }
 
 // NewsArticle represents a single news item retrieved from an external source.

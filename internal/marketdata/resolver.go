@@ -9,11 +9,22 @@ import (
 )
 
 type StructuredResolver struct {
-	gold *GoldAPIClient
+	gold    goldHistoricalSource
+	bitcoin historicalOHLCSource
 }
 
-func NewStructuredResolver(gold *GoldAPIClient) *StructuredResolver {
-	return &StructuredResolver{gold: gold}
+type goldHistoricalSource interface {
+	historicalOHLCSource
+	History(context.Context, string, string, time.Time, time.Time) ([]judge.Candle, error)
+}
+
+type historicalOHLCSource interface {
+	Available() bool
+	OHLC(context.Context, string, time.Time, time.Time) ([]judge.Candle, error)
+}
+
+func NewStructuredResolver(gold goldHistoricalSource, bitcoin historicalOHLCSource) *StructuredResolver {
+	return &StructuredResolver{gold: gold, bitcoin: bitcoin}
 }
 
 func (r *StructuredResolver) Resolve(ctx context.Context, rule judge.Rule) judge.Result {
@@ -40,7 +51,13 @@ func (r *StructuredResolver) Resolve(ctx context.Context, rule judge.Rule) judge
 		return judge.Result{Winner: -1, Summary: err.Error()}
 	}
 	if rule.Type == judge.TypeRelative {
-		evidence.Benchmark, err = r.gold.OHLC(ctx, rule.Benchmark, start, end)
+		if !strings.EqualFold(strings.TrimSpace(rule.Benchmark), "BTC") {
+			return judge.Result{Winner: -1, Summary: "unsupported relative benchmark " + rule.Benchmark}
+		}
+		if r.bitcoin == nil || !r.bitcoin.Available() {
+			return judge.Result{Winner: -1, Summary: "Bitcoin historical market data provider is not configured"}
+		}
+		evidence.Benchmark, err = r.bitcoin.OHLC(ctx, rule.Benchmark, start, end)
 		if err != nil {
 			return judge.Result{Winner: -1, Summary: "benchmark: " + err.Error()}
 		}

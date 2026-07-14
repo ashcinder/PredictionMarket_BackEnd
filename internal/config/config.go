@@ -48,6 +48,7 @@ type fileConfig struct {
 		GoldAPIURL            string `yaml:"gold_api_url"`
 		HistoricalBaseURL     string `yaml:"historical_base_url"`
 		HistoricalAPIKey      string `yaml:"historical_api_key"`
+		BitcoinHistoricalURL  string `yaml:"bitcoin_historical_base_url"`
 		SinaURL               string `yaml:"sina_url"`
 		SinaReferer           string `yaml:"sina_referer"`
 		UserAgent             string `yaml:"user_agent"`
@@ -114,6 +115,7 @@ type Config struct {
 	GoldAPIURL                 string
 	HistoricalGoldAPIBaseURL   string
 	HistoricalGoldAPIKey       string
+	HistoricalBitcoinBaseURL   string
 	SinaURL                    string
 	SinaReferer                string
 	OracleUserAgent            string
@@ -371,6 +373,14 @@ func LoadFile(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	bitcoinHistoricalURL := strings.TrimSpace(raw.Oracle.BitcoinHistoricalURL)
+	if bitcoinHistoricalURL == "" {
+		bitcoinHistoricalURL = "https://api.exchange.coinbase.com"
+	}
+	bitcoinHistoricalURL, err = requireHTTPURL("oracle.bitcoin_historical_base_url", bitcoinHistoricalURL)
+	if err != nil {
+		return nil, err
+	}
 	sinaURL, err := requireHTTPURL("oracle.sina_url", raw.Oracle.SinaURL)
 	if err != nil {
 		return nil, err
@@ -553,6 +563,7 @@ func LoadFile(path string) (*Config, error) {
 		GoldAPIURL:                  goldAPIURL,
 		HistoricalGoldAPIBaseURL:    strings.TrimRight(historicalBaseURL, "/"),
 		HistoricalGoldAPIKey:        strings.TrimSpace(raw.Oracle.HistoricalAPIKey),
+		HistoricalBitcoinBaseURL:    strings.TrimRight(bitcoinHistoricalURL, "/"),
 		SinaURL:                     sinaURL,
 		SinaReferer:                 sinaReferer,
 		OracleUserAgent:             strings.TrimSpace(raw.Oracle.UserAgent),

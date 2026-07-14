@@ -83,7 +83,17 @@ func main() {
 	watcher := sentinel.NewWatcher(cfg, chainClient, ipfsClient, aiOracle)
 	historicalClient := marketdata.NewGoldAPIClient(
 		cfg.HistoricalGoldAPIBaseURL, cfg.HistoricalGoldAPIKey, cfg.OracleRequestTimeout)
-	watcher.SetQuantitativeResolver(marketdata.NewStructuredResolver(historicalClient))
+	if !historicalClient.Available() {
+		slog.Warn("aioracle: historical gold evidence is not configured",
+			"stage", "startup",
+			"required_environment", config.GoldAPIKeyEnvName,
+			"logic_summary", "价格、波动、触价、技术指标和黄金跑赢 BTC 市场需要黄金历史行情；缺少密钥时将保持未裁决",
+		)
+	}
+	bitcoinHistoricalClient := marketdata.NewCoinbaseClient(
+		cfg.HistoricalBitcoinBaseURL, cfg.OracleRequestTimeout)
+	watcher.SetQuantitativeResolver(marketdata.NewStructuredResolver(
+		historicalClient, bitcoinHistoricalClient))
 	managedStore, err := aimanaged.NewStoreWithSecret(cfg.PrivateKey)
 	if err != nil {
 		slog.Error("init ai-managed store failed", "error", err)

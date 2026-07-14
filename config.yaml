@@ -21,6 +21,8 @@ oracle:
   # PREDICTIONMARKET_GOLD_API_KEY 环境变量注入，不要提交真实密钥。
   historical_base_url: "https://api.gold-api.com"
   historical_api_key: ""
+  # BTC-USD 一分钟历史 K 线，用于“黄金跑赢 BTC”等短周期相对收益市场。
+  bitcoin_historical_base_url: "https://api.exchange.coinbase.com"
   sina_url: "https://hq.sinajs.cn/list=hf_XAU"
   sina_referer: "https://finance.sina.com.cn"
   user_agent: "PredictionMarket/1.0"

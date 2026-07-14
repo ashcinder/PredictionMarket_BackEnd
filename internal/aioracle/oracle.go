@@ -71,8 +71,11 @@ func NewOracleWithOptions(news NewsFetcher, consensus *ConsensusEngine, opts Ora
 // returns a consensus verdict. This is a synchronous call — use ResolveAsync
 // for concurrent resolution of multiple events.
 func (o *Oracle) Resolve(ctx context.Context, event Event) *Verdict {
-	// Fetch news.
-	articles, officialErr := fetchAuthoritativeEvidence(ctx, event.AuthoritativeSources)
+	// Start with backend-verified quantitative evidence, then add documentary
+	// evidence for event markets.
+	articles := append([]NewsArticle(nil), event.Evidence...)
+	officialArticles, officialErr := fetchAuthoritativeEvidence(ctx, event.AuthoritativeSources)
+	articles = append(articles, officialArticles...)
 	if officialErr != nil {
 		slog.Warn("aioracle: authoritative evidence fetch failed",
 			"stage", "evidence_collection",
@@ -81,7 +84,7 @@ func (o *Oracle) Resolve(ctx context.Context, event Event) *Verdict {
 			"logic_summary", "权威信源抓取失败；继续尝试通用新闻源，但不会把缺少证据误判为 NO",
 		)
 	}
-	if o.newsFetcher != nil && len(articles) < o.maxArticles {
+	if len(event.Evidence) == 0 && o.newsFetcher != nil && len(articles) < o.maxArticles {
 		since := time.Now().Add(-o.newsLookback)
 		general, err := o.newsFetcher.Fetch(ctx, event.Keywords, since, o.maxArticles-len(articles))
 		if err != nil {

@@ -48,9 +48,9 @@ func TestMarkdownRouterRoutesAndRedacts(t *testing.T) {
 	if !strings.Contains(chain, "prediction market sentinel started") {
 		t.Fatalf("chain log missing routed message:\n%s", chain)
 	}
-	if !strings.Contains(chain, "### 🔄 第 1 轮") ||
-		!strings.Contains(chain, "### 🔄 第 2 轮") ||
-		!strings.Contains(chain, "## 🚀 后端会话") ||
+	if !strings.Contains(chain, "### 第 1 轮") ||
+		!strings.Contains(chain, "### 第 2 轮") ||
+		!strings.Contains(chain, "## 后端会话") ||
 		strings.Contains(chain, "| 时间 | 级别 | 消息 | 详情 |") {
 		t.Fatalf("round sections missing or malformed:\n%s", chain)
 	}
@@ -79,6 +79,11 @@ func TestMarkdownRouterRoutesAndRedacts(t *testing.T) {
 		t.Fatalf("poll log routing/redaction failed:\n%s", poll)
 	}
 	for _, body := range []string{chain, managed, oracle, poll} {
+		for _, icon := range []string{"🚀", "🔄", "🔴", "🟠", "🔵", "⚪"} {
+			if strings.Contains(body, icon) {
+				t.Fatalf("log should use plain text instead of icon %q:\n%s", icon, body)
+			}
+		}
 		if strings.Contains(body, "unclassified general log") {
 			t.Fatalf("unclassified message should not be written to category logs:\n%s", body)
 		}
@@ -115,7 +120,7 @@ func TestMarkdownRouterRebuildsLogsForEveryBackendRun(t *testing.T) {
 	if !strings.Contains(body, "second-run marker") {
 		t.Fatalf("current backend run is missing:\n%s", body)
 	}
-	if strings.Count(body, formatMarker) != 1 || strings.Count(body, "## 🚀 后端会话") != 1 {
+	if strings.Count(body, formatMarker) != 1 || strings.Count(body, "## 后端会话") != 1 {
 		t.Fatalf("log file was appended instead of rebuilt:\n%s", body)
 	}
 }
@@ -208,8 +213,8 @@ func TestMarkdownRouterReplacesLegacyTableFormat(t *testing.T) {
 
 	current := readLog(t, dir, chainPoolFile)
 	if !strings.Contains(current, formatMarker) ||
-		!strings.Contains(current, "## 🚀 后端会话") ||
-		!strings.Contains(current, "### 🔄 第 1 轮") ||
+		!strings.Contains(current, "## 后端会话") ||
+		!strings.Contains(current, "### 第 1 轮") ||
 		strings.Contains(current, "crowded") {
 		t.Fatalf("new log was not cleanly migrated:\n%s", current)
 	}

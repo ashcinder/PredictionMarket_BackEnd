@@ -27,6 +27,8 @@ oracle:
   # 历史 OHLC/价格序列 API；密钥推荐通过 PREDICTIONMARKET_GOLD_API_KEY 注入。
   historical_base_url: "https://api.gold-api.com"
   historical_api_key: ""
+  # Coinbase Exchange 公共 BTC-USD 一分钟 K 线，无需 API key。
+  bitcoin_historical_base_url: "https://api.exchange.coinbase.com"
   sina_url: "https://hq.sinajs.cn/list=hf_XAU"
   sina_referer: "https://finance.sina.com.cn"
   user_agent: "PredictionMarket/1.0"

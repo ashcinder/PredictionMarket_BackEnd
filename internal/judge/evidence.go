@@ -21,19 +21,20 @@ const (
 
 // Rule is the machine-readable settlement contract committed in market metadata.
 type Rule struct {
-	Type          string  `json:"type"`
-	Symbol        string  `json:"symbol"`
-	Benchmark     string  `json:"benchmark,omitempty"`
-	Operator      string  `json:"operator,omitempty"`
-	Direction     string  `json:"direction,omitempty"`
-	Threshold     float64 `json:"threshold,omitempty"`
-	FlatTolerance float64 `json:"flat_tolerance_percent,omitempty"`
-	Indicator     string  `json:"indicator,omitempty"`
-	Interval      string  `json:"interval,omitempty"`
-	VolumeUnit    string  `json:"volume_unit,omitempty"`
-	Source        string  `json:"source"`
-	StartTimeSec  int64   `json:"start_time_sec"`
-	EndTimeSec    int64   `json:"end_time_sec"`
+	Type            string  `json:"type"`
+	Symbol          string  `json:"symbol"`
+	Benchmark       string  `json:"benchmark,omitempty"`
+	BenchmarkSource string  `json:"benchmark_source,omitempty"`
+	Operator        string  `json:"operator,omitempty"`
+	Direction       string  `json:"direction,omitempty"`
+	Threshold       float64 `json:"threshold,omitempty"`
+	FlatTolerance   float64 `json:"flat_tolerance_percent,omitempty"`
+	Indicator       string  `json:"indicator,omitempty"`
+	Interval        string  `json:"interval,omitempty"`
+	VolumeUnit      string  `json:"volume_unit,omitempty"`
+	Source          string  `json:"source"`
+	StartTimeSec    int64   `json:"start_time_sec"`
+	EndTimeSec      int64   `json:"end_time_sec"`
 }
 
 // Candle is one immutable observation returned by the configured data source.
@@ -138,14 +139,26 @@ func EvaluateStructured(rule Rule, evidence Evidence) Result {
 		}
 		primaryReturn := percentChange(open, close)
 		benchmarkReturn := percentChange(benchmark[0].Open, benchmark[len(benchmark)-1].Close)
-		return decided(primaryReturn > benchmarkReturn,
-			fmt.Sprintf("primary return %.6f%%, benchmark return %.6f%%", primaryReturn, benchmarkReturn))
+		primaryName := firstLabel(rule.Symbol, "XAU")
+		benchmarkName := firstLabel(rule.Benchmark, "benchmark")
+		return decided(primaryReturn > benchmarkReturn, fmt.Sprintf(
+			"%s open %.6f close %.6f return %.6f%%; %s open %.6f close %.6f return %.6f%%",
+			primaryName, open, close, primaryReturn,
+			benchmarkName, benchmark[0].Open, benchmark[len(benchmark)-1].Close, benchmarkReturn,
+		))
 
 	case TypeEvent:
 		return indeterminate("event markets require authoritative documentary evidence and AI consensus")
 	default:
 		return indeterminate("unsupported rule type")
 	}
+}
+
+func firstLabel(value, fallback string) string {
+	if value = strings.TrimSpace(value); value != "" {
+		return strings.ToUpper(value)
+	}
+	return fallback
 }
 
 func validateRule(rule Rule) error {

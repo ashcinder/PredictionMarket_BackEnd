@@ -1,6 +1,7 @@
 package sentinel
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"PredictionMarket/internal/aioracle"
 	"PredictionMarket/internal/chain"
 	"PredictionMarket/internal/ipfs"
+	"PredictionMarket/internal/judge"
 )
 
 func TestWinnerFromVerdict(t *testing.T) {
@@ -29,6 +31,34 @@ func TestWinnerFromVerdict(t *testing.T) {
 				t.Fatalf("winnerFromVerdict() = (%d, %v), want (%d, error=%v)", got, err, tt.want, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestBuildQuantitativeAIEventIncludesRuleAndReproducibleCalculation(t *testing.T) {
+	deadline := time.Date(2026, 7, 14, 7, 14, 0, 0, time.UTC)
+	rule := judge.Rule{
+		Type: judge.TypeRelative, Symbol: "XAU", Benchmark: "BTC", Source: "GOLD_API",
+		StartTimeSec: deadline.Add(-2 * time.Minute).Unix(), EndTimeSec: deadline.Unix(),
+	}
+	rawRule, err := json.Marshal(rule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := &ipfs.Metadata{
+		Desc: "黄金 跑赢 BTC", Condition: "黄金收益率跑赢 BTC", ResolutionRule: rawRule,
+		OptionYES: "YES", OptionNO: "NO",
+	}
+	result := judge.Result{Determinate: true, Winner: 1, Summary: "XAU return 0.1%; BTC return 2.0%"}
+
+	event := buildQuantitativeAIEvent(chain.GameOnChain{ID: 9, DeadlineRaw: deadline.Unix()}, meta, rule, result)
+	if len(event.Evidence) != 1 {
+		t.Fatalf("quantitative evidence missing: %+v", event)
+	}
+	content := event.Evidence[0].Content
+	for _, expected := range []string{"TYPE_RELATIVE", "XAU", "BTC", "XAU return 0.1%", "BTC return 2.0%", "候选结果：NO"} {
+		if !strings.Contains(content, expected) {
+			t.Fatalf("evidence missing %q: %s", expected, content)
+		}
 	}
 }
 

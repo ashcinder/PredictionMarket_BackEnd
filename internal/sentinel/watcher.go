@@ -40,7 +40,9 @@ func (w *Watcher) SetQuantitativeResolver(resolver QuantitativeResolver) {
 	w.quantitative = resolver
 }
 
-const aiResolutionTimeout = 90 * time.Second
+// Peer models run concurrently, then the final arbiter runs sequentially.
+// Two configured 60-second stages need more than the previous 90-second budget.
+const aiResolutionTimeout = 3 * time.Minute
 
 func NewWatcher(cfg *config.Config, chainClient *chain.Client, ipfsClient *ipfs.Client, aiOracle EventResolver) *Watcher {
 	return &Watcher{
@@ -150,7 +152,49 @@ func (w *Watcher) resolveGame(ctx context.Context, game chain.GameOnChain) error
 			}
 			result := w.quantitative.Resolve(ctx, rule)
 			if !result.Determinate || result.Winner < 0 {
+				slog.Warn("aioracle: quantitative evidence unavailable",
+					"stage", "quantitative_evidence",
+					"game_id", game.ID,
+					"rule_type", rule.Type,
+					"symbol", rule.Symbol,
+					"benchmark", rule.Benchmark,
+					"start_time", time.Unix(rule.StartTimeSec, 0).UTC(),
+					"end_time", time.Unix(rule.EndTimeSec, 0).UTC(),
+					"error", result.Summary,
+					"logic_summary", "缺少可复算行情时保持未裁决，不把价格问题交给模型猜测",
+				)
 				return fmt.Errorf("game %d: quantitative evidence is indeterminate: %s", game.ID, result.Summary)
+			}
+			if rule.Type == judge.TypeRelative {
+				if w.oracle == nil {
+					return fmt.Errorf("game %d: AI oracle is not configured for relative-market review", game.ID)
+				}
+				event := buildQuantitativeAIEvent(game, meta, rule, result)
+				candidate := "NO"
+				if result.Winner == 0 {
+					candidate = "YES"
+				}
+				slog.Info("aioracle: quantitative evidence prepared",
+					"stage", "quantitative_evidence",
+					"game_id", game.ID,
+					"rule_type", rule.Type,
+					"symbol", rule.Symbol,
+					"benchmark", rule.Benchmark,
+					"start_time", time.Unix(rule.StartTimeSec, 0).UTC(),
+					"end_time", time.Unix(rule.EndTimeSec, 0).UTC(),
+					"calculation", result.Summary,
+					"deterministic_candidate", candidate,
+					"logic_summary", "已按同一时间窗计算黄金与 BTC 收益率；现在交给 N-1 个模型复算，再由最终模型裁定",
+				)
+				resolveCtx, cancel := context.WithTimeout(ctx, aiResolutionTimeout)
+				verdict := w.oracle.Resolve(resolveCtx, event)
+				cancel()
+				winner, verdictErr := winnerFromVerdict(verdict)
+				if verdictErr != nil {
+					return fmt.Errorf("game %d: relative-market AI review: %w", game.ID, verdictErr)
+				}
+				return w.settle(ctx, game, meta, winner, verdict.Confidence, verdict.ConsensusRatio,
+					"deterministic evidence reviewed by multi-AI: "+verdict.Summary)
 			}
 			return w.settle(ctx, game, meta, result.Winner, 1, 1, "deterministic evidence: "+result.Summary)
 		}
@@ -182,6 +226,36 @@ func (w *Watcher) resolveGame(ctx context.Context, game chain.GameOnChain) error
 		return fmt.Errorf("game %d: %w", game.ID, err)
 	}
 	return w.settle(ctx, game, meta, winner, verdict.Confidence, verdict.ConsensusRatio, verdict.Summary)
+}
+
+func buildQuantitativeAIEvent(game chain.GameOnChain, meta *ipfs.Metadata, rule judge.Rule, result judge.Result) aioracle.Event {
+	event := buildAIEvent(game, meta)
+	ruleJSON, _ := json.Marshal(rule)
+	candidate := "NO"
+	if result.Winner == 0 {
+		candidate = "YES"
+	}
+	event.Description += "\n该市场采用结构化行情先计算、N-1 个模型复核、第 N 个模型终审的开奖流程。"
+	event.Evidence = []aioracle.NewsArticle{{
+		Title:       "结构化行情计算证据：" + event.Title,
+		Source:      quantitativeEvidenceSource(rule),
+		PublishedAt: event.Deadline,
+		Content: fmt.Sprintf(
+			"结算规则：%s\n行情计算：%s\n确定性候选结果：%s\n复核要求：逐项复算两种资产在同一时间窗内的收益率；黄金收益率严格高于基准资产才是 YES，否则是 NO。",
+			string(ruleJSON), result.Summary, candidate,
+		),
+	}}
+	return event
+}
+
+func quantitativeEvidenceSource(rule judge.Rule) string {
+	if benchmarkSource := strings.TrimSpace(rule.BenchmarkSource); benchmarkSource != "" {
+		return strings.TrimSpace(rule.Source) + " + " + benchmarkSource
+	}
+	if rule.Type == judge.TypeRelative && strings.EqualFold(rule.Benchmark, "BTC") {
+		return "GOLD_API + COINBASE_EXCHANGE"
+	}
+	return strings.TrimSpace(rule.Source)
 }
 
 func (w *Watcher) settle(ctx context.Context, game chain.GameOnChain, meta *ipfs.Metadata, winner int, confidence, consensusRatio float64, summary string) error {

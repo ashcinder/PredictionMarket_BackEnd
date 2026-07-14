@@ -16,23 +16,57 @@ type deliberationTestProvider struct {
 	finalErr   error
 	mu         sync.Mutex
 	received   []ModelOpinion
+	articles   []NewsArticle
 	finalCalls int
 }
 
 func (p *deliberationTestProvider) Name() string    { return p.name }
 func (p *deliberationTestProvider) ModelID() string { return p.name + "-model" }
 func (p *deliberationTestProvider) Weight() float64 { return 1 }
-func (p *deliberationTestProvider) Query(context.Context, Event, []NewsArticle) (*ModelOpinion, error) {
+
+func (p *deliberationTestProvider) Query(_ context.Context, _ Event, articles []NewsArticle) (*ModelOpinion, error) {
+	p.mu.Lock()
+	p.articles = append([]NewsArticle(nil), articles...)
+	p.mu.Unlock()
 	opinion := p.opinion
 	opinion.ModelName = p.name
 	return &opinion, nil
 }
-func (p *deliberationTestProvider) QueryFinal(_ context.Context, _ Event, _ []NewsArticle, opinions []ModelOpinion) (*FinalJudgment, error) {
+func (p *deliberationTestProvider) QueryFinal(_ context.Context, _ Event, articles []NewsArticle, opinions []ModelOpinion) (*FinalJudgment, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.finalCalls++
+	p.articles = append([]NewsArticle(nil), articles...)
 	p.received = append([]ModelOpinion(nil), opinions...)
 	return p.final, p.finalErr
+}
+
+func TestOracleDeliversEmbeddedQuantitativeEvidenceToPeersAndFinalArbiter(t *testing.T) {
+	peer := &deliberationTestProvider{name: "peer", opinion: ModelOpinion{
+		Occurred: false, Decision: DecisionNo, Confidence: 0.99, Reasoning: "BTC 收益率更高",
+	}}
+	arbiter := &deliberationTestProvider{name: "arbiter", final: &FinalJudgment{
+		Decision: DecisionNo, Confidence: 0.99, Reasoning: "复算收益率后裁定 NO",
+	}}
+	engine := NewConsensusEngine(ConsensusConfig{FinalArbiter: "arbiter"}, []ModelProvider{peer, arbiter})
+	oracle := NewOracleWithOptions(nil, engine, OracleOptions{})
+	evidence := NewsArticle{
+		Title: "XAU/BTC 两分钟收益率证据", Source: "GOLD_API + COINBASE_EXCHANGE",
+		Content: "XAU return 0.1%; BTC return 2.0%",
+	}
+
+	verdict := oracle.Resolve(context.Background(), Event{
+		ID: "game-relative", Title: "黄金 跑赢 BTC", Deadline: time.Now(),
+		Evidence: []NewsArticle{evidence},
+	})
+	if !verdict.Resolved || verdict.Decision != DecisionNo {
+		t.Fatalf("unexpected verdict: %+v", verdict)
+	}
+	for _, provider := range []*deliberationTestProvider{peer, arbiter} {
+		if len(provider.articles) != 1 || provider.articles[0].Content != evidence.Content {
+			t.Fatalf("%s did not receive embedded evidence: %+v", provider.name, provider.articles)
+		}
+	}
 }
 
 func TestFinalArbiterReceivesPeerOpinionsAndControlsVerdict(t *testing.T) {
