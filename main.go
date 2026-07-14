@@ -217,6 +217,7 @@ func buildAIOracle(cfg *config.Config, goldOracle *oracle.GoldOracle) (*aioracle
 	}
 
 	consensus := aioracle.NewConsensusEngine(aioracle.ConsensusConfig{
+		FinalArbiter:      cfg.AIOracleConsensus.FinalArbiter,
 		MinConsensusRatio: cfg.AIOracleConsensus.MinConsensusRatio,
 		MinConfidence:     cfg.AIOracleConsensus.MinConfidence,
 		MinModelsRequired: cfg.AIOracleConsensus.MinModelsRequired,

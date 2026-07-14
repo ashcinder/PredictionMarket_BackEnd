@@ -86,6 +86,9 @@ func (c *Client) Research(ctx context.Context, systemPrompt, userMessage string)
 		return "", fmt.Errorf("read AI research response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode == http.StatusPaymentRequired {
+			return "", fmt.Errorf("AI research HTTP 402 (account balance or billing unavailable)")
+		}
 		return "", fmt.Errorf("AI research HTTP %d", resp.StatusCode)
 	}
 	var envelope completionResponse

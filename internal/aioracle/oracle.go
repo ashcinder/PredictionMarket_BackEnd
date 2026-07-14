@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -73,24 +74,69 @@ func (o *Oracle) Resolve(ctx context.Context, event Event) *Verdict {
 	// Fetch news.
 	articles, officialErr := fetchAuthoritativeEvidence(ctx, event.AuthoritativeSources)
 	if officialErr != nil {
-		slog.Warn("aioracle: authoritative evidence fetch failed", "event_id", event.ID, "error", officialErr)
+		slog.Warn("aioracle: authoritative evidence fetch failed",
+			"stage", "evidence_collection",
+			"event_id", event.ID,
+			"error", officialErr,
+			"logic_summary", "权威信源抓取失败；继续尝试通用新闻源，但不会把缺少证据误判为 NO",
+		)
 	}
 	if o.newsFetcher != nil && len(articles) < o.maxArticles {
 		since := time.Now().Add(-o.newsLookback)
 		general, err := o.newsFetcher.Fetch(ctx, event.Keywords, since, o.maxArticles-len(articles))
 		if err != nil {
 			slog.Warn("aioracle: news fetch failed, proceeding without news",
-				"event_id", event.ID, "error", err)
+				"stage", "evidence_collection",
+				"event_id", event.ID,
+				"error", err,
+				"logic_summary", "通用新闻源抓取失败；仅使用已取得的权威证据，若最终没有证据则保持 INDETERMINATE",
+			)
 		} else {
 			articles = append(articles, general...)
 		}
 	}
+	if len(articles) == 0 {
+		slog.Warn("aioracle: no external evidence collected",
+			"stage", "evidence_collection",
+			"event_id", event.ID,
+			"title", event.Title,
+			"authoritative_sources", event.AuthoritativeSources,
+			"logic_summary", "未取得可核验的外部证据；即使模型给出候选结论，系统也会保持 INDETERMINATE",
+		)
+	} else {
+		for index, article := range articles {
+			slog.Info("aioracle: evidence collected",
+				"stage", "evidence_collection",
+				"event_id", event.ID,
+				"evidence_index", index+1,
+				"source", article.Source,
+				"title", article.Title,
+				"url", article.URL,
+				"published_at", article.PublishedAt,
+				"content_summary", truncateContent(article.Content, 500),
+			)
+		}
+	}
+	slog.Info("aioracle: reasoning input snapshot",
+		"stage", "event_and_evidence",
+		"event_id", event.ID,
+		"title", event.Title,
+		"description", event.Description,
+		"deadline", event.Deadline,
+		"keywords", strings.Join(event.Keywords, ", "),
+		"authoritative_sources", strings.Join(event.AuthoritativeSources, ", "),
+		"evidence_count", len(articles),
+		"evidence_summary", summarizeEvidence(articles),
+		"logic_summary", "先固定事件定义、判断条件、截止时间与外部证据，再把相同输入分发给各独立模型",
+	)
 
 	slog.Info("aioracle: resolving event",
+		"stage", "model_dispatch",
 		"event_id", event.ID,
 		"title", event.Title,
 		"articles", len(articles),
 		"models", o.consensus.ProviderCount(),
+		"logic_summary", "开始并发请求前序模型，随后由配置的最终裁定模型审查全部意见",
 	)
 
 	verdict := o.consensus.Judge(ctx, event, articles)
@@ -107,6 +153,7 @@ func (o *Oracle) Resolve(ctx context.Context, event Event) *Verdict {
 	o.mu.Unlock()
 
 	slog.Info("aioracle: verdict reached",
+		"stage", "settlement_decision",
 		"event_id", event.ID,
 		"occurred", verdict.Occurred,
 		"decision", verdict.Decision,
@@ -114,9 +161,40 @@ func (o *Oracle) Resolve(ctx context.Context, event Event) *Verdict {
 		"confidence", verdict.Confidence,
 		"consensus_ratio", verdict.ConsensusRatio,
 		"agreeing_models", fmt.Sprintf("%d/%d", verdict.AgreeingModels, len(verdict.Opinions)),
+		"summary", verdict.Summary,
+		"logic_summary", verdict.Summary,
 	)
 
 	return verdict
+}
+
+func summarizeEvidence(articles []NewsArticle) string {
+	if len(articles) == 0 {
+		return "未收集到外部证据"
+	}
+	parts := make([]string, 0, len(articles))
+	for index, article := range articles {
+		publishedAt := "时间未知"
+		if !article.PublishedAt.IsZero() {
+			publishedAt = article.PublishedAt.Format("2006-01-02 15:04")
+		}
+		parts = append(parts, fmt.Sprintf(
+			"证据%d[%s｜%s｜%s]：%s",
+			index+1,
+			emptyEvidenceField(article.Source, "来源未知"),
+			emptyEvidenceField(article.Title, "无标题"),
+			publishedAt,
+			truncateContent(strings.TrimSpace(article.Content), 500),
+		))
+	}
+	return strings.Join(parts, "；")
+}
+
+func emptyEvidenceField(value, fallback string) string {
+	if value = strings.TrimSpace(value); value != "" {
+		return value
+	}
+	return fallback
 }
 
 // ResolveAsync resolves multiple events concurrently and returns verdicts

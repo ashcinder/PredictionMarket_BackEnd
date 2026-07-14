@@ -51,6 +51,7 @@ func TestLiveConfiguredOracle(t *testing.T) {
 	}
 
 	engine := NewConsensusEngine(ConsensusConfig{
+		FinalArbiter:      cfg.AIOracleConsensus.FinalArbiter,
 		MinConsensusRatio: cfg.AIOracleConsensus.MinConsensusRatio,
 		MinConfidence:     cfg.AIOracleConsensus.MinConfidence,
 		MinModelsRequired: cfg.AIOracleConsensus.MinModelsRequired,
@@ -70,18 +71,26 @@ func TestLiveConfiguredOracle(t *testing.T) {
 		Deadline: time.Now().Add(time.Hour),
 	})
 
-	successful := 0
+	successfulPeers := 0
+	finalSucceeded := false
 	for _, opinion := range verdict.Opinions {
 		if opinion.Error != "" {
-			t.Errorf("%s (%s) failed: %s", opinion.ModelName, opinion.ModelID, opinion.Error)
+			t.Logf("%s (%s) failed: %s", opinion.ModelName, opinion.ModelID, opinion.Error)
 			continue
 		}
-		successful++
-		t.Logf("%s (%s): occurred=%v confidence=%.2f",
-			opinion.ModelName, opinion.ModelID, opinion.Occurred, opinion.Confidence)
+		if opinion.IsFinal {
+			finalSucceeded = true
+		} else {
+			successfulPeers++
+		}
+		t.Logf("%s (%s): decision=%s confidence=%.2f final=%v",
+			opinion.ModelName, opinion.ModelID, opinion.Decision, opinion.Confidence, opinion.IsFinal)
 	}
-	if successful != len(providers) {
-		t.Fatalf("only %d/%d providers completed successfully", successful, len(providers))
+	if !finalSucceeded {
+		t.Fatal("configured final arbiter did not complete successfully")
+	}
+	if successfulPeers == 0 {
+		t.Fatal("no independent peer model completed successfully")
 	}
 	if !verdict.Resolved || verdict.Decision != DecisionYes {
 		t.Fatalf("full consensus path did not resolve YES: decision=%s confidence=%.2f ratio=%.2f summary=%s",

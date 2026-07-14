@@ -16,6 +16,7 @@ import (
 const (
 	chainPoolFile = "监听链上博弈池状态.md"
 	aiManagedFile = "AI托管.md"
+	aiOracleFile  = "AI开奖.md"
 	chainPollFile = "链上数据轮询.md"
 	formatMarker  = "<!-- prediction-market-log-format: 2 -->"
 )
@@ -27,6 +28,7 @@ type category string
 const (
 	categoryChainPool category = "chain_pool"
 	categoryAIManaged category = "ai_managed"
+	categoryAIOracle  category = "ai_oracle"
 	categoryChainPoll category = "chain_poll"
 )
 
@@ -36,7 +38,7 @@ type markdownSink struct {
 }
 
 // MarkdownRouter preserves normal console logging and additionally routes
-// selected runtime records into separate append-only Markdown files.
+// selected runtime records into Markdown files rebuilt for each backend run.
 type MarkdownRouter struct {
 	console slog.Handler
 	sinks   map[category]*markdownSink
@@ -62,6 +64,7 @@ func NewMarkdownRouter(console slog.Handler, dir string) (*MarkdownRouter, error
 	}{
 		{categoryChainPool, chainPoolFile, "监听链上博弈池状态日志"},
 		{categoryAIManaged, aiManagedFile, "AI 托管日志"},
+		{categoryAIOracle, aiOracleFile, "AI 开奖审议与终审日志"},
 		{categoryChainPoll, chainPollFile, "链上数据轮询日志"},
 	}
 	router := &MarkdownRouter{
@@ -70,11 +73,7 @@ func NewMarkdownRouter(console slog.Handler, dir string) (*MarkdownRouter, error
 	}
 	for _, spec := range specs {
 		path := filepath.Join(dir, spec.filename)
-		if err := archiveLegacyLog(path); err != nil {
-			router.Close()
-			return nil, fmt.Errorf("archive legacy markdown log %s: %w", path, err)
-		}
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
 		if err != nil {
 			router.Close()
 			return nil, fmt.Errorf("open markdown log %s: %w", path, err)
@@ -86,7 +85,7 @@ func NewMarkdownRouter(console slog.Handler, dir string) (*MarkdownRouter, error
 			return nil, fmt.Errorf("stat markdown log %s: %w", path, err)
 		}
 		if info.Size() == 0 {
-			header := fmt.Sprintf("%s\n\n# %s\n\n_后端自动追加 · Asia/Shanghai · 每条事件独立显示_\n", formatMarker, spec.title)
+			header := fmt.Sprintf("%s\n\n# %s\n\n_本次后端运行 · Asia/Shanghai · 每条事件独立显示_\n", formatMarker, spec.title)
 			if _, err := file.WriteString(header); err != nil {
 				file.Close()
 				router.Close()
@@ -218,27 +217,6 @@ func (s *markdownSink) write(record slog.Record, baseAttrs []slog.Attr, groups [
 	return err
 }
 
-func archiveLegacyLog(path string) error {
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if len(strings.TrimSpace(string(data))) == 0 || strings.Contains(string(data), formatMarker) {
-		return nil
-	}
-	ext := filepath.Ext(path)
-	base := strings.TrimSuffix(path, ext)
-	archive := fmt.Sprintf("%s.旧格式-%s%s",
-		base,
-		time.Now().In(shanghaiLocation).Format("20060102-150405.000"),
-		ext,
-	)
-	return os.Rename(path, archive)
-}
-
 func levelIcon(level slog.Level) string {
 	switch {
 	case level >= slog.LevelError:
@@ -293,14 +271,16 @@ func classify(record slog.Record, baseAttrs []slog.Attr) category {
 		strings.Contains(message, "mysql repository:") ||
 		strings.Contains(attrText, "/ai-managed"):
 		return categoryAIManaged
+	case strings.Contains(message, "aioracle:") ||
+		strings.Contains(message, "game evaluated by ai") ||
+		strings.Contains(message, "ai oracle left game"):
+		return categoryAIOracle
 	case strings.Contains(message, "sentinel") ||
 		strings.Contains(message, "scan complete") ||
 		strings.Contains(message, "scan failed") ||
 		strings.Contains(message, "resolve game") ||
 		strings.Contains(message, "game evaluated") ||
-		strings.Contains(message, "game resolved on chain") ||
-		strings.Contains(message, "ai oracle left game") ||
-		strings.Contains(message, "aioracle:"):
+		strings.Contains(message, "game resolved on chain"):
 		return categoryChainPool
 	default:
 		return ""

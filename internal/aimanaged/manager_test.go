@@ -97,6 +97,60 @@ func TestAIClientRetriesMalformedDecisionJSON(t *testing.T) {
 	}
 }
 
+func TestAIClientFallsBackToConfiguredOracleProvider(t *testing.T) {
+	var primaryCalls int
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryCalls++
+		http.Error(w, `{"error":{"message":"Insufficient Balance"}}`, http.StatusPaymentRequired)
+	}))
+	defer primary.Close()
+
+	var fallbackCalls int
+	var fallbackModel string
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackCalls++
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		fallbackModel = body.Model
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"condition_outcome\":\"yes\",\"action\":\"buy_yes\",\"confidence\":0.82,\"estimated_prob\":0.73,\"reason\":\"fallback ok\"}"}}]}`))
+	}))
+	defer fallback.Close()
+
+	client := NewAIClient(&config.Config{
+		AIAPIKey:  "deepseek-key",
+		AIBaseURL: primary.URL,
+		AIModel:   "deepseek-chat",
+		AIOracleProviders: []config.ProviderConfig{
+			{
+				Name: "glm", Provider: "glm", APIKey: "glm-key",
+				BaseURL: fallback.URL, Model: "glm-test", TimeoutSeconds: 5,
+			},
+		},
+	})
+	decision, err := client.Decide(context.Background(),
+		&chain.GameInfo{ID: 1, TotalPool: big.NewInt(100), DeadlineRaw: time.Now().Add(time.Hour).UnixMilli()},
+		&chain.GameExtraData{VirtualReservesNOYES: []*big.Int{big.NewInt(50), big.NewInt(50)}},
+		&ipfs.Metadata{Condition: "黄金价格高于 3000 USD/盎司"},
+		&oracle.Quote{PriceUSD: 4000, QuoteSource: "test"},
+		&ResearchContext{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if primaryCalls != 1 || fallbackCalls != 1 {
+		t.Fatalf("expected one primary and one fallback call, got primary=%d fallback=%d", primaryCalls, fallbackCalls)
+	}
+	if fallbackModel != "glm-test" || decision.Action != "buy_yes" ||
+		decision.ProviderName != "glm" || decision.ModelID != "glm-test" {
+		t.Fatalf("unexpected fallback result: model=%q decision=%+v", fallbackModel, decision)
+	}
+}
+
 func TestParseDecisionRejectsConditionProbabilityMismatch(t *testing.T) {
 	_, err := parseDecision(`{
 		"condition_outcome":"yes",

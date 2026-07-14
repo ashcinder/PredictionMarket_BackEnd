@@ -59,6 +59,9 @@ type ModelOpinion struct {
 	// Occurred is the model's binary judgment.
 	Occurred bool `json:"occurred"`
 
+	// Decision preserves YES/NO/INDETERMINATE semantics in the audit trail.
+	Decision Decision `json:"decision,omitempty"`
+
 	// Confidence is the model's self-reported certainty (0.0 to 1.0).
 	Confidence float64 `json:"confidence"`
 
@@ -70,6 +73,19 @@ type ModelOpinion struct {
 
 	// Error is non-empty if the model failed to respond (counts as abstain).
 	Error string `json:"error,omitempty"`
+
+	// IsFinal marks the Nth model's adjudication after it reviewed all N-1
+	// independent opinions.
+	IsFinal bool `json:"is_final,omitempty"`
+}
+
+// FinalJudgment is returned by the designated Nth model after it reviews the
+// event evidence and every independent opinion produced by the other models.
+type FinalJudgment struct {
+	Decision   Decision `json:"decision"`
+	Confidence float64  `json:"confidence"`
+	Reasoning  string   `json:"reasoning"`
+	Sources    []string `json:"sources,omitempty"`
 }
 
 // Decision is the tri-state settlement result. INDETERMINATE is intentionally
@@ -154,6 +170,11 @@ type ProviderConfig struct {
 
 // ConsensusConfig tunes how individual opinions are aggregated into a verdict.
 type ConsensusConfig struct {
+	// FinalArbiter names the Nth provider that receives all N-1 independent
+	// opinions and makes the final YES/NO/INDETERMINATE decision. When set,
+	// backend consensus/confidence thresholds are informational only.
+	FinalArbiter string `yaml:"final_arbiter"`
+
 	// MinConsensusRatio is the minimum fraction of models that must agree
 	// before a verdict is considered "occurred" (0.0 to 1.0).
 	// Example: 0.66 means at least 2/3 of models must concur.

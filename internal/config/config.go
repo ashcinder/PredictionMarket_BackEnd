@@ -78,6 +78,7 @@ type fileConfig struct {
 	AIOracle struct {
 		PollIntervalSeconds int `yaml:"poll_interval_seconds"`
 		Consensus           struct {
+			FinalArbiter      string  `yaml:"final_arbiter"`
 			MinConsensusRatio float64 `yaml:"min_consensus_ratio"`
 			MinConfidence     float64 `yaml:"min_confidence"`
 			MinModelsRequired int     `yaml:"min_models_required"`
@@ -149,6 +150,7 @@ type Config struct {
 
 // ConsensusConfig is exported for use by the aioracle package.
 type ConsensusConfig struct {
+	FinalArbiter      string
 	MinConsensusRatio float64
 	MinConfidence     float64
 	MinModelsRequired int
@@ -501,6 +503,22 @@ func LoadFile(path string) (*Config, error) {
 		if len(oracleProviders) == 0 {
 			return nil, errors.New("aioracle has no usable providers after ignoring placeholder credentials")
 		}
+		finalArbiter := strings.TrimSpace(raw.AIOracle.Consensus.FinalArbiter)
+		if finalArbiter != "" {
+			if len(oracleProviders) < 2 {
+				return nil, errors.New("aioracle.consensus.final_arbiter requires at least two usable providers")
+			}
+			found := false
+			for _, provider := range oracleProviders {
+				if strings.EqualFold(provider.Name, finalArbiter) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, fmt.Errorf("aioracle.consensus.final_arbiter %q does not match a usable provider", finalArbiter)
+			}
+		}
 		if raw.AIOracle.Consensus.MinModelsRequired > len(oracleProviders) {
 			return nil, fmt.Errorf(
 				"aioracle.consensus.min_models_required (%d) exceeds number of providers (%d)",
@@ -509,6 +527,7 @@ func LoadFile(path string) (*Config, error) {
 		}
 
 		oracleConsensus = ConsensusConfig{
+			FinalArbiter:      finalArbiter,
 			MinConsensusRatio: raw.AIOracle.Consensus.MinConsensusRatio,
 			MinConfidence:     raw.AIOracle.Consensus.MinConfidence,
 			MinModelsRequired: raw.AIOracle.Consensus.MinModelsRequired,

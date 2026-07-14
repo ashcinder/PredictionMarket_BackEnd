@@ -60,9 +60,10 @@ ai:
 # aioracle:
 #   poll_interval_seconds: 300
 #   consensus:
-#     min_consensus_ratio: 0.66
-#     min_confidence: 0.60
-#     min_models_required: 2
+#     final_arbiter: "minimax" # The Nth model reviews every N-1 independent opinion
+#     min_consensus_ratio: 0.66 # Legacy mode only when final_arbiter is omitted
+#     min_confidence: 0.60 # Legacy mode only when final_arbiter is omitted
+#     min_models_required: 2 # Legacy mode only when final_arbiter is omitted
 #   news:
 #     rss_feeds:
 #       - "https://feeds.bbci.co.uk/news/business/rss.xml"

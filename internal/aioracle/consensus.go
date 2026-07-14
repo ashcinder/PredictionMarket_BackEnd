@@ -41,8 +41,224 @@ func NewConsensusEngine(cfg ConsensusConfig, providers []ModelProvider) *Consens
 // and returns a final verdict. If ctx is cancelled mid-flight, partial results
 // are used if enough models have responded.
 func (e *ConsensusEngine) Judge(ctx context.Context, event Event, articles []NewsArticle) *Verdict {
+	if strings.TrimSpace(e.cfg.FinalArbiter) != "" {
+		return e.judgeWithFinalArbiter(ctx, event, articles)
+	}
 	opinions := QueryAllModels(ctx, e.providers, event, articles)
 	return e.aggregate(event, opinions)
+}
+
+func (e *ConsensusEngine) judgeWithFinalArbiter(ctx context.Context, event Event, articles []NewsArticle) *Verdict {
+	arbiterName := strings.TrimSpace(e.cfg.FinalArbiter)
+	peers := make([]ModelProvider, 0, len(e.providers)-1)
+	var arbiter FinalModelProvider
+	var configuredArbiter ModelProvider
+	for _, provider := range e.providers {
+		if strings.EqualFold(provider.Name(), arbiterName) {
+			configuredArbiter = provider
+			arbiter, _ = provider.(FinalModelProvider)
+			continue
+		}
+		peers = append(peers, provider)
+	}
+	base := &Verdict{
+		EventID: event.ID, Decision: DecisionIndeterminate,
+		TotalModels: len(e.providers), ResolvedAt: time.Now(),
+	}
+	if configuredArbiter == nil {
+		base.Summary = fmt.Sprintf("final arbiter %q is not configured", arbiterName)
+		slog.Warn("aioracle: final adjudication unavailable",
+			"stage", "final_adjudication",
+			"event_id", event.ID,
+			"final_arbiter", arbiterName,
+			"logic_summary", "配置指定的最终裁定模型不存在，保持 INDETERMINATE，不触发链上结算",
+		)
+		return base
+	}
+	if arbiter == nil {
+		base.Summary = fmt.Sprintf("final arbiter %q does not support final adjudication", arbiterName)
+		slog.Warn("aioracle: final adjudication unavailable",
+			"stage", "final_adjudication",
+			"event_id", event.ID,
+			"final_arbiter", arbiterName,
+			"logic_summary", "配置的模型不支持终审接口，保持 INDETERMINATE，不触发链上结算",
+		)
+		return base
+	}
+
+	slog.Info("aioracle: peer deliberation started",
+		"stage", "independent_review",
+		"event_id", event.ID,
+		"peer_models", len(peers),
+		"final_arbiter", arbiter.Name(),
+		"evidence_items", len(articles),
+		"logic_summary", "先由 N-1 个模型基于同一事件定义和证据独立判断，彼此之间不共享答案",
+	)
+	opinions := QueryAllModels(ctx, peers, event, articles)
+	for _, opinion := range opinions {
+		if opinion.Error != "" {
+			slog.Warn("aioracle: peer opinion failed",
+				"stage", "independent_review",
+				"event_id", event.ID,
+				"model", opinion.ModelName,
+				"model_id", opinion.ModelID,
+				"error", opinion.Error,
+				"logic_summary", "该模型调用或结果解析失败，本次意见按弃权记录，并原样交给终审模型审查",
+			)
+			continue
+		}
+		slog.Info("aioracle: peer opinion completed",
+			"stage", "independent_review",
+			"event_id", event.ID,
+			"model", opinion.ModelName,
+			"model_id", opinion.ModelID,
+			"decision", opinion.Decision,
+			"confidence", opinion.Confidence,
+			"reasoning", opinion.Reasoning,
+			"sources", strings.Join(opinion.Sources, ", "),
+			"logic_summary", opinion.Reasoning,
+		)
+	}
+	peerSummary := summarizeOpinions(opinions)
+
+	slog.Info("aioracle: final adjudication requested",
+		"stage", "final_handoff",
+		"event_id", event.ID,
+		"final_arbiter", arbiter.Name(),
+		"opinions_received", len(opinions),
+		"peer_opinions_summary", peerSummary,
+		"logic_summary", "把事件定义、全部外部证据、N-1 个模型的结论、理由及失败状态交给第 N 个模型独立终审，不使用后端置信度阈值代替裁定",
+	)
+	judgment, err := arbiter.QueryFinal(ctx, event, articles, opinions)
+	if err != nil || judgment == nil {
+		if err == nil {
+			err = fmt.Errorf("empty final judgment")
+		}
+		opinions = append(opinions, ModelOpinion{
+			ModelName: arbiter.Name(), ModelID: arbiter.ModelID(),
+			Decision: DecisionIndeterminate, IsFinal: true, Error: err.Error(),
+		})
+		base.Opinions = opinions
+		base.Summary = fmt.Sprintf("final arbiter %s failed: %v", arbiter.Name(), err)
+		slog.Warn("aioracle: final adjudication failed",
+			"stage", "final_adjudication",
+			"event_id", event.ID,
+			"final_arbiter", arbiter.Name(),
+			"peer_opinions_summary", peerSummary,
+			"error", err,
+			"logic_summary", "终审模型调用或结果解析失败，保持 INDETERMINATE，不触发链上结算",
+		)
+		return base
+	}
+	if judgment.Decision != DecisionYes && judgment.Decision != DecisionNo && judgment.Decision != DecisionIndeterminate {
+		err = fmt.Errorf("invalid decision %q", judgment.Decision)
+		opinions = append(opinions, ModelOpinion{
+			ModelName: arbiter.Name(), ModelID: arbiter.ModelID(),
+			Decision: DecisionIndeterminate, IsFinal: true, Error: err.Error(),
+		})
+		base.Opinions = opinions
+		base.Summary = fmt.Sprintf("final arbiter %s failed: %v", arbiter.Name(), err)
+		slog.Warn("aioracle: final adjudication failed",
+			"stage", "final_adjudication",
+			"event_id", event.ID,
+			"final_arbiter", arbiter.Name(),
+			"peer_opinions_summary", peerSummary,
+			"error", err,
+			"logic_summary", "终审模型返回非法裁定值，保持 INDETERMINATE，不触发链上结算",
+		)
+		return base
+	}
+	judgment.Confidence = math.Max(0, math.Min(1, judgment.Confidence))
+	finalOpinion := ModelOpinion{
+		ModelName: arbiter.Name(), ModelID: arbiter.ModelID(),
+		Occurred: judgment.Decision == DecisionYes,
+		Decision: judgment.Decision, Confidence: judgment.Confidence,
+		Reasoning: judgment.Reasoning, Sources: judgment.Sources, IsFinal: true,
+	}
+	opinions = append(opinions, finalOpinion)
+	base.Opinions = opinions
+	base.Decision = judgment.Decision
+	base.Occurred = judgment.Decision == DecisionYes
+	base.Resolved = judgment.Decision == DecisionYes || judgment.Decision == DecisionNo
+	base.Confidence = judgment.Confidence
+	if judgment.Decision == DecisionIndeterminate {
+		base.AgreeingModels = 0
+		base.ConsensusRatio = 0
+		base.Summary = fmt.Sprintf(
+			"final arbiter %s returned INDETERMINATE after reviewing %d peer opinions; confidence %.2f; reason: %s",
+			arbiter.Name(), len(opinions)-1, judgment.Confidence, judgment.Reasoning,
+		)
+		slog.Info("aioracle: final adjudication completed",
+			"stage", "final_adjudication",
+			"event_id", event.ID,
+			"final_arbiter", arbiter.Name(),
+			"decision", judgment.Decision,
+			"resolved", false,
+			"confidence", judgment.Confidence,
+			"peer_agreement", 0,
+			"reasoning", judgment.Reasoning,
+			"sources", strings.Join(judgment.Sources, ", "),
+			"peer_opinions_summary", peerSummary,
+			"logic_summary", judgment.Reasoning,
+		)
+		return base
+	}
+
+	validModels := 1
+	agreeingModels := 1
+	for _, opinion := range opinions[:len(opinions)-1] {
+		if opinion.Error != "" || opinion.Decision == DecisionIndeterminate {
+			continue
+		}
+		validModels++
+		if opinion.Decision == judgment.Decision {
+			agreeingModels++
+		}
+	}
+	base.AgreeingModels = agreeingModels
+	base.ConsensusRatio = float64(agreeingModels) / float64(validModels)
+	base.Summary = fmt.Sprintf(
+		"final arbiter %s decided %s after reviewing %d peer opinions; confidence %.2f; peer agreement %.0f%%; reason: %s",
+		arbiter.Name(), judgment.Decision, len(opinions)-1, judgment.Confidence,
+		base.ConsensusRatio*100, judgment.Reasoning,
+	)
+	slog.Info("aioracle: final adjudication completed",
+		"stage", "final_adjudication",
+		"event_id", event.ID,
+		"final_arbiter", arbiter.Name(),
+		"decision", judgment.Decision,
+		"resolved", base.Resolved,
+		"confidence", judgment.Confidence,
+		"peer_agreement", base.ConsensusRatio,
+		"reasoning", judgment.Reasoning,
+		"sources", strings.Join(judgment.Sources, ", "),
+		"peer_opinions_summary", peerSummary,
+		"logic_summary", judgment.Reasoning,
+	)
+	return base
+}
+
+func summarizeOpinions(opinions []ModelOpinion) string {
+	if len(opinions) == 0 {
+		return "无前序模型意见"
+	}
+	parts := make([]string, 0, len(opinions))
+	for _, opinion := range opinions {
+		identity := strings.TrimSpace(opinion.ModelName)
+		if modelID := strings.TrimSpace(opinion.ModelID); modelID != "" {
+			identity += "/" + modelID
+		}
+		if opinion.Error != "" {
+			parts = append(parts, fmt.Sprintf("%s=ERROR(%s)", identity, truncateContent(opinion.Error, 300)))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf(
+			"%s=%s(置信度 %.2f)：%s",
+			identity, opinion.Decision, opinion.Confidence,
+			truncateContent(opinion.Reasoning, 600),
+		))
+	}
+	return strings.Join(parts, "；")
 }
 
 // JudgeWithOpinions allows passing pre-obtained opinions (e.g., from a cache

@@ -32,11 +32,13 @@ sentinel:
 
 sampler:
   # 是否定时从链上读取池状态并回写 MySQL；本地 DB-only 测试建议关闭，避免覆盖模拟数据。
-  chain_sync_enabled: false
+  chain_sync_enabled: true
   poll_interval_seconds: 60
 
 ai:
-  api_key: "sk-b8da86ece249461b970cb803c5a655b6"
+  api_key: "sk-679c615e26234c67b00677ba689a80d8"
+  # sk-679c615e26234c67b00677ba689a80d8
+  # sk-b8da86ece249461b970cb803c5a655b6
   base_url: "https://api.deepseek.com/chat/completions"
   model: "deepseek-chat"
   poll_interval_seconds: 60
@@ -44,27 +46,26 @@ ai:
   confidence_min: 0.70
   history_min_points: 3
   history_max_points: 256
-  kelly_fraction: 0.25           # Use 1/4 Kelly for safety (0.25 = quarter-Kelly)
-  min_edge_percent: 5.0          # Minimum 5% edge vs market price to trade
-  max_position_per_market_bkc: "50"  # Max total position per market
-  adaptive_cooldown: true        # Use adaptive cooldown based on market conditions
+  kelly_fraction: 0.25 # Use 1/4 Kelly for safety (0.25 = quarter-Kelly)
+  min_edge_percent: 5.0 # Minimum 5% edge vs market price to trade
+  max_position_per_market_bkc: "50" # Max total position per market
+  adaptive_cooldown: true # Use adaptive cooldown based on market conditions
 
 # ---------------------------------------------------------------------------
-# AI Oracle — multi-model consensus for verifying real-world events.
-# When configured, the oracle queries all listed providers in parallel,
-# aggregates their opinions via weighted consensus, and issues a verdict
-# only when the confidence exceeds the configured threshold.
+# AI Oracle — N-1 models independently review evidence, then the named Nth
+# model receives every opinion and makes the final YES/NO/INDETERMINATE ruling.
 #
 # This is OPTIONAL: remove or comment out the entire aioracle section to
 # disable the AI oracle. The server will start without it.
 # ---------------------------------------------------------------------------
 aioracle:
-  poll_interval_seconds: 300  # How often to re-evaluate pending events (5 min)
+  poll_interval_seconds: 300 # How often to re-evaluate pending events (5 min)
 
   consensus:
-    min_consensus_ratio: 0.66   # At least 2/3 weighted vote must agree
-    min_confidence: 0.60        # Aggregated confidence must exceed this
-    min_models_required: 3      # All three independent models must respond
+    final_arbiter: "minimax" # Nth model; all other configured models are independent reviewers
+    min_consensus_ratio: 0.66 # Legacy mode only; ignored when final_arbiter is set
+    min_confidence: 0.60 # Legacy mode only; ignored when final_arbiter is set
+    min_models_required: 3 # Legacy mode only; retained for backward-compatible configs
 
   news:
     # news_api_key: "your-newsapi-key"  # https://newsapi.org/ (optional)
@@ -79,7 +80,9 @@ aioracle:
   providers:
     - name: "deepseek"
       model: "deepseek-chat"
-      api_key: "sk-b8da86ece249461b970cb803c5a655b6"
+      api_key: "sk-679c615e26234c67b00677ba689a80d8"
+      # sk-679c615e26234c67b00677ba689a80d8
+      # sk-b8da86ece249461b970cb803c5a655b6
       base_url: "https://api.deepseek.com/chat/completions"
       provider: "deepseek"
       weight: 1.0
