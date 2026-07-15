@@ -1,6 +1,6 @@
 chain:
   private_key: "0f7597919f8d6442707e93d2723adca206e9090623914942bf876bd6b4f5e5c9"
-  contract_address: "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
+  contract_address: "0x981759e72832D96721623355a09323BD8CabbC56"
   rpc_url: "http://127.0.0.1:42515"
   broker_chain_url: "http://127.0.0.1:56741/"
   use_broker_chain: false

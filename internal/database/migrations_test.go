@@ -181,6 +181,26 @@ func TestChainlinkRawAnswerUsesMySQLCompatibleStringColumn(t *testing.T) {
 	}
 }
 
+func TestOracleSampleSourceCanStoreChainlinkProvenance(t *testing.T) {
+	migrations, err := embeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migrationSQL string
+	for _, item := range migrations {
+		if item.Version == 18 {
+			migrationSQL = item.SQL
+			break
+		}
+	}
+	if !strings.Contains(migrationSQL, "source VARCHAR(191) NOT NULL") {
+		t.Fatalf("migration 18 must widen oracle sample source: %q", migrationSQL)
+	}
+	if !strings.Contains(strings.Join(ensureTableDDLs, "\n"), "source VARCHAR(191) NOT NULL") {
+		t.Fatal("EnsureTables must use the widened oracle sample source column")
+	}
+}
+
 func TestGoldChainStateContractAddressIsAddedOnlyByMigrationNine(t *testing.T) {
 	migrations, err := embeddedMigrations()
 	if err != nil {

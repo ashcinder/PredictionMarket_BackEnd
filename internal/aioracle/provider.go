@@ -153,7 +153,7 @@ func buildOraclePrompt(event Event, articles []NewsArticle) string {
 			sb.WriteString(fmt.Sprintf("- **发布时间**: %s\n", a.PublishedAt.Format(time.RFC3339)))
 			sb.WriteString(fmt.Sprintf("- **URL**: %s\n", a.URL))
 			if a.Content != "" {
-				sb.WriteString(fmt.Sprintf("- **内容摘要**: %s\n", truncateContent(a.Content, 500)))
+				sb.WriteString(fmt.Sprintf("- **内容摘要**: %s\n", compactEvidenceContent(a)))
 			}
 			sb.WriteString("\n")
 		}
@@ -191,7 +191,7 @@ func buildFinalArbiterPrompt(event Event, articles []NewsArticle, opinions []Mod
 	compactArticles := make([]NewsArticle, len(articles))
 	copy(compactArticles, articles)
 	for index := range compactArticles {
-		compactArticles[index].Content = truncateContent(compactArticles[index].Content, 500)
+		compactArticles[index].Content = compactEvidenceContent(compactArticles[index])
 	}
 	compactOpinions := make([]ModelOpinion, len(opinions))
 	copy(compactOpinions, opinions)
@@ -333,6 +333,23 @@ func truncateContent(content string, maxLen int) string {
 	return string(runes[:maxLen]) + "..."
 }
 
+// compactEvidenceContent keeps backend-generated structured settlement
+// evidence reproducible. A 500-rune news summary is sufficient for ordinary
+// articles, but it can cut rule_version=2 evidence between round_id and
+// price_usd, which forces every cautious model to return INDETERMINATE.
+func compactEvidenceContent(article NewsArticle) string {
+	const (
+		generalEvidenceRunes    = 500
+		structuredEvidenceRunes = 4000
+	)
+	maxRunes := generalEvidenceRunes
+	if strings.HasPrefix(strings.TrimSpace(article.Title), "结构化行情计算证据：") ||
+		(strings.Contains(article.Content, "行情计算：") && strings.Contains(article.Content, "确定性候选结果：")) {
+		maxRunes = structuredEvidenceRunes
+	}
+	return truncateContent(article.Content, maxRunes)
+}
+
 func clampWeight(w float64) float64 {
 	if w <= 0 {
 		return 1.0
@@ -348,6 +365,15 @@ func clampTimeout(t int) time.Duration {
 }
 
 func completeOpenAICompatible(ctx context.Context, client *http.Client, baseURL, apiKey, model, label, systemPrompt, userPrompt string) (string, error) {
+	return completeOpenAICompatibleWithMaxTokens(
+		ctx, client, baseURL, apiKey, model, label, systemPrompt, userPrompt, 1200,
+	)
+}
+
+func completeOpenAICompatibleWithMaxTokens(
+	ctx context.Context, client *http.Client, baseURL, apiKey, model, label, systemPrompt, userPrompt string,
+	maxTokens int,
+) (string, error) {
 	payload := openAICompatRequest{
 		Model: model,
 		Messages: []openAICompatMessage{
@@ -355,7 +381,7 @@ func completeOpenAICompatible(ctx context.Context, client *http.Client, baseURL,
 			{Role: "user", Content: userPrompt},
 		},
 		Temperature: 0.1,
-		MaxTokens:   1200,
+		MaxTokens:   maxTokens,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -393,6 +419,48 @@ func completeOpenAICompatible(ctx context.Context, client *http.Client, baseURL,
 		return "", fmt.Errorf("%s returned no content", label)
 	}
 	return strings.TrimSpace(envelope.Choices[0].Message.Content), nil
+}
+
+// queryOpenAICompatibleFinal gives the final arbiter more output room than a
+// peer opinion and retries once only when the provider returned malformed or
+// truncated content. Transport cancellation is deliberately not retried: it
+// normally means the service is shutting down or the caller's deadline ended.
+func queryOpenAICompatibleFinal(
+	ctx context.Context, client *http.Client, baseURL, apiKey, model, label string,
+	event Event, articles []NewsArticle, opinions []ModelOpinion,
+) (*FinalJudgment, error) {
+	const (
+		finalMaxTokens = 2400
+		finalAttempts  = 2
+	)
+	prompt := buildFinalArbiterPrompt(event, articles, opinions)
+	var parseErr error
+	for attempt := 1; attempt <= finalAttempts; attempt++ {
+		attemptPrompt := prompt
+		if attempt > 1 {
+			attemptPrompt += "\n\n上一次返回的 JSON 不完整。本次请将 reasoning 控制在 500 个汉字以内，确保 JSON 完整闭合。"
+		}
+		content, err := completeOpenAICompatibleWithMaxTokens(
+			ctx, client, baseURL, apiKey, model, label,
+			systemPromptFinalArbiter, attemptPrompt, finalMaxTokens,
+		)
+		if err != nil {
+			return nil, err
+		}
+		judgment, err := parseFinalArbiterResponse(content)
+		if err == nil {
+			return judgment, nil
+		}
+		parseErr = err
+		if attempt < finalAttempts {
+			slog.Warn("aioracle: retrying malformed final adjudication response",
+				"model", model,
+				"attempt", attempt,
+				"error", err,
+			)
+		}
+	}
+	return nil, fmt.Errorf("final arbiter returned malformed JSON after %d attempts: %w", finalAttempts, parseErr)
 }
 
 // =============================================================================
@@ -443,12 +511,8 @@ func (p *deepSeekProvider) Query(ctx context.Context, event Event, articles []Ne
 }
 
 func (p *deepSeekProvider) QueryFinal(ctx context.Context, event Event, articles []NewsArticle, opinions []ModelOpinion) (*FinalJudgment, error) {
-	content, err := completeOpenAICompatible(ctx, p.client, p.baseURL, p.apiKey, p.model,
-		"deepseek", systemPromptFinalArbiter, buildFinalArbiterPrompt(event, articles, opinions))
-	if err != nil {
-		return nil, err
-	}
-	return parseFinalArbiterResponse(content)
+	return queryOpenAICompatibleFinal(ctx, p.client, p.baseURL, p.apiKey, p.model,
+		"deepseek", event, articles, opinions)
 }
 
 // =============================================================================
@@ -499,12 +563,8 @@ func (p *openAIProvider) Query(ctx context.Context, event Event, articles []News
 }
 
 func (p *openAIProvider) QueryFinal(ctx context.Context, event Event, articles []NewsArticle, opinions []ModelOpinion) (*FinalJudgment, error) {
-	content, err := completeOpenAICompatible(ctx, p.client, p.baseURL, p.apiKey, p.model,
-		"openai-compatible", systemPromptFinalArbiter, buildFinalArbiterPrompt(event, articles, opinions))
-	if err != nil {
-		return nil, err
-	}
-	return parseFinalArbiterResponse(content)
+	return queryOpenAICompatibleFinal(ctx, p.client, p.baseURL, p.apiKey, p.model,
+		"openai-compatible", event, articles, opinions)
 }
 
 // =============================================================================

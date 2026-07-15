@@ -40,9 +40,10 @@ func (w *Watcher) SetQuantitativeResolver(resolver QuantitativeResolver) {
 	w.quantitative = resolver
 }
 
-// Peer models run concurrently, then the final arbiter runs sequentially.
-// Two configured 60-second stages need more than the previous 90-second budget.
-const aiResolutionTimeout = 3 * time.Minute
+// Peer models run concurrently, then the final arbiter runs sequentially. The
+// final call may be retried once when a provider returns truncated JSON, so the
+// parent deadline must cover one peer stage plus two final stages and overhead.
+const aiResolutionTimeout = 4 * time.Minute
 
 func NewWatcher(cfg *config.Config, chainClient *chain.Client, ipfsClient *ipfs.Client, aiOracle EventResolver) *Watcher {
 	return &Watcher{
@@ -282,8 +283,8 @@ func buildQuantitativeAIEvent(game chain.GameOnChain, meta *ipfs.Metadata, rule 
 		Source:      quantitativeEvidenceSource(rule),
 		PublishedAt: event.Deadline,
 		Content: fmt.Sprintf(
-			"结算规则：%s\n行情计算：%s\n确定性候选结果：%s\n复核要求：从 feed、boundary、round_id、source_time 和 price_usd 开始独立复算对应类型的公式；任一轮次、时间或算术无法复现时必须返回 INDETERMINATE，不得猜测。",
-			string(ruleJSON), result.Summary, candidate,
+			"行情计算：%s\n确定性候选结果：%s\n复核要求：从 feed、boundary、round_id、source_time 和 price_usd 开始独立复算对应类型的公式；任一轮次、时间或算术无法复现时必须返回 INDETERMINATE，不得猜测。\n结算规则：%s",
+			result.Summary, candidate, string(ruleJSON),
 		),
 	}}
 	return event

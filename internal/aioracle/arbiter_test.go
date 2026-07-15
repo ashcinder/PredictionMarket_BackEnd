@@ -2,7 +2,10 @@ package aioracle
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -165,5 +168,78 @@ func TestSummarizeEvidenceIncludesAuditableArticleContext(t *testing.T) {
 		if !strings.Contains(summary, expected) {
 			t.Fatalf("evidence summary missing %q: %s", expected, summary)
 		}
+	}
+}
+
+func TestStructuredEvidenceIsNotCutBeforePriceInModelPrompts(t *testing.T) {
+	content := strings.Repeat("规则扩展字段", 90) +
+		" feed=0x214e boundary=2026-07-15T16:00:00Z" +
+		" round_id=92233720368547766377 source_time=2026-07-15T15:59:00Z price_usd=4079.105" +
+		"\n行情计算：deadline close 4079.10500000 compared with threshold 4000.00000000" +
+		"\n确定性候选结果：YES"
+	article := NewsArticle{
+		Title:   "结构化行情计算证据：黄金价格大于等于4000美元/盎司",
+		Source:  "CHAINLINK_DATA_FEED_ETHEREUM",
+		Content: content,
+	}
+	event := Event{ID: "game-2", Title: "黄金价格阈值", Deadline: time.Now()}
+
+	peerPrompt := buildOraclePrompt(event, []NewsArticle{article})
+	finalPrompt := buildFinalArbiterPrompt(event, []NewsArticle{article}, nil)
+	for name, prompt := range map[string]string{"peer": peerPrompt, "final": finalPrompt} {
+		for _, expected := range []string{
+			"round_id=92233720368547766377",
+			"source_time=2026-07-15T15:59:00Z",
+			"price_usd=4079.105",
+			"确定性候选结果：YES",
+		} {
+			if !strings.Contains(prompt, expected) {
+				t.Fatalf("%s prompt truncated structured evidence before %q", name, expected)
+			}
+		}
+	}
+}
+
+func TestOpenAICompatibleFinalRetriesTruncatedJSON(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var request openAICompatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if request.MaxTokens != 2400 {
+			t.Errorf("final max_tokens=%d, want 2400", request.MaxTokens)
+		}
+		content := `{"decision":"YES","confidence":1,"reasoning":"未闭合`
+		if calls == 2 {
+			if !strings.Contains(request.Messages[1].Content, "上一次返回的 JSON 不完整") {
+				t.Error("retry prompt does not request concise, complete JSON")
+			}
+			content = `{"decision":"YES","confidence":1,"reasoning":"复算通过","sources":[]}`
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{
+				"message": map[string]string{"content": content},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	provider, err := newOpenAIProvider(ProviderConfig{
+		Name: "minimax", Model: "test-model", APIKey: "test-key",
+		BaseURL: server.URL, Provider: "minimax", TimeoutSeconds: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	judgment, err := provider.(FinalModelProvider).QueryFinal(
+		context.Background(), Event{ID: "game-2", Title: "价格阈值"}, nil, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || judgment.Decision != DecisionYes {
+		t.Fatalf("calls=%d judgment=%+v", calls, judgment)
 	}
 }

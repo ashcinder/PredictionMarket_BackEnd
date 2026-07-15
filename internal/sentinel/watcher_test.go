@@ -161,6 +161,9 @@ func TestBuildVersion2QuantitativeEventRequiresReproducibleAudit(t *testing.T) {
 			t.Fatalf("evidence missing %q: %s", expected, content)
 		}
 	}
+	if strings.Index(content, "price_usd=4079.105") > strings.Index(content, "结算规则：") {
+		t.Fatalf("auditable prices must precede the expandable rule JSON: %s", content)
+	}
 }
 
 func containsKeyword(keywords []string, expected string) bool {
