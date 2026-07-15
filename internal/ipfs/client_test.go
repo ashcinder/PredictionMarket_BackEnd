@@ -14,7 +14,7 @@ func TestDownloadMetadataFallsBackFromLocalContentGatewayToKuboGateway(t *testin
 		case "http://backend.local/api/v1/ipfs/QmWi2JmtA2T5vNU6SGkhdCm7h7EmH31v45CqKJfrxp6WDf":
 			return stringResponse(http.StatusBadRequest, "invalid cid"), nil
 		case "http://kubo.local/ipfs/QmWi2JmtA2T5vNU6SGkhdCm7h7EmH31v45CqKJfrxp6WDf":
-			return stringResponse(http.StatusOK, `{"desc":"gold market","condition":"gold closes above 2500","optionYES":"YES","optionNO":"NO"}`), nil
+			return stringResponse(http.StatusOK, `{"type":"TYPE_RELATIVE","desc":"gold market","condition":"gold closes above 2500","optionYES":"YES","optionNO":"NO","resolutionRule":{"type":"TYPE_RELATIVE","symbol":"XAU","benchmark":"BTC","source":"GOLD_API","start_time_sec":10,"end_time_sec":20}}`), nil
 		default:
 			t.Fatalf("unexpected request URL: %s", req.URL.String())
 			return nil, nil
@@ -27,6 +27,9 @@ func TestDownloadMetadataFallsBackFromLocalContentGatewayToKuboGateway(t *testin
 	}
 	if meta.Condition != "gold closes above 2500" {
 		t.Fatalf("fallback metadata was not returned: %+v", meta)
+	}
+	if meta.Type != "TYPE_RELATIVE" || len(meta.ResolutionRule) == 0 {
+		t.Fatalf("structured settlement metadata was lost: %+v", meta)
 	}
 }
 

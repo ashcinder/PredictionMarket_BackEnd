@@ -146,6 +146,17 @@ func (w *Watcher) resolveGame(ctx context.Context, game chain.GameOnChain) error
 		if err := json.Unmarshal(meta.ResolutionRule, &rule); err != nil {
 			return fmt.Errorf("game %d has invalid structured resolution rule: %w", game.ID, err)
 		}
+		slog.Info("aioracle: settlement route selected",
+			"stage", "settlement_routing",
+			"game_id", game.ID,
+			"route", "structured_market_data",
+			"rule_type", rule.Type,
+			"source", rule.Source,
+			"benchmark", rule.Benchmark,
+			"start_time", time.Unix(rule.StartTimeSec, 0).UTC(),
+			"end_time", time.Unix(rule.EndTimeSec, 0).UTC(),
+			"logic_summary", "量化市场只使用可复算的同窗行情证据，不降级为新闻搜索",
+		)
 		if rule.Type != judge.TypeEvent {
 			if w.quantitative == nil {
 				return fmt.Errorf("game %d: quantitative resolver is not configured", game.ID)
@@ -165,9 +176,9 @@ func (w *Watcher) resolveGame(ctx context.Context, game chain.GameOnChain) error
 				)
 				return fmt.Errorf("game %d: quantitative evidence is indeterminate: %s", game.ID, result.Summary)
 			}
-			if rule.Type == judge.TypeRelative {
+			if requiresFinalArbiterReview(rule) {
 				if w.oracle == nil {
-					return fmt.Errorf("game %d: AI oracle is not configured for relative-market review", game.ID)
+					return fmt.Errorf("game %d: AI oracle is not configured for version 2 evidence review", game.ID)
 				}
 				event := buildQuantitativeAIEvent(game, meta, rule, result)
 				candidate := "NO"
@@ -184,14 +195,14 @@ func (w *Watcher) resolveGame(ctx context.Context, game chain.GameOnChain) error
 					"end_time", time.Unix(rule.EndTimeSec, 0).UTC(),
 					"calculation", result.Summary,
 					"deterministic_candidate", candidate,
-					"logic_summary", "已按同一时间窗计算黄金与 BTC 收益率；现在交给 N-1 个模型复算，再由最终模型裁定",
+					"logic_summary", "已从 Chainlink 轮次构建可复算证据；现在交给 N-1 个模型独立审核，再由最终模型裁定",
 				)
 				resolveCtx, cancel := context.WithTimeout(ctx, aiResolutionTimeout)
 				verdict := w.oracle.Resolve(resolveCtx, event)
 				cancel()
 				winner, verdictErr := winnerFromVerdict(verdict)
 				if verdictErr != nil {
-					return fmt.Errorf("game %d: relative-market AI review: %w", game.ID, verdictErr)
+					return fmt.Errorf("game %d: version 2 AI evidence review: %w", game.ID, verdictErr)
 				}
 				return w.settle(ctx, game, meta, winner, verdict.Confidence, verdict.ConsensusRatio,
 					"deterministic evidence reviewed by multi-AI: "+verdict.Summary)
@@ -201,6 +212,9 @@ func (w *Watcher) resolveGame(ctx context.Context, game chain.GameOnChain) error
 		if len(meta.AuthoritativeSources) == 0 {
 			return fmt.Errorf("game %d: structured event has no authoritative sources", game.ID)
 		}
+	} else if requiresStructuredResolution(meta) {
+		return fmt.Errorf("game %d: quantitative market %s is missing resolutionRule; refusing news-AI fallback",
+			game.ID, strings.TrimSpace(meta.Type))
 	}
 
 	if w.oracle == nil {
@@ -228,6 +242,33 @@ func (w *Watcher) resolveGame(ctx context.Context, game chain.GameOnChain) error
 	return w.settle(ctx, game, meta, winner, verdict.Confidence, verdict.ConsensusRatio, verdict.Summary)
 }
 
+func requiresFinalArbiterReview(rule judge.Rule) bool {
+	return rule.RuleVersion >= 2 && judge.IsVersion2Type(rule.Type)
+}
+
+func requiresStructuredResolution(meta *ipfs.Metadata) bool {
+	if meta == nil {
+		return false
+	}
+	switch strings.ToUpper(strings.TrimSpace(meta.Type)) {
+	case judge.TypePrice, judge.TypeVolatility, judge.TypeVolume, judge.TypeTechnical,
+		judge.TypeTouch, judge.TypeRelative, judge.TypePriceThreshold,
+		judge.TypeReturnThreshold, judge.TypePriceRange, judge.TypeStreak:
+		return true
+	case judge.TypeEvent:
+		return false
+	}
+	combined := strings.ToLower(meta.Desc + " " + meta.Condition)
+	for _, marker := range []string{
+		"黄金价格", "金价", "收益率", "跑赢", "波动", "触及", "macd", "成交量",
+	} {
+		if strings.Contains(combined, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func buildQuantitativeAIEvent(game chain.GameOnChain, meta *ipfs.Metadata, rule judge.Rule, result judge.Result) aioracle.Event {
 	event := buildAIEvent(game, meta)
 	ruleJSON, _ := json.Marshal(rule)
@@ -235,13 +276,13 @@ func buildQuantitativeAIEvent(game chain.GameOnChain, meta *ipfs.Metadata, rule 
 	if result.Winner == 0 {
 		candidate = "YES"
 	}
-	event.Description += "\n该市场采用结构化行情先计算、N-1 个模型复核、第 N 个模型终审的开奖流程。"
+	event.Description += "\n该市场采用 Chainlink 结构化证据先计算、N-1 个模型独立复核、第 N 个模型终审的开奖流程。"
 	event.Evidence = []aioracle.NewsArticle{{
 		Title:       "结构化行情计算证据：" + event.Title,
 		Source:      quantitativeEvidenceSource(rule),
 		PublishedAt: event.Deadline,
 		Content: fmt.Sprintf(
-			"结算规则：%s\n行情计算：%s\n确定性候选结果：%s\n复核要求：逐项复算两种资产在同一时间窗内的收益率；黄金收益率严格高于基准资产才是 YES，否则是 NO。",
+			"结算规则：%s\n行情计算：%s\n确定性候选结果：%s\n复核要求：从 feed、boundary、round_id、source_time 和 price_usd 开始独立复算对应类型的公式；任一轮次、时间或算术无法复现时必须返回 INDETERMINATE，不得猜测。",
 			string(ruleJSON), result.Summary, candidate,
 		),
 	}}
@@ -249,6 +290,9 @@ func buildQuantitativeAIEvent(game chain.GameOnChain, meta *ipfs.Metadata, rule 
 }
 
 func quantitativeEvidenceSource(rule judge.Rule) string {
+	if rule.RuleVersion >= 2 {
+		return strings.TrimSpace(rule.Source)
+	}
 	if benchmarkSource := strings.TrimSpace(rule.BenchmarkSource); benchmarkSource != "" {
 		return strings.TrimSpace(rule.Source) + " + " + benchmarkSource
 	}

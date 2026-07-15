@@ -22,10 +22,11 @@ func (s stubQuoteProvider) FetchQuote() (*oracle.Quote, error) {
 func TestGoldQuoteEndpointReturnsPositiveQuote(t *testing.T) {
 	srv := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, "", 0)
 	srv.SetQuoteProvider(stubQuoteProvider{quote: &oracle.Quote{
-		PriceUSD:       2412.35,
-		Change24h:      1.25,
-		QuoteSource:    "新浪财经",
-		QuoteUpdatedAt: "2026-07-14 00:10:00",
+		PriceUSD:        2412.35,
+		Change24h:       1.25,
+		ChangeAvailable: true,
+		QuoteSource:     "新浪财经",
+		QuoteUpdatedAt:  "2026-07-14 00:10:00",
 	}})
 	mux := http.NewServeMux()
 	srv.Register(mux)
@@ -37,7 +38,8 @@ func TestGoldQuoteEndpointReturnsPositiveQuote(t *testing.T) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, expected := range []string{`"price_usd":2412.35`, `"change_24h":1.25`, `"source":"新浪财经"`} {
+	for _, expected := range []string{`"price_usd":2412.35`, `"change_24h":1.25`,
+		`"change_available":true`, `"source":"新浪财经"`} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("response missing %s: %s", expected, body)
 		}

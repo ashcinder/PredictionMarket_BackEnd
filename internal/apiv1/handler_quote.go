@@ -7,10 +7,11 @@ import (
 )
 
 type goldQuoteDTO struct {
-	PriceUSD  float64 `json:"price_usd"`
-	Change24h float64 `json:"change_24h"`
-	Source    string  `json:"source"`
-	UpdatedAt string  `json:"updated_at"`
+	PriceUSD        float64 `json:"price_usd"`
+	Change24h       float64 `json:"change_24h"`
+	ChangeAvailable bool    `json:"change_available"`
+	Source          string  `json:"source"`
+	UpdatedAt       string  `json:"updated_at"`
 }
 
 func (s *Server) handleGetQuote(w http.ResponseWriter, r *http.Request) {
@@ -29,9 +30,10 @@ func (s *Server) handleGetQuote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, goldQuoteDTO{
-		PriceUSD:  quote.PriceUSD,
-		Change24h: quote.Change24h,
-		Source:    strings.TrimSpace(quote.QuoteSource),
-		UpdatedAt: strings.TrimSpace(quote.QuoteUpdatedAt),
+		PriceUSD:        quote.PriceUSD,
+		Change24h:       quote.Change24h,
+		ChangeAvailable: quote.ChangeAvailable,
+		Source:          strings.TrimSpace(quote.QuoteSource),
+		UpdatedAt:       strings.TrimSpace(quote.QuoteUpdatedAt),
 	})
 }

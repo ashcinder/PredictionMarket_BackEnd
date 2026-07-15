@@ -15,7 +15,7 @@ func TestGoldOracleUsesConfiguredEndpointsAndHeaders(t *testing.T) {
 		case "/gold":
 			goldHit = true
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"price":2300,"updatedAt":"test"}`))
+			_, _ = w.Write([]byte(`{"price":2300,"updatedAt":"2026-07-14T09:39:31Z","updatedAtReadable":"a few seconds ago"}`))
 		case "/sina":
 			sinaHit = true
 			if r.Header.Get("Referer") != "https://configured.example/referer" {
@@ -44,5 +44,8 @@ func TestGoldOracleUsesConfiguredEndpointsAndHeaders(t *testing.T) {
 	}
 	if quote.PriceUSD != 2300 || !goldHit || !sinaHit {
 		t.Fatalf("configured endpoints were not used: quote=%+v gold=%v sina=%v", quote, goldHit, sinaHit)
+	}
+	if quote.QuoteUpdatedAt != "2026-07-14T09:39:31Z" {
+		t.Fatalf("precise source timestamp was not preserved: %+v", quote)
 	}
 }

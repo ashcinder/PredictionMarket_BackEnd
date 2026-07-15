@@ -9,42 +9,80 @@ import (
 )
 
 const (
-	TypePrice          = "TYPE_PRICE"
-	TypeVolatility     = "TYPE_VOLATILITY"
-	TypeVolume         = "TYPE_VOLUME"
-	TypeTechnical      = "TYPE_TECHNICAL"
-	TypeTouch          = "TYPE_TOUCH"
-	TypeRelative       = "TYPE_RELATIVE"
-	TypePriceThreshold = "TYPE_PRICE_THRESHOLD"
-	TypeEvent          = "TYPE_EVENT"
+	TypePrice           = "TYPE_PRICE"
+	TypeVolatility      = "TYPE_VOLATILITY"
+	TypeVolume          = "TYPE_VOLUME"
+	TypeTechnical       = "TYPE_TECHNICAL"
+	TypeTouch           = "TYPE_TOUCH"
+	TypeRelative        = "TYPE_RELATIVE"
+	TypePriceThreshold  = "TYPE_PRICE_THRESHOLD"
+	TypeEvent           = "TYPE_EVENT"
+	TypeReturnThreshold = "TYPE_RETURN_THRESHOLD"
+	TypePriceRange      = "TYPE_PRICE_RANGE"
+	TypeStreak          = "TYPE_STREAK"
+
+	ChainlinkDataFeedEthereum = "CHAINLINK_DATA_FEED_ETHEREUM"
+	ChainlinkXAUUSDFeed       = "0x214eD9Da11D2fbe465a6fc601a91E62EbEc1a0D6"
+	ChainlinkBTCUSDFeed       = "0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c"
+	ChainlinkETHUSDFeed       = "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419"
+	ChainlinkSOLUSDFeed       = "0x4ffC43a60e009B551865A93d232E33Fce9f01507"
+	ChainlinkBNBUSDFeed       = "0x14e613AC84a31f709eadbdF89C6CC390fDc9540A"
+	BeijingTimezone           = "Asia/Shanghai"
+	LastAtOrBefore            = "LAST_AT_OR_BEFORE"
 )
+
+var relativeBenchmarkFeeds = map[string]string{
+	"BTC": ChainlinkBTCUSDFeed,
+	"ETH": ChainlinkETHUSDFeed,
+	"SOL": ChainlinkSOLUSDFeed,
+	"BNB": ChainlinkBNBUSDFeed,
+}
+
+// RelativeBenchmarkFeed returns the only accepted Ethereum Chainlink feed for
+// a supported relative-return benchmark.
+func RelativeBenchmarkFeed(symbol string) (string, bool) {
+	feed, ok := relativeBenchmarkFeeds[strings.ToUpper(strings.TrimSpace(symbol))]
+	return feed, ok
+}
 
 // Rule is the machine-readable settlement contract committed in market metadata.
 type Rule struct {
-	Type            string  `json:"type"`
-	Symbol          string  `json:"symbol"`
-	Benchmark       string  `json:"benchmark,omitempty"`
-	BenchmarkSource string  `json:"benchmark_source,omitempty"`
-	Operator        string  `json:"operator,omitempty"`
-	Direction       string  `json:"direction,omitempty"`
-	Threshold       float64 `json:"threshold,omitempty"`
-	FlatTolerance   float64 `json:"flat_tolerance_percent,omitempty"`
-	Indicator       string  `json:"indicator,omitempty"`
-	Interval        string  `json:"interval,omitempty"`
-	VolumeUnit      string  `json:"volume_unit,omitempty"`
-	Source          string  `json:"source"`
-	StartTimeSec    int64   `json:"start_time_sec"`
-	EndTimeSec      int64   `json:"end_time_sec"`
+	RuleVersion             int     `json:"rule_version,omitempty"`
+	Type                    string  `json:"type"`
+	Symbol                  string  `json:"symbol"`
+	Source                  string  `json:"source"`
+	SourceContract          string  `json:"source_contract,omitempty"`
+	Benchmark               string  `json:"benchmark,omitempty"`
+	BenchmarkSource         string  `json:"benchmark_source,omitempty"`
+	BenchmarkSourceContract string  `json:"benchmark_source_contract,omitempty"`
+	Timezone                string  `json:"timezone,omitempty"`
+	BoundaryPolicy          string  `json:"boundary_policy,omitempty"`
+	MaxStalenessSec         int64   `json:"max_staleness_sec,omitempty"`
+	Operator                string  `json:"operator,omitempty"`
+	Direction               string  `json:"direction,omitempty"`
+	Threshold               float64 `json:"threshold,omitempty"`
+	LowerThreshold          float64 `json:"lower_threshold,omitempty"`
+	UpperThreshold          float64 `json:"upper_threshold,omitempty"`
+	StreakDays              int     `json:"streak_days,omitempty"`
+	FlatTolerance           float64 `json:"flat_tolerance_percent,omitempty"`
+	Indicator               string  `json:"indicator,omitempty"`
+	Interval                string  `json:"interval,omitempty"`
+	VolumeUnit              string  `json:"volume_unit,omitempty"`
+	StartTimeSec            int64   `json:"start_time_sec"`
+	EndTimeSec              int64   `json:"end_time_sec"`
 }
 
 // Candle is one immutable observation returned by the configured data source.
 type Candle struct {
-	Time   time.Time
-	Open   float64
-	High   float64
-	Low    float64
-	Close  float64
-	Volume float64
+	Time           time.Time
+	SourceTime     time.Time
+	RoundID        string
+	SourceContract string
+	Open           float64
+	High           float64
+	Low            float64
+	Close          float64
+	Volume         float64
 }
 
 type Evidence struct {
@@ -95,6 +133,10 @@ func EvaluateStructured(rule Rule, evidence Evidence) Result {
 		amplitude := (high - low) / open * 100
 		return compareResult(amplitude, rule.Operator, rule.Threshold, "range amplitude %")
 
+	case TypeReturnThreshold:
+		change := math.Abs(percentChange(open, close))
+		return compareResult(change, rule.Operator, rule.Threshold, "absolute return %")
+
 	case TypeTouch:
 		high, low := rangeExtremes(primary)
 		yes := high >= rule.Threshold && low <= rule.Threshold
@@ -103,6 +145,17 @@ func EvaluateStructured(rule Rule, evidence Evidence) Result {
 
 	case TypePriceThreshold:
 		return compareResult(close, rule.Operator, rule.Threshold, "deadline close")
+
+	case TypePriceRange:
+		inside := close >= rule.LowerThreshold && close <= rule.UpperThreshold
+		switch strings.ToUpper(strings.TrimSpace(rule.Operator)) {
+		case "IN_RANGE", "INSIDE":
+			return decided(inside, fmt.Sprintf("deadline close %.6f, inclusive range [%.6f, %.6f]", close, rule.LowerThreshold, rule.UpperThreshold))
+		case "OUTSIDE_RANGE", "OUTSIDE":
+			return decided(!inside, fmt.Sprintf("deadline close %.6f, outside inclusive range [%.6f, %.6f]", close, rule.LowerThreshold, rule.UpperThreshold))
+		default:
+			return indeterminate("price range operator must be IN_RANGE or OUTSIDE_RANGE")
+		}
 
 	case TypeVolume:
 		if strings.TrimSpace(rule.VolumeUnit) == "" {
@@ -147,6 +200,23 @@ func EvaluateStructured(rule Rule, evidence Evidence) Result {
 			benchmarkName, benchmark[0].Open, benchmark[len(benchmark)-1].Close, benchmarkReturn,
 		))
 
+	case TypeStreak:
+		if len(primary) != rule.StreakDays+1 {
+			return indeterminate(fmt.Sprintf("streak requires %d daily boundaries, got %d", rule.StreakDays+1, len(primary)))
+		}
+		direction := strings.ToUpper(strings.TrimSpace(rule.Direction))
+		for i := 1; i < len(primary); i++ {
+			if !primary[i].Time.Equal(primary[i-1].Time.Add(24 * time.Hour)) {
+				return indeterminate("streak observations must use consecutive Beijing-day boundaries")
+			}
+			previous, current := primary[i-1].Close, primary[i].Close
+			matched := direction == "UP" && current > previous || direction == "DOWN" && current < previous
+			if !matched {
+				return decided(false, fmt.Sprintf("streak failed on day %d: %.6f to %.6f", i, previous, current))
+			}
+		}
+		return decided(true, fmt.Sprintf("%s streak satisfied across %d consecutive days", direction, rule.StreakDays))
+
 	case TypeEvent:
 		return indeterminate("event markets require authoritative documentary evidence and AI consensus")
 	default:
@@ -162,6 +232,9 @@ func firstLabel(value, fallback string) string {
 }
 
 func validateRule(rule Rule) error {
+	if rule.RuleVersion >= 2 {
+		return ValidateVersion2Rule(rule)
+	}
 	if strings.TrimSpace(rule.Type) == "" || strings.TrimSpace(rule.Source) == "" {
 		return errors.New("rule type and source are required")
 	}

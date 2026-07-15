@@ -16,6 +16,7 @@ type HistoryPoint struct {
 
 func (m *Metadata) UnmarshalJSON(data []byte) error {
 	var raw struct {
+		Type                 string            `json:"type"`
 		Desc                 string            `json:"desc"`
 		Condition            string            `json:"condition"`
 		AvatarURL            string            `json:"avatarUrl"`
@@ -24,6 +25,7 @@ func (m *Metadata) UnmarshalJSON(data []byte) error {
 		OptionNO             string            `json:"optionNO"`
 		Keywords             []string          `json:"keywords"`
 		AuthoritativeSources []string          `json:"authoritativeSources"`
+		ResolutionRule       json.RawMessage   `json:"resolutionRule"`
 		History              []json.RawMessage `json:"history"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -31,6 +33,7 @@ func (m *Metadata) UnmarshalJSON(data []byte) error {
 	}
 
 	*m = Metadata{
+		Type:                 raw.Type,
 		Desc:                 raw.Desc,
 		Condition:            raw.Condition,
 		AvatarURL:            raw.AvatarURL,
@@ -39,6 +42,7 @@ func (m *Metadata) UnmarshalJSON(data []byte) error {
 		OptionNO:             raw.OptionNO,
 		Keywords:             raw.Keywords,
 		AuthoritativeSources: raw.AuthoritativeSources,
+		ResolutionRule:       raw.ResolutionRule,
 		History:              normalizeHistory(raw.History),
 	}
 	return nil

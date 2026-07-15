@@ -88,3 +88,98 @@ func withRule(base Rule, typ, operator string, threshold float64) Rule {
 	base.Threshold = threshold
 	return base
 }
+
+func TestEvaluateVersion2Templates(t *testing.T) {
+	start := beijingBoundary(2026, time.July, 14)
+	end := start.Add(24 * time.Hour)
+	base := version2Rule(TypePrice, start, end)
+	boundaryEvidence := func(startPrice, endPrice float64) Evidence {
+		return Evidence{Primary: []Candle{
+			{Time: start, Open: startPrice, High: startPrice, Low: startPrice, Close: startPrice},
+			{Time: end, Open: endPrice, High: endPrice, Low: endPrice, Close: endPrice},
+		}}
+	}
+	tests := []struct {
+		name   string
+		rule   Rule
+		input  Evidence
+		winner int
+	}{
+		{"direction", func() Rule { r := base; r.Direction = "UP"; r.FlatTolerance = 0.05; return r }(), boundaryEvidence(4000, 4040), 0},
+		{"return threshold", func() Rule { r := base; r.Type = TypeReturnThreshold; r.Operator = "GTE"; r.Threshold = 0.9; return r }(), boundaryEvidence(4000, 4040), 0},
+		{"price threshold", func() Rule { r := base; r.Type = TypePriceThreshold; r.Operator = "GTE"; r.Threshold = 4030; return r }(), boundaryEvidence(4000, 4040), 0},
+		{"price range", func() Rule {
+			r := base
+			r.Type = TypePriceRange
+			r.Operator = "IN_RANGE"
+			r.LowerThreshold = 4020
+			r.UpperThreshold = 4050
+			return r
+		}(), boundaryEvidence(4000, 4040), 0},
+		{"relative", func() Rule {
+			r := base
+			r.Type = TypeRelative
+			r.Benchmark = "BTC"
+			r.BenchmarkSourceContract = ChainlinkBTCUSDFeed
+			return r
+		}(), Evidence{
+			Primary: boundaryEvidence(4000, 4040).Primary,
+			Benchmark: []Candle{
+				{Time: start, Open: 100000, High: 100000, Low: 100000, Close: 100000},
+				{Time: end, Open: 100500, High: 100500, Low: 100500, Close: 100500},
+			},
+		}, 0},
+		{"streak", func() Rule {
+			r := base
+			r.Type = TypeStreak
+			r.Direction = "UP"
+			r.StreakDays = 3
+			r.EndTimeSec = start.Add(72 * time.Hour).Unix()
+			return r
+		}(), Evidence{Primary: []Candle{
+			{Time: start, Open: 4000, High: 4000, Low: 4000, Close: 4000},
+			{Time: start.Add(24 * time.Hour), Open: 4010, High: 4010, Low: 4010, Close: 4010},
+			{Time: start.Add(48 * time.Hour), Open: 4020, High: 4020, Low: 4020, Close: 4020},
+			{Time: start.Add(72 * time.Hour), Open: 4030, High: 4030, Low: 4030, Close: 4030},
+		}}, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EvaluateStructured(tt.rule, tt.input)
+			if !got.Determinate || got.Winner != tt.winner {
+				t.Fatalf("result = %+v, want winner %d", got, tt.winner)
+			}
+		})
+	}
+}
+
+func TestEvaluateVersion2ReturnThresholdUsesAbsoluteReturn(t *testing.T) {
+	start := beijingBoundary(2026, time.July, 14)
+	rule := version2Rule(TypeReturnThreshold, start, start.Add(24*time.Hour))
+	rule.Operator, rule.Threshold = "GTE", 2
+	result := EvaluateStructured(rule, Evidence{Primary: []Candle{
+		{Time: start, Open: 4000, High: 4000, Low: 4000, Close: 4000},
+		{Time: start.Add(24 * time.Hour), Open: 3900, High: 3900, Low: 3900, Close: 3900},
+	}})
+	if !result.Determinate || result.Winner != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func version2Rule(typ string, start, end time.Time) Rule {
+	return Rule{
+		RuleVersion: 2, Type: typ, Symbol: "XAU", Source: ChainlinkDataFeedEthereum,
+		SourceContract: ChainlinkXAUUSDFeed, Timezone: BeijingTimezone,
+		BoundaryPolicy: LastAtOrBefore, MaxStalenessSec: 43200,
+		StartTimeSec: start.Unix(), EndTimeSec: end.Unix(),
+	}
+}
+
+func beijingBoundary(year int, month time.Month, day int) time.Time {
+	location, err := time.LoadLocation(BeijingTimezone)
+	if err != nil {
+		panic(err)
+	}
+	return time.Date(year, month, day, 0, 0, 0, 0, location)
+}

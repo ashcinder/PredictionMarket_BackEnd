@@ -14,6 +14,7 @@ import (
 	"PredictionMarket/internal/aioracle"
 	"PredictionMarket/internal/apiv1"
 	"PredictionMarket/internal/chain"
+	"PredictionMarket/internal/chainlinkfeed"
 	"PredictionMarket/internal/config"
 	"PredictionMarket/internal/database"
 	"PredictionMarket/internal/ipfs"
@@ -23,6 +24,8 @@ import (
 	"PredictionMarket/internal/oracle"
 	"PredictionMarket/internal/research"
 	"PredictionMarket/internal/sentinel"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
 func main() {
@@ -68,13 +71,28 @@ func main() {
 	defer chainClient.Close()
 
 	ipfsClient := ipfs.NewClient(cfg.IPFSGateway, cfg.IPFSFallbackGateways)
-	goldOracle := oracle.NewGoldOracle(oracle.Config{
+	chainlinkClient := chainlinkfeed.NewClient(cfg.ChainlinkRPCURLs, cfg.OracleRequestTimeout)
+	chainlinkXAUFeed := common.HexToAddress(cfg.ChainlinkXAUUSDFeed)
+	chainlinkBTCFeed := common.HexToAddress(cfg.ChainlinkBTCUSDFeed)
+	chainlinkETHFeed := common.HexToAddress(cfg.ChainlinkETHUSDFeed)
+	chainlinkSOLFeed := common.HexToAddress(cfg.ChainlinkSOLUSDFeed)
+	chainlinkBNBFeed := common.HexToAddress(cfg.ChainlinkBNBUSDFeed)
+	chainlinkBenchmarkFeeds := map[string]common.Address{
+		"BTC": chainlinkBTCFeed,
+		"ETH": chainlinkETHFeed,
+		"SOL": chainlinkSOLFeed,
+		"BNB": chainlinkBNBFeed,
+	}
+	chainlinkRoundRepository := marketdata.NewMySQLChainlinkRoundRepository(db)
+	chainlinkGoldSource := oracle.NewChainlinkGoldSource(
+		chainlinkClient, chainlinkXAUFeed, cfg.ChainlinkMaxStaleness)
+	goldOracle := oracle.NewGoldOracleWithPrimary(oracle.Config{
 		GoldAPIURL:     cfg.GoldAPIURL,
 		SinaURL:        cfg.SinaURL,
 		SinaReferer:    cfg.SinaReferer,
 		UserAgent:      cfg.OracleUserAgent,
 		RequestTimeout: cfg.OracleRequestTimeout,
-	})
+	}, chainlinkGoldSource)
 	aiOracle, err := buildAIOracle(cfg, goldOracle)
 	if err != nil {
 		slog.Error("init AI oracle failed", "error", err)
@@ -83,17 +101,32 @@ func main() {
 	watcher := sentinel.NewWatcher(cfg, chainClient, ipfsClient, aiOracle)
 	historicalClient := marketdata.NewGoldAPIClient(
 		cfg.HistoricalGoldAPIBaseURL, cfg.HistoricalGoldAPIKey, cfg.OracleRequestTimeout)
+	goldSampleRepository := marketdata.NewMySQLGoldSampleRepository(db)
+	sampledGoldSource := marketdata.NewSampledGoldSource(
+		goldSampleRepository, 2*cfg.OracleSampleInterval)
 	if !historicalClient.Available() {
 		slog.Warn("aioracle: historical gold evidence is not configured",
 			"stage", "startup",
 			"required_environment", config.GoldAPIKeyEnvName,
-			"logic_summary", "价格、波动、触价、技术指标和黄金跑赢 BTC 市场需要黄金历史行情；缺少密钥时将保持未裁决",
+			"local_sample_interval", cfg.OracleSampleInterval,
+			"logic_summary", "短周期收盘价、涨跌和黄金跑赢 BTC 可回退到本地连续采样；波动、触价和技术指标仍需要历史 OHLC，证据不足时保持未裁决",
 		)
 	}
 	bitcoinHistoricalClient := marketdata.NewCoinbaseClient(
 		cfg.HistoricalBitcoinBaseURL, cfg.OracleRequestTimeout)
-	watcher.SetQuantitativeResolver(marketdata.NewStructuredResolver(
-		historicalClient, bitcoinHistoricalClient))
+	legacyResolver := marketdata.NewStructuredResolverWithSamples(
+		historicalClient, bitcoinHistoricalClient, sampledGoldSource)
+	chainlinkResolver := marketdata.NewChainlinkResolverWithBenchmarks(
+		chainlinkClient, chainlinkRoundRepository, chainlinkXAUFeed, chainlinkBenchmarkFeeds)
+	watcher.SetQuantitativeResolver(marketdata.NewVersionedResolver(legacyResolver, chainlinkResolver))
+	chainlinkRoundRecorder := marketdata.NewChainlinkRoundRecorder(
+		chainlinkClient, chainlinkRoundRepository,
+		[]common.Address{
+			chainlinkXAUFeed, chainlinkBTCFeed, chainlinkETHFeed,
+			chainlinkSOLFeed, chainlinkBNBFeed,
+		}, cfg.ChainlinkPollInterval)
+	goldSampleRecorder := marketdata.NewGoldSampleRecorder(
+		goldSampleRepository, goldOracle, cfg.OracleSampleInterval)
 	managedStore, err := aimanaged.NewStoreWithSecret(cfg.PrivateKey)
 	if err != nil {
 		slog.Error("init ai-managed store failed", "error", err)
@@ -140,7 +173,7 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	errCh := make(chan error, 4)
+	errCh := make(chan error, 6)
 	go func() {
 		slog.Info("http api server started", "listen", cfg.HTTPListen)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -157,6 +190,12 @@ func main() {
 			errCh <- err
 		}
 	}()
+	go func() {
+		if err := goldSampleRecorder.Run(ctx); err != nil && err != context.Canceled {
+			errCh <- err
+		}
+	}()
+	go chainlinkRoundRecorder.Run(ctx)
 	if cfg.SamplerChainSyncEnabled {
 		go func() {
 			if err := sampler.Run(ctx); err != nil && err != context.Canceled {

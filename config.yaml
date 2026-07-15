@@ -23,6 +23,21 @@ oracle:
   historical_api_key: ""
   # BTC-USD 一分钟历史 K 线，用于“黄金跑赢 BTC”等短周期相对收益市场。
   bitcoin_historical_base_url: "https://api.exchange.coinbase.com"
+  # Chainlink 主网公开 RPC 依次容灾；无需 Data Streams 付费账号。
+  chainlink_rpc_urls:
+    - "https://1rpc.io/eth"
+    - "https://rpc.mevblocker.io"
+    - "https://eth-mainnet.public.blastapi.io"
+    - "https://rpc.eth.gateway.fm"
+    - "https://eth-pokt.nodies.app"
+  # Ethereum 主网 XAU/USD 与 BTC/USD Data Feed 合约。
+  chainlink_xau_usd_feed: "0x214eD9Da11D2fbe465a6fc601a91E62EbEc1a0D6"
+  chainlink_btc_usd_feed: "0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c"
+  # 记录最新轮次的间隔，以及边界价格允许的最大陈旧时间。
+  chainlink_poll_interval_seconds: 60
+  chainlink_max_staleness_seconds: 43200
+  # 每隔多少秒保存一次实时 XAU/USD；短周期价格与跑赢率市场可用这些采样复算。
+  sample_interval_seconds: 10
   sina_url: "https://hq.sinajs.cn/list=hf_XAU"
   sina_referer: "https://finance.sina.com.cn"
   user_agent: "PredictionMarket/1.0"

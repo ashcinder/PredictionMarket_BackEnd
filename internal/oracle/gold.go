@@ -12,10 +12,11 @@ import (
 )
 
 type Quote struct {
-	PriceUSD       float64
-	Change24h      float64
-	QuoteSource    string
-	QuoteUpdatedAt string
+	PriceUSD        float64
+	Change24h       float64
+	ChangeAvailable bool
+	QuoteSource     string
+	QuoteUpdatedAt  string
 }
 
 type Config struct {
@@ -29,19 +30,34 @@ type Config struct {
 type GoldOracle struct {
 	config          Config
 	httpClient      *http.Client
+	primary         goldQuoteSource
 	prevCloseMu     sync.Mutex
 	sinaPrevClose   float64
 	sinaPrevFetched bool
 }
 
+type goldQuoteSource interface {
+	FetchQuote() (*Quote, error)
+}
+
 func NewGoldOracle(config Config) *GoldOracle {
+	return NewGoldOracleWithPrimary(config, nil)
+}
+
+func NewGoldOracleWithPrimary(config Config, primary goldQuoteSource) *GoldOracle {
 	return &GoldOracle{
 		config:     config,
 		httpClient: &http.Client{Timeout: config.RequestTimeout},
+		primary:    primary,
 	}
 }
 
 func (o *GoldOracle) FetchQuote() (*Quote, error) {
+	if o.primary != nil {
+		if quote, err := o.primary.FetchQuote(); err == nil && quote != nil && quote.PriceUSD > 0 {
+			return quote, nil
+		}
+	}
 	if quote, err := o.fetchGoldAPI(); err == nil && quote.PriceUSD > 0 {
 		return quote, nil
 	}
@@ -84,15 +100,16 @@ func (o *GoldOracle) fetchGoldAPI() (*Quote, error) {
 	if prevClose > 0 {
 		change = (payload.Price - prevClose) / prevClose * 100
 	}
-	updatedAt := payload.UpdatedAtReadable
+	updatedAt := payload.UpdatedAt
 	if updatedAt == "" {
-		updatedAt = payload.UpdatedAt
+		updatedAt = payload.UpdatedAtReadable
 	}
 	return &Quote{
-		PriceUSD:       payload.Price,
-		Change24h:      change,
-		QuoteSource:    "gold-api.com",
-		QuoteUpdatedAt: updatedAt,
+		PriceUSD:        payload.Price,
+		Change24h:       change,
+		ChangeAvailable: prevClose > 0,
+		QuoteSource:     "gold-api.com",
+		QuoteUpdatedAt:  updatedAt,
 	}, nil
 }
 
@@ -164,10 +181,11 @@ func (o *GoldOracle) fetchGoldSina() (*Quote, error) {
 		updatedAt = fields[6]
 	}
 	return &Quote{
-		PriceUSD:       price,
-		Change24h:      change,
-		QuoteSource:    "新浪财经",
-		QuoteUpdatedAt: updatedAt,
+		PriceUSD:        price,
+		Change24h:       change,
+		ChangeAvailable: prevClose > 0,
+		QuoteSource:     "新浪财经",
+		QuoteUpdatedAt:  updatedAt,
 	}, nil
 }
 

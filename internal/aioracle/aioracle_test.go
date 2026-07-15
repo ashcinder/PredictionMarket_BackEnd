@@ -816,6 +816,26 @@ func TestQuantitativeOraclePromptsRequireIndependentReturnCalculation(t *testing
 	}
 }
 
+func TestQuantitativeOraclePromptsCoverAllVersion2Calculations(t *testing.T) {
+	event := Event{ID: "v2", Title: "Chainlink quantitative market", Description: "rule_version=2 TYPE_PRICE_RANGE"}
+	articles := []NewsArticle{{
+		Source:  "CHAINLINK_DATA_FEED_ETHEREUM",
+		Content: "feed=0xabc boundary=2026-07-15T16:00:00Z round_id=42 source_time=2026-07-15T15:59:00Z price_usd=4079.105 formula=inclusive range candidate=YES",
+	}}
+	peerPrompt := buildOraclePrompt(event, articles)
+	finalPrompt := buildFinalArbiterPrompt(event, articles, []ModelOpinion{{ModelName: "peer", Decision: DecisionYes}})
+	for name, prompt := range map[string]string{"peer": peerPrompt, "final": finalPrompt} {
+		for _, expected := range []string{
+			"方向收益", "绝对收益率", "价格阈值", "闭区间", "相对收益率", "连续日边界",
+			"round_id", "source_time", "INDETERMINATE", "不得直接照抄",
+		} {
+			if !strings.Contains(prompt, expected) {
+				t.Fatalf("%s prompt missing %q: %s", name, expected, prompt)
+			}
+		}
+	}
+}
+
 func TestNewProviders_SkipsInvalid(t *testing.T) {
 	configs := []ProviderConfig{
 		{Name: "valid", Model: "deepseek-chat", APIKey: "sk-test", Provider: "deepseek", Weight: 1.0},

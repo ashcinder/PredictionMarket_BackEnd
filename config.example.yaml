@@ -29,6 +29,24 @@ oracle:
   historical_api_key: ""
   # Coinbase Exchange 公共 BTC-USD 一分钟 K 线，无需 API key。
   bitcoin_historical_base_url: "https://api.exchange.coinbase.com"
+  # Chainlink 公开以太坊 RPC，前一个不可用时自动切换。
+  chainlink_rpc_urls:
+    - "https://1rpc.io/eth"
+    - "https://rpc.mevblocker.io"
+    - "https://eth-mainnet.public.blastapi.io"
+    - "https://rpc.eth.gateway.fm"
+    - "https://eth-pokt.nodies.app"
+  # Ethereum 主网 XAU/USD 与可选跑赢率标的 Data Feed。
+  chainlink_xau_usd_feed: "0x214eD9Da11D2fbe465a6fc601a91E62EbEc1a0D6"
+  chainlink_btc_usd_feed: "0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c"
+  chainlink_eth_usd_feed: "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419"
+  chainlink_sol_usd_feed: "0x4ffC43a60e009B551865A93d232E33Fce9f01507"
+  chainlink_bnb_usd_feed: "0x14e613AC84a31f709eadbdF89C6CC390fDc9540A"
+  # 轮次缓存周期与边界价格最大陈旧时间。
+  chainlink_poll_interval_seconds: 60
+  chainlink_max_staleness_seconds: 43200
+  # 本地 XAU/USD 采样间隔；后端必须在博弈池开始前运行，才能覆盖完整时间窗。
+  sample_interval_seconds: 10
   sina_url: "https://hq.sinajs.cn/list=hf_XAU"
   sina_referer: "https://finance.sina.com.cn"
   user_agent: "PredictionMarket/1.0"

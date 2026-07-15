@@ -106,6 +106,63 @@ func TestDeadlineTimeSupportsSecondsAndMilliseconds(t *testing.T) {
 	}
 }
 
+func TestQuantitativeMetadataWithoutResolutionRuleNeverFallsBackToNewsAI(t *testing.T) {
+	for _, marketType := range []string{
+		judge.TypePrice,
+		judge.TypeReturnThreshold,
+		judge.TypePriceThreshold,
+		judge.TypePriceRange,
+		judge.TypeRelative,
+		judge.TypeStreak,
+		judge.TypeTouch,
+	} {
+		if !requiresStructuredResolution(&ipfs.Metadata{Type: marketType}) {
+			t.Fatalf("%s should require structured settlement evidence", marketType)
+		}
+	}
+	if requiresStructuredResolution(&ipfs.Metadata{Type: judge.TypeEvent}) {
+		t.Fatal("event market should use documentary AI evidence")
+	}
+}
+
+func TestEveryVersion2RuleRequiresFinalArbiterReview(t *testing.T) {
+	for _, marketType := range []string{
+		judge.TypePrice, judge.TypeReturnThreshold, judge.TypePriceThreshold,
+		judge.TypePriceRange, judge.TypeRelative, judge.TypeStreak,
+	} {
+		rule := judge.Rule{RuleVersion: 2, Type: marketType}
+		if !requiresFinalArbiterReview(rule) {
+			t.Fatalf("%s did not require final arbiter review", marketType)
+		}
+	}
+	if requiresFinalArbiterReview(judge.Rule{Type: judge.TypePrice}) {
+		t.Fatal("legacy deterministic rule unexpectedly requires final arbiter review")
+	}
+}
+
+func TestBuildVersion2QuantitativeEventRequiresReproducibleAudit(t *testing.T) {
+	deadline := time.Date(2026, 7, 15, 16, 0, 0, 0, time.UTC)
+	rule := judge.Rule{
+		RuleVersion: 2, Type: judge.TypePriceRange, Symbol: "XAU",
+		Source: judge.ChainlinkDataFeedEthereum, SourceContract: judge.ChainlinkXAUUSDFeed,
+		LowerThreshold: 4000, UpperThreshold: 4100,
+		StartTimeSec: deadline.Add(-24 * time.Hour).Unix(), EndTimeSec: deadline.Unix(),
+	}
+	result := judge.Result{Determinate: true, Winner: 0, Summary: "round_id=42 source_time=2026-07-15T15:59:00Z price_usd=4079.105 formula=inclusive range"}
+	event := buildQuantitativeAIEvent(chain.GameOnChain{ID: 10, DeadlineRaw: deadline.Unix()}, &ipfs.Metadata{
+		Desc: "黄金价格 位于 4000-4100USD/盎司", Condition: "区间内为 YES",
+	}, rule, result)
+	content := event.Evidence[0].Content
+	for _, expected := range []string{
+		"TYPE_PRICE_RANGE", "round_id=42", "source_time", "price_usd=4079.105",
+		"INDETERMINATE", "独立复算", "候选结果：YES",
+	} {
+		if !strings.Contains(content, expected) {
+			t.Fatalf("evidence missing %q: %s", expected, content)
+		}
+	}
+}
+
 func containsKeyword(keywords []string, expected string) bool {
 	for _, keyword := range keywords {
 		if strings.EqualFold(keyword, expected) {

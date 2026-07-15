@@ -107,7 +107,7 @@ func TestEmbeddedMigrationDefinesPersistenceTables(t *testing.T) {
 			t.Fatalf("migration does not define %s", table)
 		}
 	}
-	var foundSyncState, foundManagedEntries, foundIdempotentPriceHistory, foundProbabilityOrientationFix bool
+	var foundSyncState, foundManagedEntries, foundIdempotentPriceHistory, foundProbabilityOrientationFix, foundOracleSamples, foundChainlinkRounds bool
 	for _, migration := range migrations {
 		if strings.Contains(migration.SQL, "market_sync_state") &&
 			strings.Contains(migration.SQL, "sync_failed") {
@@ -123,6 +123,15 @@ func TestEmbeddedMigrationDefinesPersistenceTables(t *testing.T) {
 			strings.Contains(migration.SQL, "100 - yes_price") {
 			foundProbabilityOrientationFix = true
 		}
+		if strings.Contains(migration.SQL, "oracle_price_samples") &&
+			strings.Contains(migration.SQL, "observed_at") {
+			foundOracleSamples = true
+		}
+		if strings.Contains(migration.SQL, "oracle_chainlink_rounds") &&
+			strings.Contains(migration.SQL, "round_id") &&
+			strings.Contains(migration.SQL, "updated_at_sec") {
+			foundChainlinkRounds = true
+		}
 	}
 	if !foundSyncState {
 		t.Fatalf("migrations do not define sync state and sync outcomes: %+v", migrations)
@@ -135,6 +144,40 @@ func TestEmbeddedMigrationDefinesPersistenceTables(t *testing.T) {
 	}
 	if !foundProbabilityOrientationFix {
 		t.Fatalf("migrations do not repair historical probability orientation: %+v", migrations)
+	}
+	if !foundOracleSamples {
+		t.Fatalf("migrations do not persist oracle price samples: %+v", migrations)
+	}
+	if !foundChainlinkRounds {
+		t.Fatalf("migrations do not persist Chainlink rounds: %+v", migrations)
+	}
+}
+
+func TestChainlinkRawAnswerUsesMySQLCompatibleStringColumn(t *testing.T) {
+	migrations, err := embeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migrationSQL string
+	for _, item := range migrations {
+		if item.Version == 17 {
+			migrationSQL = item.SQL
+			break
+		}
+	}
+	if migrationSQL == "" {
+		t.Fatal("migration 17 is missing")
+	}
+	for label, ddl := range map[string]string{
+		"migration 17": migrationSQL,
+		"EnsureTables": strings.Join(ensureTableDDLs, "\n"),
+	} {
+		if !strings.Contains(ddl, "answer_raw VARCHAR(80) NOT NULL") {
+			t.Fatalf("%s must store the signed int256 answer as VARCHAR(80)", label)
+		}
+		if strings.Contains(ddl, "answer_raw DECIMAL(78,0)") {
+			t.Fatalf("%s uses unsupported MySQL DECIMAL(78,0)", label)
+		}
 	}
 }
 

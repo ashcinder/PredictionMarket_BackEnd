@@ -45,14 +45,23 @@ type fileConfig struct {
 		FallbackGateways []string `yaml:"fallback_gateways"`
 	} `yaml:"ipfs"`
 	Oracle struct {
-		GoldAPIURL            string `yaml:"gold_api_url"`
-		HistoricalBaseURL     string `yaml:"historical_base_url"`
-		HistoricalAPIKey      string `yaml:"historical_api_key"`
-		BitcoinHistoricalURL  string `yaml:"bitcoin_historical_base_url"`
-		SinaURL               string `yaml:"sina_url"`
-		SinaReferer           string `yaml:"sina_referer"`
-		UserAgent             string `yaml:"user_agent"`
-		RequestTimeoutSeconds int    `yaml:"request_timeout_seconds"`
+		GoldAPIURL                   string   `yaml:"gold_api_url"`
+		HistoricalBaseURL            string   `yaml:"historical_base_url"`
+		HistoricalAPIKey             string   `yaml:"historical_api_key"`
+		BitcoinHistoricalURL         string   `yaml:"bitcoin_historical_base_url"`
+		ChainlinkRPCURLs             []string `yaml:"chainlink_rpc_urls"`
+		ChainlinkXAUUSDFeed          string   `yaml:"chainlink_xau_usd_feed"`
+		ChainlinkBTCUSDFeed          string   `yaml:"chainlink_btc_usd_feed"`
+		ChainlinkETHUSDFeed          string   `yaml:"chainlink_eth_usd_feed"`
+		ChainlinkSOLUSDFeed          string   `yaml:"chainlink_sol_usd_feed"`
+		ChainlinkBNBUSDFeed          string   `yaml:"chainlink_bnb_usd_feed"`
+		ChainlinkPollIntervalSeconds int      `yaml:"chainlink_poll_interval_seconds"`
+		ChainlinkMaxStalenessSeconds int      `yaml:"chainlink_max_staleness_seconds"`
+		SinaURL                      string   `yaml:"sina_url"`
+		SinaReferer                  string   `yaml:"sina_referer"`
+		UserAgent                    string   `yaml:"user_agent"`
+		RequestTimeoutSeconds        int      `yaml:"request_timeout_seconds"`
+		SampleIntervalSeconds        int      `yaml:"sample_interval_seconds"`
 	} `yaml:"oracle"`
 	Sentinel struct {
 		PollIntervalSeconds int `yaml:"poll_interval_seconds"`
@@ -120,6 +129,15 @@ type Config struct {
 	SinaReferer                string
 	OracleUserAgent            string
 	OracleRequestTimeout       time.Duration
+	OracleSampleInterval       time.Duration
+	ChainlinkRPCURLs           []string
+	ChainlinkXAUUSDFeed        string
+	ChainlinkBTCUSDFeed        string
+	ChainlinkETHUSDFeed        string
+	ChainlinkSOLUSDFeed        string
+	ChainlinkBNBUSDFeed        string
+	ChainlinkPollInterval      time.Duration
+	ChainlinkMaxStaleness      time.Duration
 	PollInterval               time.Duration
 	ResolveDelay               time.Duration
 	UseBrokerChain             bool
@@ -307,6 +325,63 @@ func LoadFile(path string) (*Config, error) {
 	if raw.Oracle.RequestTimeoutSeconds <= 0 {
 		return nil, errors.New("oracle.request_timeout_seconds must be positive")
 	}
+	if raw.Oracle.SampleIntervalSeconds == 0 {
+		raw.Oracle.SampleIntervalSeconds = 10
+	}
+	if raw.Oracle.SampleIntervalSeconds < 1 || raw.Oracle.SampleIntervalSeconds > 300 {
+		return nil, errors.New("oracle.sample_interval_seconds must be between 1 and 300")
+	}
+	if len(raw.Oracle.ChainlinkRPCURLs) == 0 {
+		raw.Oracle.ChainlinkRPCURLs = []string{
+			"https://1rpc.io/eth",
+			"https://rpc.mevblocker.io",
+			"https://eth-mainnet.public.blastapi.io",
+			"https://rpc.eth.gateway.fm",
+			"https://eth-pokt.nodies.app",
+		}
+	}
+	if strings.TrimSpace(raw.Oracle.ChainlinkXAUUSDFeed) == "" {
+		raw.Oracle.ChainlinkXAUUSDFeed = "0x214eD9Da11D2fbe465a6fc601a91E62EbEc1a0D6"
+	}
+	if strings.TrimSpace(raw.Oracle.ChainlinkBTCUSDFeed) == "" {
+		raw.Oracle.ChainlinkBTCUSDFeed = "0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c"
+	}
+	if strings.TrimSpace(raw.Oracle.ChainlinkETHUSDFeed) == "" {
+		raw.Oracle.ChainlinkETHUSDFeed = "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419"
+	}
+	if strings.TrimSpace(raw.Oracle.ChainlinkSOLUSDFeed) == "" {
+		raw.Oracle.ChainlinkSOLUSDFeed = "0x4ffC43a60e009B551865A93d232E33Fce9f01507"
+	}
+	if strings.TrimSpace(raw.Oracle.ChainlinkBNBUSDFeed) == "" {
+		raw.Oracle.ChainlinkBNBUSDFeed = "0x14e613AC84a31f709eadbdF89C6CC390fDc9540A"
+	}
+	if raw.Oracle.ChainlinkPollIntervalSeconds == 0 {
+		raw.Oracle.ChainlinkPollIntervalSeconds = 60
+	}
+	if raw.Oracle.ChainlinkPollIntervalSeconds < 10 || raw.Oracle.ChainlinkPollIntervalSeconds > 3600 {
+		return nil, errors.New("oracle.chainlink_poll_interval_seconds must be between 10 and 3600")
+	}
+	if raw.Oracle.ChainlinkMaxStalenessSeconds == 0 {
+		raw.Oracle.ChainlinkMaxStalenessSeconds = 43200
+	}
+	if raw.Oracle.ChainlinkMaxStalenessSeconds < 3600 || raw.Oracle.ChainlinkMaxStalenessSeconds > 86400 {
+		return nil, errors.New("oracle.chainlink_max_staleness_seconds must be between 3600 and 86400")
+	}
+	if !common.IsHexAddress(raw.Oracle.ChainlinkXAUUSDFeed) {
+		return nil, errors.New("oracle.chainlink_xau_usd_feed is invalid")
+	}
+	if !common.IsHexAddress(raw.Oracle.ChainlinkBTCUSDFeed) {
+		return nil, errors.New("oracle.chainlink_btc_usd_feed is invalid")
+	}
+	if !common.IsHexAddress(raw.Oracle.ChainlinkETHUSDFeed) {
+		return nil, errors.New("oracle.chainlink_eth_usd_feed is invalid")
+	}
+	if !common.IsHexAddress(raw.Oracle.ChainlinkSOLUSDFeed) {
+		return nil, errors.New("oracle.chainlink_sol_usd_feed is invalid")
+	}
+	if !common.IsHexAddress(raw.Oracle.ChainlinkBNBUSDFeed) {
+		return nil, errors.New("oracle.chainlink_bnb_usd_feed is invalid")
+	}
 	if strings.TrimSpace(raw.Oracle.UserAgent) == "" {
 		return nil, errors.New("oracle.user_agent is required")
 	}
@@ -364,6 +439,14 @@ func LoadFile(path string) (*Config, error) {
 	goldAPIURL, err := requireHTTPURL("oracle.gold_api_url", raw.Oracle.GoldAPIURL)
 	if err != nil {
 		return nil, err
+	}
+	chainlinkRPCURLs := make([]string, 0, len(raw.Oracle.ChainlinkRPCURLs))
+	for i, value := range raw.Oracle.ChainlinkRPCURLs {
+		validated, validateErr := requireHTTPURL(fmt.Sprintf("oracle.chainlink_rpc_urls[%d]", i), value)
+		if validateErr != nil {
+			return nil, validateErr
+		}
+		chainlinkRPCURLs = append(chainlinkRPCURLs, validated)
 	}
 	historicalBaseURL := strings.TrimSpace(raw.Oracle.HistoricalBaseURL)
 	if historicalBaseURL == "" {
@@ -568,6 +651,15 @@ func LoadFile(path string) (*Config, error) {
 		SinaReferer:                 sinaReferer,
 		OracleUserAgent:             strings.TrimSpace(raw.Oracle.UserAgent),
 		OracleRequestTimeout:        time.Duration(raw.Oracle.RequestTimeoutSeconds) * time.Second,
+		OracleSampleInterval:        time.Duration(raw.Oracle.SampleIntervalSeconds) * time.Second,
+		ChainlinkRPCURLs:            chainlinkRPCURLs,
+		ChainlinkXAUUSDFeed:         common.HexToAddress(raw.Oracle.ChainlinkXAUUSDFeed).Hex(),
+		ChainlinkBTCUSDFeed:         common.HexToAddress(raw.Oracle.ChainlinkBTCUSDFeed).Hex(),
+		ChainlinkETHUSDFeed:         common.HexToAddress(raw.Oracle.ChainlinkETHUSDFeed).Hex(),
+		ChainlinkSOLUSDFeed:         common.HexToAddress(raw.Oracle.ChainlinkSOLUSDFeed).Hex(),
+		ChainlinkBNBUSDFeed:         common.HexToAddress(raw.Oracle.ChainlinkBNBUSDFeed).Hex(),
+		ChainlinkPollInterval:       time.Duration(raw.Oracle.ChainlinkPollIntervalSeconds) * time.Second,
+		ChainlinkMaxStaleness:       time.Duration(raw.Oracle.ChainlinkMaxStalenessSeconds) * time.Second,
 		PollInterval:                time.Duration(raw.Sentinel.PollIntervalSeconds) * time.Second,
 		ResolveDelay:                time.Duration(raw.Sentinel.ResolveDelaySeconds) * time.Second,
 		UseBrokerChain:              raw.Chain.UseBrokerChain,

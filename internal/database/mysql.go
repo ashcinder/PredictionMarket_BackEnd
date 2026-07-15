@@ -258,6 +258,33 @@ var ensureTableDDLs = []string{
 	INDEX idx_portfolio_history_user_time (user_address, timestamp_sec DESC)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
+	// Auditable live XAU/USD samples used by short-window settlement.
+	`CREATE TABLE IF NOT EXISTS oracle_price_samples (
+	symbol VARCHAR(16) NOT NULL,
+	observed_at BIGINT NOT NULL,
+	price_usd DECIMAL(20,8) NOT NULL,
+	source VARCHAR(64) NOT NULL DEFAULT '',
+	created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+	updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+	PRIMARY KEY (symbol, observed_at),
+	INDEX idx_oracle_price_samples_time (observed_at DESC)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
+	// Auditable Ethereum Chainlink reports used at deterministic settlement boundaries.
+	`CREATE TABLE IF NOT EXISTS oracle_chainlink_rounds (
+	feed_address VARCHAR(42) NOT NULL,
+	round_id DECIMAL(30,0) NOT NULL,
+	answer_raw VARCHAR(80) NOT NULL,
+	decimals TINYINT UNSIGNED NOT NULL,
+	price_usd DECIMAL(30,8) NOT NULL,
+	started_at_sec BIGINT NOT NULL,
+	updated_at_sec BIGINT NOT NULL,
+	answered_in_round DECIMAL(30,0) NOT NULL,
+	fetched_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+	PRIMARY KEY (feed_address, round_id),
+	INDEX idx_chainlink_feed_time (feed_address, updated_at_sec DESC)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+
 	// Trade records (DApp v1 API).
 	`CREATE TABLE IF NOT EXISTS gold_trades (
 	id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

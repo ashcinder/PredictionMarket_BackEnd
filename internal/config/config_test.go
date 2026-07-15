@@ -27,6 +27,13 @@ ipfs:
     - "http://127.0.0.1:8083/ipfs"
 oracle:
   gold_api_url: "https://api.gold-api.com/price/XAU"
+  chainlink_rpc_urls:
+    - "https://ethereum-rpc.publicnode.com"
+    - "https://eth.llamarpc.com"
+  chainlink_xau_usd_feed: "0x214eD9Da11D2fbe465a6fc601a91E62EbEc1a0D6"
+  chainlink_btc_usd_feed: "0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c"
+  chainlink_poll_interval_seconds: 60
+  chainlink_max_staleness_seconds: 43200
   sina_url: "https://hq.sinajs.cn/list=hf_XAU"
   sina_referer: "https://finance.sina.com.cn"
   user_agent: "PredictionMarket/1.0"
@@ -73,8 +80,14 @@ func TestLoadFileReadsCompleteYAML(t *testing.T) {
 	}
 	if cfg.GoldAPIURL != "https://api.gold-api.com/price/XAU" ||
 		cfg.SinaURL != "https://hq.sinajs.cn/list=hf_XAU" ||
-		cfg.OracleRequestTimeout != 10*time.Second {
+		cfg.OracleRequestTimeout != 10*time.Second || cfg.OracleSampleInterval != 10*time.Second {
 		t.Fatalf("unexpected oracle config: %+v", cfg)
+	}
+	if len(cfg.ChainlinkRPCURLs) != 2 ||
+		cfg.ChainlinkXAUUSDFeed != "0x214eD9Da11D2fbe465a6fc601a91E62EbEc1a0D6" ||
+		cfg.ChainlinkBTCUSDFeed != "0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c" ||
+		cfg.ChainlinkPollInterval != time.Minute || cfg.ChainlinkMaxStaleness != 12*time.Hour {
+		t.Fatalf("unexpected Chainlink config: %+v", cfg)
 	}
 	if cfg.PollInterval != 30*time.Second || cfg.AIPollInterval != 120*time.Second || cfg.SamplerPollInterval != 60*time.Second {
 		t.Fatalf("unexpected intervals: poll=%s ai=%s sampler=%s", cfg.PollInterval, cfg.AIPollInterval, cfg.SamplerPollInterval)
@@ -164,6 +177,14 @@ func TestLoadFileRejectsInvalidConfiguration(t *testing.T) {
 			"https://api.deepseek.com/chat/completions", "ftp://invalid", 1),
 		"oracle URL": strings.Replace(validYAML,
 			"https://api.gold-api.com/price/XAU", "ftp://invalid", 1),
+		"Chainlink RPC URL": strings.Replace(validYAML,
+			"https://ethereum-rpc.publicnode.com", "ftp://invalid", 1),
+		"Chainlink XAU feed": strings.Replace(validYAML,
+			"0x214eD9Da11D2fbe465a6fc601a91E62EbEc1a0D6", "not-an-address", 1),
+		"Chainlink poll interval": strings.Replace(validYAML,
+			"chainlink_poll_interval_seconds: 60", "chainlink_poll_interval_seconds: 5", 1),
+		"Chainlink staleness": strings.Replace(validYAML,
+			"chainlink_max_staleness_seconds: 43200", "chainlink_max_staleness_seconds: 10", 1),
 		"poll interval": strings.Replace(validYAML,
 			"poll_interval_seconds: 30", "poll_interval_seconds: 0", 1),
 		"sampler poll interval": strings.Replace(validYAML, "sampler:\n  chain_sync_enabled: false\n  poll_interval_seconds: 60", "sampler:\n  chain_sync_enabled: false\n  poll_interval_seconds: 0", 1),
@@ -285,7 +306,7 @@ func TestRepositoryConfigurationArtifactsUseYAML(t *testing.T) {
 		t.Fatalf("example config is not valid after inserting secrets: %v", err)
 	}
 
-	for _, name := range []string{"start.sh", "SETUP.md"} {
+	for _, name := range []string{"README.md"} {
 		body, err := os.ReadFile(filepath.Join(root, name))
 		if err != nil {
 			t.Fatal(err)
@@ -297,8 +318,13 @@ func TestRepositoryConfigurationArtifactsUseYAML(t *testing.T) {
 		if !strings.Contains(string(body), "config.yaml") {
 			t.Fatalf("%s does not mention config.yaml", name)
 		}
-		if name == "SETUP.md" {
-			for _, field := range []string{"history_min_points", "history_max_points", "mysql.dsn", "docker-compose.mysql.yml"} {
+		if name == "README.md" {
+			for _, field := range []string{
+				"history_min_points", "history_max_points", "mysql.dsn",
+				"docker-compose.mysql.yml", "chainlink_rpc_urls",
+				"chainlink_xau_usd_feed", "chainlink_btc_usd_feed",
+				"chainlink_eth_usd_feed", "chainlink_sol_usd_feed", "chainlink_bnb_usd_feed",
+			} {
 				if !strings.Contains(string(body), field) {
 					t.Fatalf("%s does not explain %s", name, field)
 				}
