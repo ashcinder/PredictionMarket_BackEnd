@@ -169,7 +169,7 @@ func main() {
 		Handler:           withCORS(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		WriteTimeout:      10 * time.Minute,
 		IdleTimeout:       120 * time.Second,
 	}
 
@@ -231,7 +231,7 @@ func buildResearchClient(cfg *config.Config) research.Researcher {
 		seen[key] = true
 		providers = append(providers, research.NewClient(baseURL, apiKey, model, timeout))
 	}
-	add(cfg.AIBaseURL, cfg.AIAPIKey, cfg.AIModel, 60*time.Second)
+	add(cfg.AIBaseURL, cfg.AIAPIKey, cfg.AIModel, 180*time.Second)
 	for _, provider := range cfg.AIOracleProviders {
 		// Anthropic uses a different request envelope. The configured DeepSeek,
 		// GLM, MiniMax and OpenAI providers are OpenAI-compatible.
@@ -239,6 +239,9 @@ func buildResearchClient(cfg *config.Config) research.Researcher {
 			continue
 		}
 		timeout := time.Duration(provider.TimeoutSeconds) * time.Second
+		if timeout < 180*time.Second {
+			timeout = 180 * time.Second
+		}
 		add(provider.BaseURL, provider.APIKey, provider.Model, timeout)
 	}
 	return research.NewFailover(providers...)

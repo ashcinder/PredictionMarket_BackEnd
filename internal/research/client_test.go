@@ -32,9 +32,39 @@ func TestClientResearchUsesConfiguredOpenAICompatibleAPI(t *testing.T) {
 	if authorization != "Bearer sk-test" {
 		t.Fatalf("authorization=%q", authorization)
 	}
-	for _, expected := range []string{`"model":"deepseek-chat"`, `"role":"system"`, `"content":"系统提示"`, `"content":"市场上下文"`} {
+	for _, expected := range []string{`"model":"deepseek-chat"`, `"max_tokens":8000`, `"role":"system"`, `"content":"系统提示"`, `"content":"市场上下文"`} {
 		if !strings.Contains(requestBody, expected) {
 			t.Fatalf("request missing %s: %s", expected, requestBody)
+		}
+	}
+}
+
+func TestClientResearchContinuesAndMergesLengthTruncation(t *testing.T) {
+	var calls int
+	var secondRequest string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		body, _ := io.ReadAll(r.Body)
+		if calls == 1 {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"未完成的博弈池分析"},"finish_reason":"length"}]}`))
+			return
+		}
+		secondRequest = string(body)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"后半段与完整结论。"},"finish_reason":"stop"}]}`))
+	}))
+	defer upstream.Close()
+
+	client := NewClient(upstream.URL, "sk-test", "deepseek-chat", time.Second)
+	content, err := client.Research(context.Background(), "系统提示", "分析全部博弈池")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || content != "未完成的博弈池分析\n后半段与完整结论。" {
+		t.Fatalf("calls=%d content=%q", calls, content)
+	}
+	for _, expected := range []string{`"max_tokens":8000`, `"role":"assistant"`, "严格从中断处继续", "闭合所有Markdown标记"} {
+		if !strings.Contains(secondRequest, expected) {
+			t.Fatalf("retry request missing %q: %s", expected, secondRequest)
 		}
 	}
 }
