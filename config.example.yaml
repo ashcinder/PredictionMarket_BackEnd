@@ -7,7 +7,7 @@ chain:
   use_broker_chain: false
 
 server:
-  http_listen: ":8082"
+  http_listen: ":8081"
 
 mysql:
   dsn: "root:replace-with-mysql-password@tcp(127.0.0.1:3306)/predictionmarket_cn?charset=utf8mb4&parseTime=True&loc=Local"
@@ -17,7 +17,7 @@ mysql:
 
 ipfs:
   # 本地模拟器上传的 local-v1 CID 由本服务的本地内容接口读取。
-  gateway: "http://127.0.0.1:8082/api/v1/ipfs/"
+  gateway: "http://127.0.0.1:8081/api/v1/ipfs/"
   # 真实 Kubo/IPFS CID 可回退到本地网关读取。
   fallback_gateways:
     - "http://127.0.0.1:8083/ipfs/"
