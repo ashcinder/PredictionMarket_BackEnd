@@ -21,6 +21,16 @@ type MarketIdentity struct {
 	GameID          int
 }
 
+// StrategySettings contains per-user, per-market AI trading guardrails.
+// Nil settings on a managed entry mean that the server-wide defaults apply.
+type StrategySettings struct {
+	BuyAmountBKC     string  `json:"buy_amount_bkc"`
+	ConfidenceMin    float64 `json:"confidence_min"`
+	MinEdgePercent   float64 `json:"min_edge_percent"`
+	KellyFraction    float64 `json:"kelly_fraction"`
+	AdaptiveCooldown bool    `json:"adaptive_cooldown"`
+}
+
 type HistoryObservation struct {
 	Time       int64    `json:"time"`
 	YesPercent float64  `json:"yes_percent"`
@@ -89,6 +99,7 @@ type PersistentManagedEntry struct {
 	LastError        string
 	LastDecisionAt   time.Time
 	LastDecisionText string
+	Strategy         *StrategySettings
 }
 
 type ManagedEntryRepository interface {

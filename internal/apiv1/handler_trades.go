@@ -54,6 +54,7 @@ func (s *Server) handleGetTrades(w http.ResponseWriter, r *http.Request) {
 			IsSuccess:        r.IsSuccess,
 			IsAiManaged:      r.IsAiManaged,
 			TxHash:           r.TxHash,
+			TimestampSec:     r.TimestampSec,
 			CreatedAt:        r.CreatedAt,
 		})
 	}

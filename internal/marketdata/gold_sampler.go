@@ -40,7 +40,7 @@ func (r *GoldSampleRecorder) Run(ctx context.Context) error {
 	slog.Info("gold oracle sampler started",
 		"interval", r.interval,
 		"symbol", "XAU",
-		"logic_summary", "持续保存 XAU/USD 实时报价，为短周期价格和跑赢率市场提供可复算起止证据",
+		"logic_summary", "Continuously stores XAU/USD quotes to provide reproducible boundary evidence for short-duration and outperformance markets",
 	)
 	if err := r.recordOnce(ctx); err != nil {
 		slog.Warn("gold oracle sample failed", "error", err)

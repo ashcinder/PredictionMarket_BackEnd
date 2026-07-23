@@ -63,7 +63,9 @@ VALUES (?, ?, NULL, 0, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE fail_count=VALUES(fail_count), next_poll_at=VALUES(next_poll_at),
 last_error=VALUES(last_error), status=VALUES(status)`
 	selectManagedEntriesSQL = `SELECT contract_address, game_id, user_address, key_nonce, key_ciphertext,
-enabled_at, last_trade_at, last_trade_option, last_trade_tx, last_error, last_decision_at, last_decision_text
+enabled_at, last_trade_at, last_trade_option, last_trade_tx, last_error, last_decision_at, last_decision_text,
+strategy_buy_amount_bkc, strategy_confidence_min, strategy_min_edge_percent,
+strategy_kelly_fraction, strategy_adaptive_cooldown
 FROM ai_managed_entries`
 	selectCachedMarketSQL = "SELECT g.ipfs_cid, g.`desc`, g.`condition`, g.detailed_info, g.option_yes, g.option_no, " +
 		"COALESCE(NULLIF(cs.deadline_sec, 0), g.deadline_sec) AS deadline_sec, " +
@@ -72,13 +74,20 @@ FROM ai_managed_entries`
 		"WHERE g.contract_address = ? AND g.game_id = ?"
 	upsertManagedEntrySQL = `INSERT INTO ai_managed_entries
 (contract_address, game_id, user_address, key_nonce, key_ciphertext, enabled_at,
-last_trade_at, last_trade_option, last_trade_tx, last_error, last_decision_at, last_decision_text)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+last_trade_at, last_trade_option, last_trade_tx, last_error, last_decision_at, last_decision_text,
+strategy_buy_amount_bkc, strategy_confidence_min, strategy_min_edge_percent,
+strategy_kelly_fraction, strategy_adaptive_cooldown)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE key_nonce=VALUES(key_nonce), key_ciphertext=VALUES(key_ciphertext),
 enabled_at=VALUES(enabled_at), last_trade_at=VALUES(last_trade_at),
 last_trade_option=VALUES(last_trade_option), last_trade_tx=VALUES(last_trade_tx),
 last_error=VALUES(last_error), last_decision_at=VALUES(last_decision_at),
-last_decision_text=VALUES(last_decision_text)`
+last_decision_text=VALUES(last_decision_text),
+strategy_buy_amount_bkc=VALUES(strategy_buy_amount_bkc),
+strategy_confidence_min=VALUES(strategy_confidence_min),
+strategy_min_edge_percent=VALUES(strategy_min_edge_percent),
+strategy_kelly_fraction=VALUES(strategy_kelly_fraction),
+strategy_adaptive_cooldown=VALUES(strategy_adaptive_cooldown)`
 	deleteManagedEntrySQL = `DELETE FROM ai_managed_entries
 WHERE contract_address=? AND game_id=? AND user_address=?`
 	insertManagedGoldTradeSQL = `INSERT INTO gold_trades
@@ -239,10 +248,14 @@ func (r *MySQLRepository) listManagedEntries(ctx context.Context) ([]PersistentM
 		var lastTradeAt sql.NullTime
 		var lastDecisionAt sql.NullTime
 		var lastTradeTx, lastError, lastDecisionText sql.NullString
+		var buyAmount sql.NullString
+		var confidenceMin, minEdgePercent, kellyFraction sql.NullFloat64
+		var adaptiveCooldown sql.NullBool
 		if err := rows.Scan(
 			&contract, &gameID, &item.UserAddress, &item.KeyNonce, &item.KeyCiphertext,
 			&enabledAt, &lastTradeAt, &item.LastTradeOption, &lastTradeTx, &lastError,
-			&lastDecisionAt, &lastDecisionText,
+			&lastDecisionAt, &lastDecisionText, &buyAmount, &confidenceMin,
+			&minEdgePercent, &kellyFraction, &adaptiveCooldown,
 		); err != nil {
 			return nil, fmt.Errorf("scan ai-managed entry: %w", err)
 		}
@@ -258,6 +271,16 @@ func (r *MySQLRepository) listManagedEntries(ctx context.Context) ([]PersistentM
 		item.LastTradeTx = lastTradeTx.String
 		item.LastError = lastError.String
 		item.LastDecisionText = lastDecisionText.String
+		if buyAmount.Valid || confidenceMin.Valid || minEdgePercent.Valid ||
+			kellyFraction.Valid || adaptiveCooldown.Valid {
+			item.Strategy = &StrategySettings{
+				BuyAmountBKC:     buyAmount.String,
+				ConfidenceMin:    confidenceMin.Float64,
+				MinEdgePercent:   minEdgePercent.Float64,
+				KellyFraction:    kellyFraction.Float64,
+				AdaptiveCooldown: adaptiveCooldown.Bool,
+			}
+		}
 		out = append(out, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -280,10 +303,19 @@ func (r *MySQLRepository) SaveManagedEntry(ctx context.Context, item PersistentM
 	defer cancel()
 	contract := normalizeAddress(item.Market.ContractAddress)
 	user := common.HexToAddress(item.UserAddress).Hex()
+	var buyAmount, confidenceMin, minEdgePercent, kellyFraction, adaptiveCooldown interface{}
+	if item.Strategy != nil {
+		buyAmount = item.Strategy.BuyAmountBKC
+		confidenceMin = item.Strategy.ConfidenceMin
+		minEdgePercent = item.Strategy.MinEdgePercent
+		kellyFraction = item.Strategy.KellyFraction
+		adaptiveCooldown = item.Strategy.AdaptiveCooldown
+	}
 	if _, err := r.db.ExecContext(ctx, upsertManagedEntrySQL,
 		contract, item.Market.GameID, user, item.KeyNonce, item.KeyCiphertext, item.EnabledAt.UTC(),
 		nullableTime(item.LastTradeAt), item.LastTradeOption, item.LastTradeTx, item.LastError,
-		nullableTime(item.LastDecisionAt), item.LastDecisionText,
+		nullableTime(item.LastDecisionAt), item.LastDecisionText, buyAmount, confidenceMin,
+		minEdgePercent, kellyFraction, adaptiveCooldown,
 	); err != nil {
 		return fmt.Errorf("save ai-managed entry: %w", err)
 	}

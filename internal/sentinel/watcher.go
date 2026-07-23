@@ -156,7 +156,7 @@ func (w *Watcher) resolveGame(ctx context.Context, game chain.GameOnChain) error
 			"benchmark", rule.Benchmark,
 			"start_time", time.Unix(rule.StartTimeSec, 0).UTC(),
 			"end_time", time.Unix(rule.EndTimeSec, 0).UTC(),
-			"logic_summary", "量化市场只使用可复算的同窗行情证据，不降级为新闻搜索",
+			"logic_summary", "Quantitative markets use only reproducible, aligned-window market evidence and never fall back to news search",
 		)
 		if rule.Type != judge.TypeEvent {
 			if w.quantitative == nil {
@@ -173,7 +173,7 @@ func (w *Watcher) resolveGame(ctx context.Context, game chain.GameOnChain) error
 					"start_time", time.Unix(rule.StartTimeSec, 0).UTC(),
 					"end_time", time.Unix(rule.EndTimeSec, 0).UTC(),
 					"error", result.Summary,
-					"logic_summary", "缺少可复算行情时保持未裁决，不把价格问题交给模型猜测",
+					"logic_summary", "Remain unresolved when reproducible market data is missing; models are not allowed to guess price outcomes",
 				)
 				return fmt.Errorf("game %d: quantitative evidence is indeterminate: %s", game.ID, result.Summary)
 			}
@@ -196,7 +196,7 @@ func (w *Watcher) resolveGame(ctx context.Context, game chain.GameOnChain) error
 					"end_time", time.Unix(rule.EndTimeSec, 0).UTC(),
 					"calculation", result.Summary,
 					"deterministic_candidate", candidate,
-					"logic_summary", "已从 Chainlink 轮次构建可复算证据；现在交给 N-1 个模型独立审核，再由最终模型裁定",
+					"logic_summary", "Reproducible evidence was built from Chainlink rounds; N-1 models now review it independently before final arbitration",
 				)
 				resolveCtx, cancel := context.WithTimeout(ctx, aiResolutionTimeout)
 				verdict := w.oracle.Resolve(resolveCtx, event)
@@ -277,13 +277,13 @@ func buildQuantitativeAIEvent(game chain.GameOnChain, meta *ipfs.Metadata, rule 
 	if result.Winner == 0 {
 		candidate = "YES"
 	}
-	event.Description += "\n该市场采用 Chainlink 结构化证据先计算、N-1 个模型独立复核、第 N 个模型终审的开奖流程。"
+	event.Description += "\nThis market resolves by deterministic calculation from structured Chainlink evidence, independent review by N-1 models and final review by the Nth model."
 	event.Evidence = []aioracle.NewsArticle{{
-		Title:       "结构化行情计算证据：" + event.Title,
+		Title:       "Structured Market Calculation Evidence: " + event.Title,
 		Source:      quantitativeEvidenceSource(rule),
 		PublishedAt: event.Deadline,
 		Content: fmt.Sprintf(
-			"行情计算：%s\n确定性候选结果：%s\n复核要求：从 feed、boundary、round_id、source_time 和 price_usd 开始独立复算对应类型的公式；任一轮次、时间或算术无法复现时必须返回 INDETERMINATE，不得猜测。\n结算规则：%s",
+			"Market calculation: %s\nDeterministic candidate: %s\nReview requirement: independently recompute the type-specific formula from feed, boundary, round_id, source_time and price_usd. Return INDETERMINATE if any round, timestamp or arithmetic step cannot be reproduced; never guess.\nResolution rule: %s",
 			result.Summary, candidate, string(ruleJSON),
 		),
 	}}
@@ -353,18 +353,18 @@ func buildAIEvent(game chain.GameOnChain, meta *ipfs.Metadata) aioracle.Event {
 	}
 
 	var description strings.Builder
-	fmt.Fprintf(&description, "市场问题：%s\n", title)
-	fmt.Fprintf(&description, "客观判定条件：%s\n", strings.TrimSpace(meta.Condition))
-	fmt.Fprintf(&description, "YES 选项：%s\n", yesOption)
-	fmt.Fprintf(&description, "NO 选项：%s\n", noOption)
+	fmt.Fprintf(&description, "Market question: %s\n", title)
+	fmt.Fprintf(&description, "Objective resolution rule: %s\n", strings.TrimSpace(meta.Condition))
+	fmt.Fprintf(&description, "YES option: %s\n", yesOption)
+	fmt.Fprintf(&description, "NO option: %s\n", noOption)
 	if detail := strings.TrimSpace(meta.DetailedInfo); detail != "" {
-		fmt.Fprintf(&description, "补充说明：%s\n", detail)
+		fmt.Fprintf(&description, "Additional details: %s\n", detail)
 	}
 	if len(meta.AuthoritativeSources) > 0 {
-		fmt.Fprintf(&description, "市场创建者指定的权威来源：%s\n", strings.Join(meta.AuthoritativeSources, "、"))
+		fmt.Fprintf(&description, "Creator-specified authoritative sources: %s\n", strings.Join(meta.AuthoritativeSources, ", "))
 	}
-	description.WriteString("裁决映射：仅当客观判定条件在截止时间前得到充分证据确认时 occurred=true（YES）；")
-	description.WriteString("仅当充分证据确认条件未满足时 occurred=false（NO）。证据不足时必须降低 confidence，禁止猜测。")
+	description.WriteString("Resolution mapping: occurred=true (YES) only when sufficient evidence confirms the objective condition by the deadline; ")
+	description.WriteString("occurred=false (NO) only when sufficient evidence confirms it was not met. Lower confidence when evidence is insufficient; never guess.")
 
 	return aioracle.Event{
 		ID:                   fmt.Sprintf("game-%d", game.ID),

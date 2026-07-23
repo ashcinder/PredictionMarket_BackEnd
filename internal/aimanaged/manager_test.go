@@ -64,6 +64,61 @@ func TestAIClientUsesConfiguredKeyAndModel(t *testing.T) {
 	}
 }
 
+func TestManagedStrategyUpdatePreservesTradeCooldownState(t *testing.T) {
+	store, err := NewStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateKey := hexutil.Encode(crypto.FromECDSA(key))
+	user := crypto.PubkeyToAddress(key.PublicKey).Hex()
+	contract := "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
+	base := SetRequest{GameID: 9, UserAddress: user, Enabled: true,
+		ContractAddress: contract, PrivateKey: privateKey,
+		Strategy: &StrategySettings{BuyAmountBKC: "1", ConfidenceMin: 0.70,
+			MinEdgePercent: 5, KellyFraction: 0.25, AdaptiveCooldown: true}}
+	if err := store.Enable(base); err != nil {
+		t.Fatal(err)
+	}
+	store.RecordTrade(9, user, 0, "0xtrade")
+
+	base.Strategy = &StrategySettings{BuyAmountBKC: "3", ConfidenceMin: 0.85,
+		MinEdgePercent: 9, KellyFraction: 0.15, AdaptiveCooldown: true}
+	if err := store.Enable(base); err != nil {
+		t.Fatal(err)
+	}
+	entries := store.Entries()
+	if len(entries) != 1 {
+		t.Fatalf("expected one managed entry, got %d", len(entries))
+	}
+	entry := entries[0]
+	if entry.LastTradeTx != "0xtrade" || entry.LastTradeOption != 0 || entry.LastTradeAt.IsZero() {
+		t.Fatalf("strategy update erased cooldown state: %+v", entry)
+	}
+	if entry.Strategy == nil || entry.Strategy.BuyAmountBKC != "3" ||
+		entry.Strategy.ConfidenceMin != 0.85 || entry.Strategy.MinEdgePercent != 9 {
+		t.Fatalf("strategy update was not applied: %+v", entry.Strategy)
+	}
+}
+
+func TestManagedStrategyValidationRejectsUnsafeLimits(t *testing.T) {
+	for name, strategy := range map[string]*StrategySettings{
+		"amount":     {BuyAmountBKC: "1001", ConfidenceMin: 0.70, MinEdgePercent: 5, KellyFraction: 0.25},
+		"confidence": {BuyAmountBKC: "1", ConfidenceMin: 0.49, MinEdgePercent: 5, KellyFraction: 0.25},
+		"edge":       {BuyAmountBKC: "1", ConfidenceMin: 0.70, MinEdgePercent: 31, KellyFraction: 0.25},
+		"kelly":      {BuyAmountBKC: "1", ConfidenceMin: 0.70, MinEdgePercent: 5, KellyFraction: 1.01},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := validateStrategy(strategy); err == nil {
+				t.Fatalf("expected validation error for %+v", strategy)
+			}
+		})
+	}
+}
+
 func TestAIClientRetriesMalformedDecisionJSON(t *testing.T) {
 	var calls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -231,7 +286,7 @@ func TestAIClientDecisionPromptIncludesResearchHistoryAndUntrustedDataBoundary(t
 		t.Fatalf("unexpected messages: %+v", messages)
 	}
 	system := messages[0].Content
-	for _, required := range []string{"不受信任", "不得", "IPFS"} {
+	for _, required := range []string{"untrusted", "Never", "IPFS"} {
 		if !strings.Contains(system, required) {
 			t.Fatalf("system prompt lacks %q untrusted-data boundary: %s", required, system)
 		}
@@ -245,13 +300,13 @@ func TestAIClientDecisionPromptIncludesResearchHistoryAndUntrustedDataBoundary(t
 	}
 	for _, required := range []string{
 		`"detailed_info":"settled from the official close"`,
-		"市场隐含YES概率: 60.0%",
-		"市场隐含NO概率: 40.0%",
-		"博弈池ID: 9",
-		"当前金价: $2300.25",
+		"YES market share: 60.0%",
+		"NO market share: 40.0%",
+		"Market ID: 9",
+		"Current gold: $2300.25",
 		"YES=0, NO=1",
-		"价值阈值模板",
-		"不要把历史点数量少当作唯一持有理由",
+		"Template guidance",
+		"do not use a small history count as the sole reason to hold",
 		`[{"time":100,"yes_percent":51,"no_percent":49},{"time":200,"yes_percent":55,"no_percent":45},{"time":300,"yes_percent":60,"no_percent":40}]`,
 	} {
 		if !strings.Contains(user, required) {
@@ -745,7 +800,7 @@ func TestDecisionMarketConsistencyGuardPreventsReversedTrade(t *testing.T) {
 	if guarded.Action != "hold" {
 		t.Fatalf("expected inconsistent buy_no to become hold, got %+v", guarded)
 	}
-	if !strings.Contains(guarded.Reason, "一致性保护") {
+	if !strings.Contains(guarded.Reason, "Backend consistency guard") {
 		t.Fatalf("expected guard reason, got %q", guarded.Reason)
 	}
 

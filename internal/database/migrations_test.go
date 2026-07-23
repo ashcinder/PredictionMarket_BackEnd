@@ -107,7 +107,7 @@ func TestEmbeddedMigrationDefinesPersistenceTables(t *testing.T) {
 			t.Fatalf("migration does not define %s", table)
 		}
 	}
-	var foundSyncState, foundManagedEntries, foundIdempotentPriceHistory, foundProbabilityOrientationFix, foundOracleSamples, foundChainlinkRounds bool
+	var foundSyncState, foundManagedEntries, foundManagedStrategy, foundIdempotentPriceHistory, foundProbabilityOrientationFix, foundOracleSamples, foundChainlinkRounds bool
 	for _, migration := range migrations {
 		if strings.Contains(migration.SQL, "market_sync_state") &&
 			strings.Contains(migration.SQL, "sync_failed") {
@@ -115,6 +115,11 @@ func TestEmbeddedMigrationDefinesPersistenceTables(t *testing.T) {
 		}
 		if strings.Contains(migration.SQL, "ai_managed_entries") {
 			foundManagedEntries = true
+		}
+		if strings.Contains(migration.SQL, "strategy_buy_amount_bkc") &&
+			strings.Contains(migration.SQL, "strategy_confidence_min") &&
+			strings.Contains(migration.SQL, "strategy_adaptive_cooldown") {
+			foundManagedStrategy = true
 		}
 		if strings.Contains(migration.SQL, "uq_gold_price_history_game_time") {
 			foundIdempotentPriceHistory = true
@@ -138,6 +143,9 @@ func TestEmbeddedMigrationDefinesPersistenceTables(t *testing.T) {
 	}
 	if !foundManagedEntries {
 		t.Fatalf("migrations do not define ai-managed entries: %+v", migrations)
+	}
+	if !foundManagedStrategy {
+		t.Fatalf("migrations do not define per-market AI strategy settings: %+v", migrations)
 	}
 	if !foundIdempotentPriceHistory {
 		t.Fatalf("migrations do not make gold price history idempotent: %+v", migrations)

@@ -184,7 +184,7 @@ func (o *GoldOracle) fetchGoldSina() (*Quote, error) {
 		PriceUSD:        price,
 		Change24h:       change,
 		ChangeAvailable: prevClose > 0,
-		QuoteSource:     "新浪财经",
+		QuoteSource:     "Sina Finance",
 		QuoteUpdatedAt:  updatedAt,
 	}, nil
 }

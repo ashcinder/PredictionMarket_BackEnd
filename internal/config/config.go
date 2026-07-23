@@ -64,8 +64,9 @@ type fileConfig struct {
 		SampleIntervalSeconds        int      `yaml:"sample_interval_seconds"`
 	} `yaml:"oracle"`
 	Sentinel struct {
-		PollIntervalSeconds int `yaml:"poll_interval_seconds"`
-		ResolveDelaySeconds int `yaml:"resolve_delay_seconds"`
+		AutoResolveEnabled  *bool `yaml:"auto_resolve_enabled"`
+		PollIntervalSeconds int   `yaml:"poll_interval_seconds"`
+		ResolveDelaySeconds int   `yaml:"resolve_delay_seconds"`
 	} `yaml:"sentinel"`
 	Sampler struct {
 		ChainSyncEnabled    bool `yaml:"chain_sync_enabled"`
@@ -140,6 +141,7 @@ type Config struct {
 	ChainlinkMaxStaleness      time.Duration
 	PollInterval               time.Duration
 	ResolveDelay               time.Duration
+	AutoResolveEnabled         bool
 	UseBrokerChain             bool
 	HTTPListen                 string
 	AIAPIKey                   string
@@ -277,6 +279,10 @@ func LoadFile(path string) (*Config, error) {
 	}
 	if raw.Sentinel.ResolveDelaySeconds < 0 {
 		return nil, errors.New("sentinel.resolve_delay_seconds must not be negative")
+	}
+	autoResolveEnabled := true
+	if raw.Sentinel.AutoResolveEnabled != nil {
+		autoResolveEnabled = *raw.Sentinel.AutoResolveEnabled
 	}
 	if raw.Sampler.PollIntervalSeconds <= 0 {
 		return nil, errors.New("sampler.poll_interval_seconds must be positive")
@@ -662,6 +668,7 @@ func LoadFile(path string) (*Config, error) {
 		ChainlinkMaxStaleness:       time.Duration(raw.Oracle.ChainlinkMaxStalenessSeconds) * time.Second,
 		PollInterval:                time.Duration(raw.Sentinel.PollIntervalSeconds) * time.Second,
 		ResolveDelay:                time.Duration(raw.Sentinel.ResolveDelaySeconds) * time.Second,
+		AutoResolveEnabled:          autoResolveEnabled,
 		UseBrokerChain:              raw.Chain.UseBrokerChain,
 		HTTPListen:                  strings.TrimSpace(raw.Server.HTTPListen),
 		AIAPIKey:                    apiKey,

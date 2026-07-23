@@ -39,6 +39,7 @@ oracle:
   user_agent: "PredictionMarket/1.0"
   request_timeout_seconds: 10
 sentinel:
+  auto_resolve_enabled: true
   poll_interval_seconds: 30
   resolve_delay_seconds: 5
 sampler:
@@ -92,6 +93,9 @@ func TestLoadFileReadsCompleteYAML(t *testing.T) {
 	if cfg.PollInterval != 30*time.Second || cfg.AIPollInterval != 120*time.Second || cfg.SamplerPollInterval != 60*time.Second {
 		t.Fatalf("unexpected intervals: poll=%s ai=%s sampler=%s", cfg.PollInterval, cfg.AIPollInterval, cfg.SamplerPollInterval)
 	}
+	if !cfg.AutoResolveEnabled {
+		t.Fatal("sentinel.auto_resolve_enabled = false, want true")
+	}
 	if cfg.SamplerChainSyncEnabled {
 		t.Fatal("sampler.chain_sync_enabled = true, want false")
 	}
@@ -101,6 +105,29 @@ func TestLoadFileReadsCompleteYAML(t *testing.T) {
 	if cfg.MySQLDSN == "" || cfg.MySQLMaxOpenConnections != 10 ||
 		cfg.MySQLMaxIdleConnections != 5 || cfg.MySQLConnectionMaxLifetime != 300*time.Second {
 		t.Fatalf("unexpected MySQL config: %+v", cfg)
+	}
+}
+
+func TestLoadFileDefaultsAutomaticResolutionToEnabled(t *testing.T) {
+	body := strings.Replace(validYAML, "  auto_resolve_enabled: true\n", "", 1)
+	cfg, err := LoadFile(writeTestConfig(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AutoResolveEnabled {
+		t.Fatal("omitted sentinel.auto_resolve_enabled must preserve automatic resolution")
+	}
+}
+
+func TestLoadFileCanDisableAutomaticResolution(t *testing.T) {
+	body := strings.Replace(validYAML,
+		"auto_resolve_enabled: true", "auto_resolve_enabled: false", 1)
+	cfg, err := LoadFile(writeTestConfig(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AutoResolveEnabled {
+		t.Fatal("sentinel.auto_resolve_enabled = true, want false")
 	}
 }
 

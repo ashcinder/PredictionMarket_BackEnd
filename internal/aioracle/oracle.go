@@ -81,7 +81,7 @@ func (o *Oracle) Resolve(ctx context.Context, event Event) *Verdict {
 			"stage", "evidence_collection",
 			"event_id", event.ID,
 			"error", officialErr,
-			"logic_summary", "权威信源抓取失败；继续尝试通用新闻源，但不会把缺少证据误判为 NO",
+			"logic_summary", "Authoritative-source retrieval failed; general news sources will be tried without treating missing evidence as NO",
 		)
 	}
 	if len(event.Evidence) == 0 && o.newsFetcher != nil && len(articles) < o.maxArticles {
@@ -92,7 +92,7 @@ func (o *Oracle) Resolve(ctx context.Context, event Event) *Verdict {
 				"stage", "evidence_collection",
 				"event_id", event.ID,
 				"error", err,
-				"logic_summary", "通用新闻源抓取失败；仅使用已取得的权威证据，若最终没有证据则保持 INDETERMINATE",
+				"logic_summary", "General-news retrieval failed; only acquired authoritative evidence will be used, otherwise the result remains INDETERMINATE",
 			)
 		} else {
 			articles = append(articles, general...)
@@ -104,7 +104,7 @@ func (o *Oracle) Resolve(ctx context.Context, event Event) *Verdict {
 			"event_id", event.ID,
 			"title", event.Title,
 			"authoritative_sources", event.AuthoritativeSources,
-			"logic_summary", "未取得可核验的外部证据；即使模型给出候选结论，系统也会保持 INDETERMINATE",
+			"logic_summary", "No verifiable external evidence was acquired; the system remains INDETERMINATE even if a model proposes a candidate",
 		)
 	} else {
 		for index, article := range articles {
@@ -130,7 +130,7 @@ func (o *Oracle) Resolve(ctx context.Context, event Event) *Verdict {
 		"authoritative_sources", strings.Join(event.AuthoritativeSources, ", "),
 		"evidence_count", len(articles),
 		"evidence_summary", summarizeEvidence(articles),
-		"logic_summary", "先固定事件定义、判断条件、截止时间与外部证据，再把相同输入分发给各独立模型",
+		"logic_summary", "Freeze the event definition, resolution rule, deadline and evidence before distributing identical input to independent models",
 	)
 
 	slog.Info("aioracle: resolving event",
@@ -139,7 +139,7 @@ func (o *Oracle) Resolve(ctx context.Context, event Event) *Verdict {
 		"title", event.Title,
 		"articles", len(articles),
 		"models", o.consensus.ProviderCount(),
-		"logic_summary", "开始并发请求前序模型，随后由配置的最终裁定模型审查全部意见",
+		"logic_summary", "Request peer models concurrently, then have the configured final arbiter review every opinion",
 	)
 
 	verdict := o.consensus.Judge(ctx, event, articles)
@@ -173,19 +173,19 @@ func (o *Oracle) Resolve(ctx context.Context, event Event) *Verdict {
 
 func summarizeEvidence(articles []NewsArticle) string {
 	if len(articles) == 0 {
-		return "未收集到外部证据"
+		return "No external evidence collected"
 	}
 	parts := make([]string, 0, len(articles))
 	for index, article := range articles {
-		publishedAt := "时间未知"
+		publishedAt := "time unknown"
 		if !article.PublishedAt.IsZero() {
 			publishedAt = article.PublishedAt.Format("2006-01-02 15:04")
 		}
 		parts = append(parts, fmt.Sprintf(
-			"证据%d[%s｜%s｜%s]：%s",
+			"Evidence %d [%s | %s | %s]: %s",
 			index+1,
-			emptyEvidenceField(article.Source, "来源未知"),
-			emptyEvidenceField(article.Title, "无标题"),
+			emptyEvidenceField(article.Source, "source unknown"),
+			emptyEvidenceField(article.Title, "untitled"),
 			publishedAt,
 			truncateContent(strings.TrimSpace(article.Content), 500),
 		))

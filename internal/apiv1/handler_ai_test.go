@@ -89,6 +89,55 @@ func TestV1AIManagedMatchingKeyEnableSuccess(t *testing.T) {
 	}
 }
 
+func TestV1AIManagedPersistsAndReturnsCustomStrategy(t *testing.T) {
+	srv, _ := newAITestServer(t)
+	mux := http.NewServeMux()
+	srv.Register(mux)
+
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateKey := hexutil.Encode(crypto.FromECDSA(key))
+	userAddress := crypto.PubkeyToAddress(key.PublicKey).Hex()
+	contractAddress := "0xad4F9eD0F2b51A26314C9f83DF588cCcE26ae03c"
+	strategy := &aimanaged.StrategySettings{
+		BuyAmountBKC: "2.5", ConfidenceMin: 0.81, MinEdgePercent: 7.5,
+		KellyFraction: 0.20, AdaptiveCooldown: true,
+	}
+	body, err := json.Marshal(aimanaged.SetRequest{
+		GameID: 20, UserAddress: userAddress, Enabled: true,
+		ContractAddress: contractAddress, PrivateKey: privateKey, Strategy: strategy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httptest.NewRequest(
+		http.MethodPost, "/api/v1/gold/ai-managed", bytes.NewReader(body)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("POST strategy: expected 200, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	getURL := "/api/v1/gold/ai-managed?game_id=20&user_address=" +
+		url.QueryEscape(userAddress) + "&contract_address=" + url.QueryEscape(contractAddress)
+	getRecorder := httptest.NewRecorder()
+	mux.ServeHTTP(getRecorder, httptest.NewRequest(http.MethodGet, getURL, nil))
+	var response struct {
+		Enabled  bool                       `json:"enabled"`
+		Strategy aimanaged.StrategySettings `json:"strategy"`
+	}
+	if err := json.NewDecoder(getRecorder.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.Enabled || response.Strategy.BuyAmountBKC != "2.5" ||
+		response.Strategy.ConfidenceMin != 0.81 ||
+		response.Strategy.MinEdgePercent != 7.5 ||
+		response.Strategy.KellyFraction != 0.20 || !response.Strategy.AdaptiveCooldown {
+		t.Fatalf("unexpected managed strategy: %+v", response)
+	}
+}
+
 // TestV1AIManagedMismatchedKeyReturns400AndStaysDisabled verifies that POST to
 // /api/v1/gold/ai-managed with a private key that does NOT derive the claimed
 // user_address returns 400, and a subsequent GET returns enabled=false.

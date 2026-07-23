@@ -125,6 +125,7 @@ func TestGetTradesReturnsPurchaseTimeSharesAndPositionSnapshots(t *testing.T) {
 		IsSuccess:        true,
 		IsAiManaged:      false,
 		TxHash:           "0xabc",
+		TimestampSec:     1782714600,
 		CreatedAt:        "2026-06-29 14:30:00",
 	}}}
 	srv := NewServer(nil, nil, nil, nil, tradeMock, nil, nil, nil, "0xContract", 256)
@@ -156,6 +157,9 @@ func TestGetTradesReturnsPurchaseTimeSharesAndPositionSnapshots(t *testing.T) {
 	}
 	if got.CreatedAt != "2026-06-29 14:30:00" {
 		t.Fatalf("expected database purchase time, got %q", got.CreatedAt)
+	}
+	if got.TimestampSec != 1782714600 {
+		t.Fatalf("expected exact purchase timestamp, got %d", got.TimestampSec)
 	}
 }
 

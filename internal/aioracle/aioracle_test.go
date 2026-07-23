@@ -36,8 +36,8 @@ func TestBuildOraclePrompt(t *testing.T) {
 		"btc-150k",
 		"BTC exceeds $150,000",
 		"Bitcoin price exceeds $150,000",
-		"bitcoin、BTC、150000",
-		"July 1, 2026",
+		"bitcoin, BTC, 150000",
+		"2026-07-01T00:00:00Z",
 		"CryptoNews",
 		"Bitcoin hits new all-time high",
 		"https://example.com/btc-ath",
@@ -68,7 +68,7 @@ func TestBuildOraclePrompt_NoArticles(t *testing.T) {
 		Deadline:    time.Now(),
 	}
 	prompt := buildOraclePrompt(event, nil)
-	if !strings.Contains(prompt, "无可用新闻源") {
+	if !strings.Contains(prompt, "No news source or external evidence is available") {
 		t.Error("prompt should mention no news available")
 	}
 }
@@ -808,7 +808,7 @@ func TestQuantitativeOraclePromptsRequireIndependentReturnCalculation(t *testing
 	peerPrompt := buildOraclePrompt(event, articles)
 	finalPrompt := buildFinalArbiterPrompt(event, articles, []ModelOpinion{{ModelName: "peer", Decision: DecisionNo}})
 	for name, prompt := range map[string]string{"peer": peerPrompt, "final": finalPrompt} {
-		for _, expected := range []string{"(截止价-起始价)/起始价", "分别计算", "候选结果", "不得直接照抄"} {
+		for _, expected := range []string{"(end-start)/start", "each asset", "candidate", "review material, not an answer"} {
 			if !strings.Contains(prompt, expected) {
 				t.Fatalf("%s prompt missing %q: %s", name, expected, prompt)
 			}
@@ -826,8 +826,8 @@ func TestQuantitativeOraclePromptsCoverAllVersion2Calculations(t *testing.T) {
 	finalPrompt := buildFinalArbiterPrompt(event, articles, []ModelOpinion{{ModelName: "peer", Decision: DecisionYes}})
 	for name, prompt := range map[string]string{"peer": peerPrompt, "final": finalPrompt} {
 		for _, expected := range []string{
-			"方向收益", "绝对收益率", "价格阈值", "闭区间", "相对收益率", "连续日边界",
-			"round_id", "source_time", "INDETERMINATE", "不得直接照抄",
+			"direction return", "absolute return", "price threshold", "closed range", "relative return", "consecutive boundaries",
+			"round_id", "source_time", "INDETERMINATE", "review material, not an answer",
 		} {
 			if !strings.Contains(prompt, expected) {
 				t.Fatalf("%s prompt missing %q: %s", name, expected, prompt)

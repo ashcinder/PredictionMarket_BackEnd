@@ -108,7 +108,7 @@ func TestVersion2TemplatesReachFinalArbiterAndSettlementEncoding(t *testing.T) {
 			}
 			evidence := arbiter.event.Evidence[0].Content
 			for _, expected := range []string{
-				fixture.rule.Type, "round_id=", "source_time=", "price_usd=", "独立复算",
+				fixture.rule.Type, "round_id=", "source_time=", "price_usd=", "independently recompute",
 			} {
 				if !strings.Contains(evidence, expected) {
 					t.Fatalf("arbiter evidence missing %q: %s", expected, evidence)

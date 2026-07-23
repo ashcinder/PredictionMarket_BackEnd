@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -50,6 +51,17 @@ func main() {
 	} else {
 		slog.Info("using local RPC", "url", cfg.RPCURL)
 	}
+	httpListener, err := net.Listen("tcp", cfg.HTTPListen)
+	if err != nil {
+		slog.Error("http api listen failed",
+			"listen", cfg.HTTPListen,
+			"error", err,
+			"hint", "another backend process may already be using this port",
+		)
+		os.Exit(1)
+	}
+	defer httpListener.Close()
+
 	db, err := database.OpenMySQL(context.Background(), database.Config{
 		DSN:                   cfg.MySQLDSN,
 		MaxOpenConnections:    cfg.MySQLMaxOpenConnections,
@@ -151,6 +163,7 @@ func main() {
 	)
 	v1Server.SetQuoteProvider(goldOracle)
 	v1Server.SetResearchProvider(buildResearchClient(cfg))
+	v1Server.SetRuntimePolicy(cfg.AutoResolveEnabled)
 
 	// Extend the sampler to also keep the v1 cache tables fresh.
 	samplerExt := apiv1.NewSamplerCacheExt(v1Repo, v1Repo, v1Repo, v1Repo, cfg.ContractAddress, managedStore)
@@ -176,7 +189,7 @@ func main() {
 	errCh := make(chan error, 6)
 	go func() {
 		slog.Info("http api server started", "listen", cfg.HTTPListen)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := httpServer.Serve(httpListener); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
 	}()
@@ -185,11 +198,19 @@ func main() {
 			errCh <- err
 		}
 	}()
-	go func() {
-		if err := watcher.Run(ctx); err != nil && err != context.Canceled {
-			errCh <- err
-		}
-	}()
+	if cfg.AutoResolveEnabled {
+		go func() {
+			if err := watcher.Run(ctx); err != nil && err != context.Canceled {
+				errCh <- err
+			}
+		}()
+	} else {
+		slog.Warn("automatic market resolution disabled",
+			"setting", "sentinel.auto_resolve_enabled",
+			"immediate_expiry_demo_creation", true,
+			"logic_summary", "到期博弈池保持等待裁决；重新启用该开关并重启后端后，sentinel 将扫描并触发多 AI 开奖",
+		)
+	}
 	go func() {
 		if err := goldSampleRecorder.Run(ctx); err != nil && err != context.Canceled {
 			errCh <- err

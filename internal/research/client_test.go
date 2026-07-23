@@ -62,7 +62,7 @@ func TestClientResearchContinuesAndMergesLengthTruncation(t *testing.T) {
 	if calls != 2 || content != "未完成的博弈池分析\n后半段与完整结论。" {
 		t.Fatalf("calls=%d content=%q", calls, content)
 	}
-	for _, expected := range []string{`"max_tokens":8000`, `"role":"assistant"`, "严格从中断处继续", "闭合所有Markdown标记"} {
+	for _, expected := range []string{`"max_tokens":8000`, `"role":"assistant"`, "Continue exactly where it stopped", "close all Markdown markers"} {
 		if !strings.Contains(secondRequest, expected) {
 			t.Fatalf("retry request missing %q: %s", expected, secondRequest)
 		}

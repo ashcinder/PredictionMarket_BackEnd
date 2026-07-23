@@ -48,9 +48,9 @@ func TestMarkdownRouterRoutesAndRedacts(t *testing.T) {
 	if !strings.Contains(chain, "prediction market sentinel started") {
 		t.Fatalf("chain log missing routed message:\n%s", chain)
 	}
-	if !strings.Contains(chain, "### 第 1 轮") ||
-		!strings.Contains(chain, "### 第 2 轮") ||
-		!strings.Contains(chain, "## 后端会话") ||
+	if !strings.Contains(chain, "### Round 1") ||
+		!strings.Contains(chain, "### Round 2") ||
+		!strings.Contains(chain, "## Backend Session") ||
 		strings.Contains(chain, "| 时间 | 级别 | 消息 | 详情 |") {
 		t.Fatalf("round sections missing or malformed:\n%s", chain)
 	}
@@ -120,7 +120,7 @@ func TestMarkdownRouterRebuildsLogsForEveryBackendRun(t *testing.T) {
 	if !strings.Contains(body, "second-run marker") {
 		t.Fatalf("current backend run is missing:\n%s", body)
 	}
-	if strings.Count(body, formatMarker) != 1 || strings.Count(body, "## 后端会话") != 1 {
+	if strings.Count(body, formatMarker) != 1 || strings.Count(body, "## Backend Session") != 1 {
 		t.Fatalf("log file was appended instead of rebuilt:\n%s", body)
 	}
 }
@@ -197,7 +197,7 @@ func TestMarkdownRouterWithAttrsAndGroups(t *testing.T) {
 func TestMarkdownRouterReplacesLegacyTableFormat(t *testing.T) {
 	dir := t.TempDir()
 	legacyPath := filepath.Join(dir, chainPoolFile)
-	legacy := "# 旧日志\n\n| 时间 | 级别 | 消息 | 详情 |\n|---|---|---|---|\n| old | INFO | crowded | data |\n"
+	legacy := "# Legacy log\n\n| Time | Level | Message | Details |\n|---|---|---|---|\n| old | INFO | crowded | data |\n"
 	if err := os.WriteFile(legacyPath, []byte(legacy), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -213,12 +213,12 @@ func TestMarkdownRouterReplacesLegacyTableFormat(t *testing.T) {
 
 	current := readLog(t, dir, chainPoolFile)
 	if !strings.Contains(current, formatMarker) ||
-		!strings.Contains(current, "## 后端会话") ||
-		!strings.Contains(current, "### 第 1 轮") ||
+		!strings.Contains(current, "## Backend Session") ||
+		!strings.Contains(current, "### Round 1") ||
 		strings.Contains(current, "crowded") {
 		t.Fatalf("new log was not cleanly migrated:\n%s", current)
 	}
-	archives, err := filepath.Glob(filepath.Join(dir, "监听链上博弈池状态.旧格式-*.md"))
+	archives, err := filepath.Glob(filepath.Join(dir, "chain-market-monitor.legacy-format-*.md"))
 	if err != nil {
 		t.Fatal(err)
 	}

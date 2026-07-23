@@ -53,6 +53,8 @@ oracle:
   request_timeout_seconds: 10
 
 sentinel:
+  # false: stop automatic settlement scans and enable immediate-expiry demo market creation.
+  auto_resolve_enabled: true
   poll_interval_seconds: 30
   resolve_delay_seconds: 5
 

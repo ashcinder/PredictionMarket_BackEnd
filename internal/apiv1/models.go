@@ -195,6 +195,7 @@ type TradeHistoryItemDTO struct {
 	IsSuccess        bool   `json:"is_success"`
 	IsAiManaged      bool   `json:"is_ai_managed"`
 	TxHash           string `json:"tx_hash"`
+	TimestampSec     int64  `json:"timestamp_sec"`
 	CreatedAt        string `json:"created_at"`
 	MySharesYesAfter string `json:"my_shares_yes_after"`
 	MySharesNoAfter  string `json:"my_shares_no_after"`

@@ -33,7 +33,11 @@ func (s *Server) handleAIGet(w http.ResponseWriter, r *http.Request) {
 	if common.IsHexAddress(contractAddress) {
 		enabled = s.aiStore.IsEnabledForContract(gameID, userAddress, contractAddress)
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"enabled": enabled})
+	response := map[string]interface{}{"enabled": enabled}
+	if strategy := s.aiStore.StrategyForContract(gameID, userAddress, contractAddress); strategy != nil {
+		response["strategy"] = strategy
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 // handleAISet handles POST /api/v1/gold/ai-managed

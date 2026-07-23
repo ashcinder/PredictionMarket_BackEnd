@@ -55,7 +55,7 @@ func TestBuildQuantitativeAIEventIncludesRuleAndReproducibleCalculation(t *testi
 		t.Fatalf("quantitative evidence missing: %+v", event)
 	}
 	content := event.Evidence[0].Content
-	for _, expected := range []string{"TYPE_RELATIVE", "XAU", "BTC", "XAU return 0.1%", "BTC return 2.0%", "候选结果：NO"} {
+	for _, expected := range []string{"TYPE_RELATIVE", "XAU", "BTC", "XAU return 0.1%", "BTC return 2.0%", "Deterministic candidate: NO"} {
 		if !strings.Contains(content, expected) {
 			t.Fatalf("evidence missing %q: %s", expected, content)
 		}
@@ -84,8 +84,8 @@ func TestBuildAIEvent(t *testing.T) {
 		t.Fatalf("deadline=%s, want %s", event.Deadline, deadline)
 	}
 	for _, expected := range []string{
-		"客观判定条件", "YES 选项：高于", "NO 选项：未高于",
-		"gold-api.com", "证据不足时必须降低 confidence",
+		"Objective resolution rule", "YES option: 高于", "NO option: 未高于",
+		"gold-api.com", "Lower confidence when evidence is insufficient",
 	} {
 		if !strings.Contains(event.Description, expected) {
 			t.Errorf("description missing %q: %s", expected, event.Description)
@@ -155,13 +155,13 @@ func TestBuildVersion2QuantitativeEventRequiresReproducibleAudit(t *testing.T) {
 	content := event.Evidence[0].Content
 	for _, expected := range []string{
 		"TYPE_PRICE_RANGE", "round_id=42", "source_time", "price_usd=4079.105",
-		"INDETERMINATE", "独立复算", "候选结果：YES",
+		"INDETERMINATE", "independently recompute", "Deterministic candidate: YES",
 	} {
 		if !strings.Contains(content, expected) {
 			t.Fatalf("evidence missing %q: %s", expected, content)
 		}
 	}
-	if strings.Index(content, "price_usd=4079.105") > strings.Index(content, "结算规则：") {
+	if strings.Index(content, "price_usd=4079.105") > strings.Index(content, "Resolution rule:") {
 		t.Fatalf("auditable prices must precede the expandable rule JSON: %s", content)
 	}
 }

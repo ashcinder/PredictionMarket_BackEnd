@@ -71,7 +71,7 @@ func (e *ConsensusEngine) judgeWithFinalArbiter(ctx context.Context, event Event
 			"stage", "final_adjudication",
 			"event_id", event.ID,
 			"final_arbiter", arbiterName,
-			"logic_summary", "配置指定的最终裁定模型不存在，保持 INDETERMINATE，不触发链上结算",
+			"logic_summary", "The configured final arbiter does not exist; remain INDETERMINATE and do not settle on-chain",
 		)
 		return base
 	}
@@ -81,7 +81,7 @@ func (e *ConsensusEngine) judgeWithFinalArbiter(ctx context.Context, event Event
 			"stage", "final_adjudication",
 			"event_id", event.ID,
 			"final_arbiter", arbiterName,
-			"logic_summary", "配置的模型不支持终审接口，保持 INDETERMINATE，不触发链上结算",
+			"logic_summary", "The configured model does not support final arbitration; remain INDETERMINATE and do not settle on-chain",
 		)
 		return base
 	}
@@ -92,7 +92,7 @@ func (e *ConsensusEngine) judgeWithFinalArbiter(ctx context.Context, event Event
 		"peer_models", len(peers),
 		"final_arbiter", arbiter.Name(),
 		"evidence_items", len(articles),
-		"logic_summary", "先由 N-1 个模型基于同一事件定义和证据独立判断，彼此之间不共享答案",
+		"logic_summary", "N-1 models first judge the same event definition and evidence independently without sharing answers",
 	)
 	opinions := QueryAllModels(ctx, peers, event, articles)
 	for _, opinion := range opinions {
@@ -103,7 +103,7 @@ func (e *ConsensusEngine) judgeWithFinalArbiter(ctx context.Context, event Event
 				"model", opinion.ModelName,
 				"model_id", opinion.ModelID,
 				"error", opinion.Error,
-				"logic_summary", "该模型调用或结果解析失败，本次意见按弃权记录，并原样交给终审模型审查",
+				"logic_summary", "This model call or parse failed; record an abstention and pass the failure unchanged to the final arbiter",
 			)
 			continue
 		}
@@ -127,7 +127,7 @@ func (e *ConsensusEngine) judgeWithFinalArbiter(ctx context.Context, event Event
 		"final_arbiter", arbiter.Name(),
 		"opinions_received", len(opinions),
 		"peer_opinions_summary", peerSummary,
-		"logic_summary", "把事件定义、全部外部证据、N-1 个模型的结论、理由及失败状态交给第 N 个模型独立终审，不使用后端置信度阈值代替裁定",
+		"logic_summary", "Send the event, all evidence, N-1 conclusions, reasoning and failures to the Nth model for independent final review; no backend confidence threshold substitutes for arbitration",
 	)
 	judgment, err := arbiter.QueryFinal(ctx, event, articles, opinions)
 	if err != nil || judgment == nil {
@@ -146,7 +146,7 @@ func (e *ConsensusEngine) judgeWithFinalArbiter(ctx context.Context, event Event
 			"final_arbiter", arbiter.Name(),
 			"peer_opinions_summary", peerSummary,
 			"error", err,
-			"logic_summary", "终审模型调用或结果解析失败，保持 INDETERMINATE，不触发链上结算",
+			"logic_summary", "Final-arbiter call or parsing failed; remain INDETERMINATE and do not settle on-chain",
 		)
 		return base
 	}
@@ -164,7 +164,7 @@ func (e *ConsensusEngine) judgeWithFinalArbiter(ctx context.Context, event Event
 			"final_arbiter", arbiter.Name(),
 			"peer_opinions_summary", peerSummary,
 			"error", err,
-			"logic_summary", "终审模型返回非法裁定值，保持 INDETERMINATE，不触发链上结算",
+			"logic_summary", "Final arbiter returned an invalid decision; remain INDETERMINATE and do not settle on-chain",
 		)
 		return base
 	}
@@ -240,7 +240,7 @@ func (e *ConsensusEngine) judgeWithFinalArbiter(ctx context.Context, event Event
 
 func summarizeOpinions(opinions []ModelOpinion) string {
 	if len(opinions) == 0 {
-		return "无前序模型意见"
+		return "No peer-model opinions"
 	}
 	parts := make([]string, 0, len(opinions))
 	for _, opinion := range opinions {
@@ -253,7 +253,7 @@ func summarizeOpinions(opinions []ModelOpinion) string {
 			continue
 		}
 		parts = append(parts, fmt.Sprintf(
-			"%s=%s(置信度 %.2f)：%s",
+			"%s=%s (confidence %.2f): %s",
 			identity, opinion.Decision, opinion.Confidence,
 			truncateContent(opinion.Reasoning, 600),
 		))

@@ -30,19 +30,20 @@ type researchProvider interface {
 // Server serves the /api/v1/gold/... HTTP endpoints that provide the DApp
 // cache layer (MySQL-first reads with chain+IPFS fallback).
 type Server struct {
-	games            GameMetadataRepository
-	chainStates      ChainStateRepository
-	positions        UserPositionRepository
-	history          PriceHistoryRepository
-	portfolioHistory PortfolioHistoryRepository
-	trades           TradeRepository
-	aiStore          *aimanaged.Store
-	chain            chainClient    // optional, may be nil
-	metadata         metadataClient // optional, may be nil
-	quote            quoteProvider
-	research         researchProvider
-	contractAddr     string
-	historyMax       int
+	games              GameMetadataRepository
+	chainStates        ChainStateRepository
+	positions          UserPositionRepository
+	history            PriceHistoryRepository
+	portfolioHistory   PortfolioHistoryRepository
+	trades             TradeRepository
+	aiStore            *aimanaged.Store
+	chain              chainClient    // optional, may be nil
+	metadata           metadataClient // optional, may be nil
+	quote              quoteProvider
+	research           researchProvider
+	contractAddr       string
+	historyMax         int
+	autoResolveEnabled bool
 }
 
 // SetQuoteProvider enables the backend-mediated quote route used by Android
@@ -73,16 +74,17 @@ func NewServer(
 	historyMax int,
 ) *Server {
 	server := &Server{
-		games:        games,
-		chainStates:  chainStates,
-		positions:    positions,
-		history:      history,
-		trades:       trades,
-		aiStore:      aiStore,
-		chain:        chainClient,
-		metadata:     metadataClient,
-		contractAddr: contractAddr,
-		historyMax:   historyMax,
+		games:              games,
+		chainStates:        chainStates,
+		positions:          positions,
+		history:            history,
+		trades:             trades,
+		aiStore:            aiStore,
+		chain:              chainClient,
+		metadata:           metadataClient,
+		contractAddr:       contractAddr,
+		historyMax:         historyMax,
+		autoResolveEnabled: true,
 	}
 	if repository, ok := positions.(PortfolioHistoryRepository); ok {
 		server.portfolioHistory = repository
@@ -90,8 +92,18 @@ func NewServer(
 	return server
 }
 
+// SetRuntimePolicy exposes the settlement switch to the Android client. The
+// immediate-expiry demo permission is derived from this same switch so there
+// is only one operational parameter to maintain.
+func (s *Server) SetRuntimePolicy(autoResolveEnabled bool) {
+	s.autoResolveEnabled = autoResolveEnabled
+}
+
 // Register mounts all v1 routes on mux using Go 1.22+ pattern syntax.
 func (s *Server) Register(mux *http.ServeMux) {
+	// Runtime policy
+	mux.HandleFunc("GET /api/v1/gold/runtime-policy", s.handleRuntimePolicy)
+
 	// Game metadata
 	mux.HandleFunc("GET /api/v1/gold/games", s.handleListGames)
 	mux.HandleFunc("GET /api/v1/gold/games/{id}", s.handleGetGame)

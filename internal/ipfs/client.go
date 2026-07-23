@@ -151,7 +151,7 @@ func parseInlineCID(cid string) (*Metadata, error) {
 	// 如果不是 JSON，可能是简单字符串格式，尝试提取 condition
 	// 这种情况下我们可以构造一个基本的 Metadata
 	meta = Metadata{
-		Desc:      "博弈池",
+		Desc:      "Prediction Market",
 		Condition: string(data),
 		OptionYES: "YES",
 		OptionNO:  "NO",
