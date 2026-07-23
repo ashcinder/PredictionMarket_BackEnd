@@ -68,7 +68,7 @@ func TestBuildOraclePrompt_NoArticles(t *testing.T) {
 		Deadline:    time.Now(),
 	}
 	prompt := buildOraclePrompt(event, nil)
-	if !strings.Contains(prompt, "No news source or external evidence is available") {
+	if !strings.Contains(prompt, "没有可用的新闻或外部证据") {
 		t.Error("prompt should mention no news available")
 	}
 }
@@ -808,7 +808,7 @@ func TestQuantitativeOraclePromptsRequireIndependentReturnCalculation(t *testing
 	peerPrompt := buildOraclePrompt(event, articles)
 	finalPrompt := buildFinalArbiterPrompt(event, articles, []ModelOpinion{{ModelName: "peer", Decision: DecisionNo}})
 	for name, prompt := range map[string]string{"peer": peerPrompt, "final": finalPrompt} {
-		for _, expected := range []string{"(end-start)/start", "each asset", "candidate", "review material, not an answer"} {
+		for _, expected := range []string{"(end-start)/start", "每个资产", "候选结果", "只是复核材料，不是答案"} {
 			if !strings.Contains(prompt, expected) {
 				t.Fatalf("%s prompt missing %q: %s", name, expected, prompt)
 			}
@@ -826,8 +826,8 @@ func TestQuantitativeOraclePromptsCoverAllVersion2Calculations(t *testing.T) {
 	finalPrompt := buildFinalArbiterPrompt(event, articles, []ModelOpinion{{ModelName: "peer", Decision: DecisionYes}})
 	for name, prompt := range map[string]string{"peer": peerPrompt, "final": finalPrompt} {
 		for _, expected := range []string{
-			"direction return", "absolute return", "price threshold", "closed range", "relative return", "consecutive boundaries",
-			"round_id", "source_time", "INDETERMINATE", "review material, not an answer",
+			"方向收益", "绝对收益", "价格阈值", "闭区间", "相对收益", "连续边界",
+			"round_id", "source_time", "INDETERMINATE", "只是复核材料，不是答案",
 		} {
 			if !strings.Contains(prompt, expected) {
 				t.Fatalf("%s prompt missing %q: %s", name, expected, prompt)

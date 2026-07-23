@@ -82,7 +82,7 @@ func (c *Client) Research(ctx context.Context, systemPrompt, userMessage string)
 		}
 		messages = append(messages,
 			message{Role: "assistant", Content: content},
-			message{Role: "user", Content: "The previous response ended because of the output limit. Continue exactly where it stopped without repeating completed content; finish the analysis, risks and conclusion, and close all Markdown markers."},
+			message{Role: "user", Content: "上一段回答因输出限制而中断，请从中断处继续，不要重复已完成内容；完成分析、风险与结论，并闭合所有 Markdown 标记"},
 		)
 	}
 	return "", fmt.Errorf("AI research response remained truncated after %d segments", maxContinuationSegments)

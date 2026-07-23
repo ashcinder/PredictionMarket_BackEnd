@@ -8,14 +8,15 @@ import (
 )
 
 const (
-	RuntimeProfileName = "local-supervisor"
+	RuntimeProfileName = "cn-supervisor"
 	localSupervisorRPC = "http://127.0.0.1:42515"
-	localDatabaseName  = "predictionmarket_local"
+	localDatabaseName  = "predictionmarket_cn"
 )
 
-// applyBranchProfile makes the localsupervisor branch deterministic. YAML and
-// inherited shell variables may provide credentials, but cannot redirect this
-// branch to the public BrokerChain or its cache database.
+// applyBranchProfile keeps the CN market isolated while it shares the same
+// immutable local Supervisor RPC with the ENG market. YAML and inherited shell
+// variables may provide credentials, but cannot redirect this branch to the ENG
+// cache database or the public BrokerChain endpoint.
 func applyBranchProfile(cfg *Config) error {
 	parsed, err := mysql.ParseDSN(cfg.MySQLDSN)
 	if err != nil {

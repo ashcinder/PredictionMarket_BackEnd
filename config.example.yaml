@@ -1,23 +1,23 @@
 chain:
   private_key: "replace-with-wallet-private-key"
-  contract_address: "0x981759e72832D96721623355a09323BD8CabbC56"
+  contract_address: "0xda550FdB040A10ff1f5467042aE3E7E13DF43F7F"
   # Supervisor 的本地 Ethereum JSON-RPC；Android 模拟器侧对应 10.0.2.2:42515。
   rpc_url: "http://127.0.0.1:42515"
   broker_chain_url: "http://127.0.0.1:56741/"
   use_broker_chain: false
 
 server:
-  http_listen: ":8081"
+  http_listen: ":8082"
 
 mysql:
-  dsn: "root:replace-with-mysql-password@tcp(127.0.0.1:3306)/predictionmarket_local?charset=utf8mb4&parseTime=True&loc=Local"
+  dsn: "root:replace-with-mysql-password@tcp(127.0.0.1:3306)/predictionmarket_cn?charset=utf8mb4&parseTime=True&loc=Local"
   max_open_connections: 100
   max_idle_connections: 10
   connection_max_lifetime_seconds: 300
 
 ipfs:
   # 本地模拟器上传的 local-v1 CID 由本服务的本地内容接口读取。
-  gateway: "http://127.0.0.1:8081/api/v1/ipfs/"
+  gateway: "http://127.0.0.1:8082/api/v1/ipfs/"
   # 真实 Kubo/IPFS CID 可回退到本地网关读取。
   fallback_gateways:
     - "http://127.0.0.1:8083/ipfs/"

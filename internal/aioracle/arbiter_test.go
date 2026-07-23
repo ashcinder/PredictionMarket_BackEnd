@@ -213,7 +213,7 @@ func TestOpenAICompatibleFinalRetriesTruncatedJSON(t *testing.T) {
 		}
 		content := `{"decision":"YES","confidence":1,"reasoning":"未闭合`
 		if calls == 2 {
-			if !strings.Contains(request.Messages[1].Content, "previous JSON was incomplete") {
+			if !strings.Contains(request.Messages[1].Content, "上一次 JSON 不完整") {
 				t.Error("retry prompt does not request concise, complete JSON")
 			}
 			content = `{"decision":"YES","confidence":1,"reasoning":"复算通过","sources":[]}`

@@ -286,7 +286,7 @@ func TestAIClientDecisionPromptIncludesResearchHistoryAndUntrustedDataBoundary(t
 		t.Fatalf("unexpected messages: %+v", messages)
 	}
 	system := messages[0].Content
-	for _, required := range []string{"untrusted", "Never", "IPFS"} {
+	for _, required := range []string{"不可信", "不得", "IPFS"} {
 		if !strings.Contains(system, required) {
 			t.Fatalf("system prompt lacks %q untrusted-data boundary: %s", required, system)
 		}
@@ -300,13 +300,13 @@ func TestAIClientDecisionPromptIncludesResearchHistoryAndUntrustedDataBoundary(t
 	}
 	for _, required := range []string{
 		`"detailed_info":"settled from the official close"`,
-		"YES market share: 60.0%",
-		"NO market share: 40.0%",
-		"Market ID: 9",
-		"Current gold: $2300.25",
-		"YES=0, NO=1",
-		"Template guidance",
-		"do not use a small history count as the sole reason to hold",
+		"YES 市场份额：60.0%",
+		"NO 市场份额：40.0%",
+		"博弈池 ID：9",
+		"当前金价：$2300.25",
+		"YES=0，NO=1",
+		"模板说明",
+		"不要仅因历史点数较少而选择观望",
 		`[{"time":100,"yes_percent":51,"no_percent":49},{"time":200,"yes_percent":55,"no_percent":45},{"time":300,"yes_percent":60,"no_percent":40}]`,
 	} {
 		if !strings.Contains(user, required) {
@@ -800,7 +800,7 @@ func TestDecisionMarketConsistencyGuardPreventsReversedTrade(t *testing.T) {
 	if guarded.Action != "hold" {
 		t.Fatalf("expected inconsistent buy_no to become hold, got %+v", guarded)
 	}
-	if !strings.Contains(guarded.Reason, "Backend consistency guard") {
+	if !strings.Contains(guarded.Reason, "后端一致性保护") {
 		t.Fatalf("expected guard reason, got %q", guarded.Reason)
 	}
 

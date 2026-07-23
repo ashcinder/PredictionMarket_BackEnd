@@ -62,10 +62,10 @@ func NewMarkdownRouter(console slog.Handler, dir string) (*MarkdownRouter, error
 		filename string
 		title    string
 	}{
-		{categoryChainPool, chainPoolFile, "On-chain Market Monitoring Log"},
-		{categoryAIManaged, aiManagedFile, "AI Management Log"},
-		{categoryAIOracle, aiOracleFile, "Multi-AI Resolution Log"},
-		{categoryChainPoll, chainPollFile, "On-chain Data Polling Log"},
+		{categoryChainPool, chainPoolFile, "链上博弈池监控日志"},
+		{categoryAIManaged, aiManagedFile, "AI 自动托管日志"},
+		{categoryAIOracle, aiOracleFile, "多 AI 裁决开奖日志"},
+		{categoryChainPoll, chainPollFile, "链上数据轮询日志"},
 	}
 	router := &MarkdownRouter{
 		console: console,
@@ -85,14 +85,14 @@ func NewMarkdownRouter(console slog.Handler, dir string) (*MarkdownRouter, error
 			return nil, fmt.Errorf("stat markdown log %s: %w", path, err)
 		}
 		if info.Size() == 0 {
-			header := fmt.Sprintf("%s\n\n# %s\n\n_Current backend run · Asia/Shanghai · Each event is shown separately_\n", formatMarker, spec.title)
+			header := fmt.Sprintf("%s\n\n# %s\n\n_本次后端运行 · Asia/Shanghai · 每个事件单独展示_\n", formatMarker, spec.title)
 			if _, err := file.WriteString(header); err != nil {
 				file.Close()
 				router.Close()
 				return nil, fmt.Errorf("initialize markdown log %s: %w", path, err)
 			}
 		}
-		session := fmt.Sprintf("\n---\n\n## Backend Session · %s\n\n### Startup\n\n",
+		session := fmt.Sprintf("\n---\n\n## 后端会话 · %s\n\n### 启动信息\n\n",
 			time.Now().In(shanghaiLocation).Format("2006-01-02 15:04:05"),
 		)
 		if _, err := file.WriteString(session); err != nil {
@@ -184,13 +184,13 @@ func (s *markdownSink) write(record slog.Record, baseAttrs []slog.Attr, groups [
 		if round == "" {
 			round = "?"
 		}
-		section := fmt.Sprintf("\n---\n\n### Round %s\n\n**Started at:** %s\n\n",
+		section := fmt.Sprintf("\n---\n\n### 轮次 %s\n\n**开始时间：** %s\n\n",
 			markdownEscape(round),
 			timestamp.Format("2006-01-02 15:04:05"),
 		)
 		contextDetails := formatAttrLines(attrsWithout(attrs, "round"), groups)
 		if contextDetails != "" {
-			section += "**Initial round state**\n\n" + contextDetails + "\n"
+			section += "**轮次初始状态**\n\n" + contextDetails + "\n"
 		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -199,7 +199,7 @@ func (s *markdownSink) write(record slog.Record, baseAttrs []slog.Attr, groups [
 	}
 
 	level := strings.ToUpper(record.Level.String())
-	line := fmt.Sprintf("#### %s · %s\n\n**Event:** %s\n\n",
+	line := fmt.Sprintf("#### %s · %s\n\n**事件：** %s\n\n",
 		markdownEscape(level),
 		timestamp.Format("15:04:05.000"),
 		markdownEscape(redactText(record.Message)),
@@ -207,7 +207,7 @@ func (s *markdownSink) write(record slog.Record, baseAttrs []slog.Attr, groups [
 	if details := formatAttrLines(attrs, groups); details != "" {
 		line += details
 	} else {
-		line += "_No additional data_\n"
+		line += "_无附加数据_\n"
 	}
 	line += "\n"
 	s.mu.Lock()

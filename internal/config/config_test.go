@@ -171,7 +171,7 @@ func TestRuntimeMySQLDatabaseOverride(t *testing.T) {
 	}
 }
 
-func TestLocalSupervisorBranchProfile(t *testing.T) {
+func TestCNSupervisorBranchProfile(t *testing.T) {
 	cfg, err := LoadFile(writeTestConfig(t, validYAML))
 	if err != nil {
 		t.Fatal(err)
@@ -185,8 +185,8 @@ func TestLocalSupervisorBranchProfile(t *testing.T) {
 	if cfg.RPCURL != "http://127.0.0.1:42515" {
 		t.Fatalf("RPC URL=%q", cfg.RPCURL)
 	}
-	if !strings.Contains(cfg.MySQLDSN, "/predictionmarket_local?") {
-		t.Fatalf("local branch database was not selected: %q", cfg.MySQLDSN)
+	if !strings.Contains(cfg.MySQLDSN, "/predictionmarket_cn?") {
+		t.Fatalf("CN branch database was not selected: %q", cfg.MySQLDSN)
 	}
 }
 
