@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"PredictionMarket/internal/aicenter"
 	"PredictionMarket/internal/aimanaged"
 	"PredictionMarket/internal/aioracle"
 	"PredictionMarket/internal/apiv1"
@@ -140,6 +141,8 @@ func main() {
 		os.Exit(1)
 	}
 	watcher := sentinel.NewWatcher(cfg, chainClient, ipfsClient, aiOracle)
+	aiCenterRepository := aicenter.NewRepository(db)
+	watcher.SetSettlementAuditRecorder(aiCenterRepository)
 	historicalClient := marketdata.NewGoldAPIClient(
 		cfg.HistoricalGoldAPIBaseURL, cfg.HistoricalGoldAPIKey, cfg.OracleRequestTimeout)
 	goldSampleRepository := marketdata.NewMySQLGoldSampleRepository(db)
@@ -182,6 +185,7 @@ func main() {
 	managedServer := aimanaged.NewServer(managedStore)
 	historyHandler := aimanaged.NewHistoryHandler(repository, cfg.AIHistoryMaxPoints, chainClient)
 	managedEngine := aimanaged.NewEngine(cfg, managedStore, ipfsClient, goldOracle, repository, repository)
+	managedEngine.SetStructuredSignalSource(chainlinkResolver)
 	sampler := aimanaged.NewMarketHistorySampler(chainClient, repository, cfg.ContractAddress, cfg.SamplerPollInterval, cfg.AIHistoryMaxPoints)
 
 	// v1 API cache layer (DApp reads from MySQL, writes sync to chain→IPFS→DB).
@@ -202,6 +206,7 @@ func main() {
 	v1Server.SetQuoteProvider(quoteProvider)
 	v1Server.SetResearchProvider(researchProvider)
 	v1Server.SetRuntimePolicy(cfg.AutoResolveEnabled)
+	aiCenterServer := aicenter.NewServer(aiCenterRepository, redisStore)
 
 	// Extend the sampler to also keep the v1 cache tables fresh.
 	samplerExt := apiv1.NewSamplerCacheExt(v1Repo, v1Repo, v1Repo, v1Repo, cfg.ContractAddress, managedStore)
@@ -214,6 +219,7 @@ func main() {
 	managedServer.Register(mux)
 	historyHandler.Register(mux)
 	v1Server.Register(mux)
+	aiCenterServer.Register(mux)
 	localcontent.NewServer("data/local-ipfs").Register(mux)
 	var apiHandler http.Handler = mux
 	if redisStore != nil {

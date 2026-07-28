@@ -41,9 +41,12 @@ oracle:
     - "https://eth-mainnet.public.blastapi.io"
     - "https://rpc.eth.gateway.fm"
     - "https://eth-pokt.nodies.app"
-  # Ethereum 主网 XAU/USD 与 BTC/USD Data Feed 合约。
+  # Ethereum 主网 XAU/USD 与可选基准资产 Data Feed 合约。
   chainlink_xau_usd_feed: "0x214eD9Da11D2fbe465a6fc601a91E62EbEc1a0D6"
   chainlink_btc_usd_feed: "0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c"
+  chainlink_eth_usd_feed: "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419"
+  chainlink_sol_usd_feed: "0x4ffC43a60e009B551865A93d232E33Fce9f01507"
+  chainlink_bnb_usd_feed: "0x14e613AC84a31f709eadbdF89C6CC390fDc9540A"
   # 记录最新轮次的间隔，以及边界价格允许的最大陈旧时间。
   chainlink_poll_interval_seconds: 60
   chainlink_max_staleness_seconds: 43200

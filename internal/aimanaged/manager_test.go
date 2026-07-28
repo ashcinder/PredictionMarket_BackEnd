@@ -17,6 +17,8 @@ import (
 	"PredictionMarket/internal/chain"
 	"PredictionMarket/internal/config"
 	"PredictionMarket/internal/ipfs"
+	"PredictionMarket/internal/judge"
+	"PredictionMarket/internal/marketdata"
 	"PredictionMarket/internal/oracle"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -277,6 +279,21 @@ func TestAIClientDecisionPromptIncludesResearchHistoryAndUntrustedDataBoundary(t
 				{Time: 200, YesPercent: 55, NoPercent: 45},
 				{Time: 300, YesPercent: 60, NoPercent: 40},
 			},
+			StructuredSignal: &marketdata.StructuredSignal{
+				RuleType:              judge.TypeRelative,
+				Status:                "IN_PROGRESS",
+				CurrentCondition:      "NO",
+				PrimarySymbol:         "XAU",
+				PrimaryStartPrice:     4000,
+				PrimaryCurrentPrice:   4040,
+				PrimaryReturnPct:      1,
+				BenchmarkSymbol:       "BTC",
+				BenchmarkStartPrice:   100000,
+				BenchmarkCurrentPrice: 101500,
+				BenchmarkReturnPct:    1.5,
+				RelativeSpreadPct:     -0.5,
+				Summary:               "同期 XAU 收益率 1%，BTC 收益率 1.5%",
+			},
 		},
 	)
 	if err != nil {
@@ -307,11 +324,40 @@ func TestAIClientDecisionPromptIncludesResearchHistoryAndUntrustedDataBoundary(t
 		"YES=0，NO=1",
 		"模板说明",
 		"不要仅因历史点数较少而选择观望",
+		`"benchmark_symbol":"BTC"`,
+		`"benchmark_start_price":100000`,
+		`"benchmark_current_price":101500`,
 		`[{"time":100,"yes_percent":51,"no_percent":49},{"time":200,"yes_percent":55,"no_percent":45},{"time":300,"yes_percent":60,"no_percent":40}]`,
 	} {
 		if !strings.Contains(user, required) {
 			t.Fatalf("user prompt lacks %q:\n%s", required, user)
 		}
+	}
+}
+
+func TestEngineReloadsFrozenRuleWhenCachedMarketOnlyContainsPublicFields(t *testing.T) {
+	ruleJSON := json.RawMessage(`{
+		"rule_version":2,
+		"type":"TYPE_RELATIVE",
+		"symbol":"XAU",
+		"source":"CHAINLINK_DATA_FEED_ETHEREUM",
+		"benchmark":"BTC"
+	}`)
+	engine := &Engine{
+		metadata: staticMetadata{value: &ipfs.Metadata{
+			Desc: "黄金跑赢 BTC", ResolutionRule: ruleJSON,
+		}},
+	}
+
+	got, err := engine.loadStructuredMetadata(
+		&chain.GameInfo{IPFSCID: "test-market-cid"},
+		&ipfs.Metadata{Desc: "黄金跑赢 BTC"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.ResolutionRule) != string(ruleJSON) {
+		t.Fatalf("frozen resolution rule was not restored: %s", got.ResolutionRule)
 	}
 }
 

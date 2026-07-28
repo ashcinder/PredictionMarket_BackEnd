@@ -26,18 +26,37 @@ type QuantitativeResolver interface {
 	Resolve(ctx context.Context, rule judge.Rule) judge.Result
 }
 
+type SettlementAuditRecord struct {
+	ContractAddress        string
+	GameID                 int
+	MarketTitle            string
+	RuleSummary            string
+	DeterministicCandidate string
+	Evidence               []aioracle.NewsArticle
+	Verdict                *aioracle.Verdict
+}
+
+type SettlementAuditRecorder interface {
+	RecordSettlementAudit(context.Context, SettlementAuditRecord) error
+}
+
 type Watcher struct {
 	cfg          *config.Config
 	chain        *chain.Client
 	ipfs         *ipfs.Client
 	oracle       EventResolver
 	quantitative QuantitativeResolver
+	audits       SettlementAuditRecorder
 	resolving    sync.Map
 	round        atomic.Uint64
 }
 
 func (w *Watcher) SetQuantitativeResolver(resolver QuantitativeResolver) {
 	w.quantitative = resolver
+}
+
+func (w *Watcher) SetSettlementAuditRecorder(recorder SettlementAuditRecorder) {
+	w.audits = recorder
 }
 
 // Peer models run concurrently, then the final arbiter runs sequentially. The
@@ -201,6 +220,7 @@ func (w *Watcher) resolveGame(ctx context.Context, game chain.GameOnChain) error
 				resolveCtx, cancel := context.WithTimeout(ctx, aiResolutionTimeout)
 				verdict := w.oracle.Resolve(resolveCtx, event)
 				cancel()
+				w.recordSettlementAudit(ctx, game, meta, string(meta.ResolutionRule), candidate, event.Evidence, verdict)
 				winner, verdictErr := winnerFromVerdict(verdict)
 				if verdictErr != nil {
 					return fmt.Errorf("game %d: version 2 AI evidence review: %w", game.ID, verdictErr)
@@ -228,6 +248,7 @@ func (w *Watcher) resolveGame(ctx context.Context, game chain.GameOnChain) error
 	if verdict == nil {
 		return fmt.Errorf("game %d: AI oracle returned no verdict", game.ID)
 	}
+	w.recordSettlementAudit(ctx, game, meta, meta.Condition, "", event.Evidence, verdict)
 
 	winner, err := winnerFromVerdict(verdict)
 	if err != nil {
@@ -241,6 +262,30 @@ func (w *Watcher) resolveGame(ctx context.Context, game chain.GameOnChain) error
 		return fmt.Errorf("game %d: %w", game.ID, err)
 	}
 	return w.settle(ctx, game, meta, winner, verdict.Confidence, verdict.ConsensusRatio, verdict.Summary)
+}
+
+func (w *Watcher) recordSettlementAudit(
+	ctx context.Context,
+	game chain.GameOnChain,
+	meta *ipfs.Metadata,
+	ruleSummary, candidate string,
+	evidence []aioracle.NewsArticle,
+	verdict *aioracle.Verdict,
+) {
+	if w.audits == nil || verdict == nil {
+		return
+	}
+	title := strings.TrimSpace(meta.Desc)
+	if title == "" {
+		title = strings.TrimSpace(meta.Condition)
+	}
+	if err := w.audits.RecordSettlementAudit(ctx, SettlementAuditRecord{
+		ContractAddress: w.cfg.ContractAddress,
+		GameID:          game.ID, MarketTitle: title, RuleSummary: ruleSummary,
+		DeterministicCandidate: candidate, Evidence: evidence, Verdict: verdict,
+	}); err != nil {
+		slog.Warn("persist multi-AI settlement audit failed", "game_id", game.ID, "error", err)
+	}
 }
 
 func requiresFinalArbiterReview(rule judge.Rule) bool {
