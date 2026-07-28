@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net"
 	"net/url"
 	"os"
 	"strconv"
@@ -40,6 +41,17 @@ type fileConfig struct {
 		MaxIdleConnections           int    `yaml:"max_idle_connections"`
 		ConnectionMaxLifetimeSeconds int    `yaml:"connection_max_lifetime_seconds"`
 	} `yaml:"mysql"`
+	Redis struct {
+		Enabled                      bool   `yaml:"enabled"`
+		Address                      string `yaml:"address"`
+		Password                     string `yaml:"password"`
+		DB                           int    `yaml:"db"`
+		KeyPrefix                    string `yaml:"key_prefix"`
+		OperationTimeoutMilliseconds int    `yaml:"operation_timeout_milliseconds"`
+		QuoteTTLSeconds              int    `yaml:"quote_ttl_seconds"`
+		PublicDataTTLSeconds         int    `yaml:"public_data_ttl_seconds"`
+		ResearchTTLSeconds           int    `yaml:"research_ttl_seconds"`
+	} `yaml:"redis"`
 	IPFS struct {
 		Gateway          string   `yaml:"gateway"`
 		FallbackGateways []string `yaml:"fallback_gateways"`
@@ -162,6 +174,15 @@ type Config struct {
 	MySQLMaxOpenConnections    int
 	MySQLMaxIdleConnections    int
 	MySQLConnectionMaxLifetime time.Duration
+	RedisEnabled               bool
+	RedisAddress               string
+	RedisPassword              string
+	RedisDB                    int
+	RedisKeyPrefix             string
+	RedisOperationTimeout      time.Duration
+	RedisQuoteTTL              time.Duration
+	RedisPublicDataTTL         time.Duration
+	RedisResearchTTL           time.Duration
 
 	// AI Oracle multi-model consensus
 	AIOraclePollIntervalSeconds int
@@ -327,6 +348,48 @@ func LoadFile(path string) (*Config, error) {
 	}
 	if raw.MySQL.ConnectionMaxLifetimeSeconds <= 0 {
 		return nil, errors.New("mysql.connection_max_lifetime_seconds must be positive")
+	}
+	redisAddress := strings.TrimSpace(raw.Redis.Address)
+	if redisAddress == "" {
+		redisAddress = "127.0.0.1:6379"
+	}
+	redisKeyPrefix := strings.Trim(strings.TrimSpace(raw.Redis.KeyPrefix), ":")
+	if redisKeyPrefix == "" {
+		redisKeyPrefix = "predictionmarket:cn"
+	}
+	if raw.Redis.OperationTimeoutMilliseconds == 0 {
+		raw.Redis.OperationTimeoutMilliseconds = 300
+	}
+	if raw.Redis.QuoteTTLSeconds == 0 {
+		raw.Redis.QuoteTTLSeconds = 10
+	}
+	if raw.Redis.PublicDataTTLSeconds == 0 {
+		raw.Redis.PublicDataTTLSeconds = 5
+	}
+	if raw.Redis.ResearchTTLSeconds == 0 {
+		raw.Redis.ResearchTTLSeconds = 600
+	}
+	if raw.Redis.Enabled {
+		host, port, splitErr := net.SplitHostPort(redisAddress)
+		if splitErr != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
+			return nil, errors.New("redis.address must use host:port format")
+		}
+		if raw.Redis.DB < 0 {
+			return nil, errors.New("redis.db must not be negative")
+		}
+		if raw.Redis.OperationTimeoutMilliseconds < 50 ||
+			raw.Redis.OperationTimeoutMilliseconds > 5000 {
+			return nil, errors.New("redis.operation_timeout_milliseconds must be between 50 and 5000")
+		}
+		if raw.Redis.QuoteTTLSeconds < 1 || raw.Redis.QuoteTTLSeconds > 300 {
+			return nil, errors.New("redis.quote_ttl_seconds must be between 1 and 300")
+		}
+		if raw.Redis.PublicDataTTLSeconds < 1 || raw.Redis.PublicDataTTLSeconds > 300 {
+			return nil, errors.New("redis.public_data_ttl_seconds must be between 1 and 300")
+		}
+		if raw.Redis.ResearchTTLSeconds < 1 || raw.Redis.ResearchTTLSeconds > 86400 {
+			return nil, errors.New("redis.research_ttl_seconds must be between 1 and 86400")
+		}
 	}
 	if raw.Oracle.RequestTimeoutSeconds <= 0 {
 		return nil, errors.New("oracle.request_timeout_seconds must be positive")
@@ -689,6 +752,15 @@ func LoadFile(path string) (*Config, error) {
 		MySQLMaxOpenConnections:     raw.MySQL.MaxOpenConnections,
 		MySQLMaxIdleConnections:     raw.MySQL.MaxIdleConnections,
 		MySQLConnectionMaxLifetime:  time.Duration(raw.MySQL.ConnectionMaxLifetimeSeconds) * time.Second,
+		RedisEnabled:                raw.Redis.Enabled,
+		RedisAddress:                redisAddress,
+		RedisPassword:               raw.Redis.Password,
+		RedisDB:                     raw.Redis.DB,
+		RedisKeyPrefix:              redisKeyPrefix,
+		RedisOperationTimeout:       time.Duration(raw.Redis.OperationTimeoutMilliseconds) * time.Millisecond,
+		RedisQuoteTTL:               time.Duration(raw.Redis.QuoteTTLSeconds) * time.Second,
+		RedisPublicDataTTL:          time.Duration(raw.Redis.PublicDataTTLSeconds) * time.Second,
+		RedisResearchTTL:            time.Duration(raw.Redis.ResearchTTLSeconds) * time.Second,
 		AIOraclePollIntervalSeconds: raw.AIOracle.PollIntervalSeconds,
 		AIOracleConsensus:           oracleConsensus,
 		AIOracleNews:                oracleNews,

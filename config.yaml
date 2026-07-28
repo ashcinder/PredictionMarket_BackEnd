@@ -8,6 +8,17 @@ chain:
 server:
   http_listen: ":8081"
 
+redis:
+  enabled: true
+  address: "127.0.0.1:6379"
+  password: ""
+  db: 0
+  key_prefix: "predictionmarket:cn"
+  operation_timeout_milliseconds: 300
+  quote_ttl_seconds: 10
+  public_data_ttl_seconds: 5
+  research_ttl_seconds: 600
+
 ipfs:
   # 本地模拟器上传的 local-v1 CID 由本服务的本地内容接口读取。
   gateway: "http://127.0.0.1:8081/api/v1/ipfs/"

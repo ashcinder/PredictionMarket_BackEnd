@@ -17,6 +17,43 @@ go run .
 
 该命令会按当前配置监听市场，并可能执行交易或结算。只做代码验证时使用 `go test ./...`、`go vet ./...` 和 `go build ./...`，不要启动常驻服务。
 
+## 本地 Redis 缓存
+
+后端可以直接连接本机 Redis，不需要 Docker。默认配置为：
+
+```yaml
+redis:
+  enabled: true
+  address: "127.0.0.1:6379"
+  password: ""
+  db: 0
+  key_prefix: "predictionmarket:cn"
+  operation_timeout_milliseconds: 300
+  quote_ttl_seconds: 10
+  public_data_ttl_seconds: 5
+  research_ttl_seconds: 600
+```
+
+Redis 目前用于三类数据：
+
+- 用户界面的黄金实时行情，缓存 10 秒。AI 自动托管、行情采样和开奖仍读取
+  原始行情源，不使用该展示缓存。
+- 博弈池列表、详情、不含用户持仓的链上池状态和份额历史，默认缓存 5 秒。
+  写入博弈池、链状态或历史数据成功后会提升缓存版本，使旧数据立即失效。
+- AI 投研结果，按照系统提示词与用户消息的 SHA-256 摘要缓存 10 分钟。
+  Redis 不保存原始提示词；并发的相同请求会合并为一次上游模型调用。
+
+macOS 可直接启动本地 Redis：
+
+```bash
+brew install redis
+brew services start redis
+redis-cli ping
+```
+
+`redis-cli ping` 应返回 `PONG`。Redis 不可用时，后端会记录警告并自动回退到
+原有数据源，不会阻止 MySQL、Supervisor 或 HTTP API 启动。
+
 ## Chainlink 结算信源
 
 新建模板市场使用 Ethereum Chainlink Data Feed，不需要付费 Data Streams 订阅，也不依赖浏览器抓取。关键 YAML 字段如下：

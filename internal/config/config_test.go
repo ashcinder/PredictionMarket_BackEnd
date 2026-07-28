@@ -171,6 +171,35 @@ func TestRuntimeMySQLDatabaseOverride(t *testing.T) {
 	}
 }
 
+func TestLoadFileReadsRedisCacheConfiguration(t *testing.T) {
+	body := strings.Replace(validYAML, "ipfs:\n", `redis:
+  enabled: true
+  address: "127.0.0.1:6379"
+  password: ""
+  db: 2
+  key_prefix: "test:prediction"
+  operation_timeout_milliseconds: 450
+  quote_ttl_seconds: 12
+  public_data_ttl_seconds: 8
+  research_ttl_seconds: 900
+ipfs:
+`, 1)
+	cfg, err := LoadFile(writeTestConfig(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.RedisEnabled || cfg.RedisAddress != "127.0.0.1:6379" ||
+		cfg.RedisDB != 2 || cfg.RedisKeyPrefix != "test:prediction" {
+		t.Fatalf("unexpected Redis config: %+v", cfg)
+	}
+	if cfg.RedisOperationTimeout != 450*time.Millisecond ||
+		cfg.RedisQuoteTTL != 12*time.Second ||
+		cfg.RedisPublicDataTTL != 8*time.Second ||
+		cfg.RedisResearchTTL != 15*time.Minute {
+		t.Fatalf("unexpected Redis durations: %+v", cfg)
+	}
+}
+
 func TestCNSupervisorBranchProfile(t *testing.T) {
 	cfg, err := LoadFile(writeTestConfig(t, validYAML))
 	if err != nil {

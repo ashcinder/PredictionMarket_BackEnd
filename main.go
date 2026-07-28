@@ -14,6 +14,7 @@ import (
 	"PredictionMarket/internal/aimanaged"
 	"PredictionMarket/internal/aioracle"
 	"PredictionMarket/internal/apiv1"
+	appcache "PredictionMarket/internal/cache"
 	"PredictionMarket/internal/chain"
 	"PredictionMarket/internal/chainlinkfeed"
 	"PredictionMarket/internal/config"
@@ -51,6 +52,34 @@ func main() {
 	} else {
 		slog.Info("using local RPC", "url", cfg.RPCURL)
 	}
+
+	var redisStore appcache.Store
+	if cfg.RedisEnabled {
+		store, cacheErr := appcache.NewRedisStore(context.Background(), appcache.RedisConfig{
+			Address:          cfg.RedisAddress,
+			Password:         cfg.RedisPassword,
+			DB:               cfg.RedisDB,
+			KeyPrefix:        cfg.RedisKeyPrefix,
+			OperationTimeout: cfg.RedisOperationTimeout,
+		})
+		if cacheErr != nil {
+			slog.Warn("redis unavailable; continuing without cache",
+				"address", cfg.RedisAddress,
+				"error", cacheErr,
+			)
+		} else {
+			redisStore = store
+			defer redisStore.Close()
+			slog.Info("redis cache enabled",
+				"address", cfg.RedisAddress,
+				"prefix", cfg.RedisKeyPrefix,
+				"quote_ttl", cfg.RedisQuoteTTL,
+				"public_data_ttl", cfg.RedisPublicDataTTL,
+				"research_ttl", cfg.RedisResearchTTL,
+			)
+		}
+	}
+
 	httpListener, err := net.Listen("tcp", cfg.HTTPListen)
 	if err != nil {
 		slog.Error("http api listen failed",
@@ -161,8 +190,17 @@ func main() {
 		v1Repo, v1Repo, v1Repo, v1Repo, v1Repo,
 		managedStore, chainClient, ipfsClient, cfg.ContractAddress, cfg.AIHistoryMaxPoints,
 	)
-	v1Server.SetQuoteProvider(goldOracle)
-	v1Server.SetResearchProvider(buildResearchClient(cfg))
+	quoteProvider := oracle.QuoteProvider(goldOracle)
+	researchProvider := buildResearchClient(cfg)
+	if redisStore != nil {
+		quoteProvider = oracle.NewCachedQuoteProvider(goldOracle, redisStore, cfg.RedisQuoteTTL)
+		researchProvider = research.NewCachedResearcher(
+			researchProvider, redisStore, cfg.RedisResearchTTL,
+			cfg.AIBaseURL, cfg.AIModel,
+		)
+	}
+	v1Server.SetQuoteProvider(quoteProvider)
+	v1Server.SetResearchProvider(researchProvider)
 	v1Server.SetRuntimePolicy(cfg.AutoResolveEnabled)
 
 	// Extend the sampler to also keep the v1 cache tables fresh.
@@ -177,9 +215,15 @@ func main() {
 	historyHandler.Register(mux)
 	v1Server.Register(mux)
 	localcontent.NewServer("data/local-ipfs").Register(mux)
+	var apiHandler http.Handler = mux
+	if redisStore != nil {
+		apiHandler = apiv1.NewPublicCacheMiddleware(
+			redisStore, cfg.RedisPublicDataTTL,
+		).Wrap(apiHandler)
+	}
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPListen,
-		Handler:           withCORS(mux),
+		Handler:           withCORS(apiHandler),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      10 * time.Minute,
