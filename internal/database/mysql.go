@@ -141,7 +141,7 @@ var ensureTableDDLs = []string{
 	INDEX idx_ai_decisions_market (contract_address, game_id, observed_at DESC),
 	INDEX idx_ai_decisions_user (user_address, observed_at DESC),
 	CONSTRAINT chk_ai_decisions_source CHECK (decision_source IN ('rule','model')),
-	CONSTRAINT chk_ai_decisions_action CHECK (action IN ('buy_yes','buy_no','hold')),
+	CONSTRAINT chk_ai_decisions_action CHECK (action IN ('buy_yes','buy_no','sell_yes','sell_no','hold')),
 	CONSTRAINT chk_ai_decisions_outcome CHECK (outcome IN (
 		'pending','history_insufficient','invalid_reserves','hold',
 		'low_confidence','cooldown','traded','trade_failed',

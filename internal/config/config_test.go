@@ -200,7 +200,7 @@ ipfs:
 	}
 }
 
-func TestCNSupervisorBranchProfile(t *testing.T) {
+func TestCNAMMSupervisorBranchProfile(t *testing.T) {
 	cfg, err := LoadFile(writeTestConfig(t, validYAML))
 	if err != nil {
 		t.Fatal(err)
@@ -214,8 +214,11 @@ func TestCNSupervisorBranchProfile(t *testing.T) {
 	if cfg.RPCURL != "http://127.0.0.1:42515" {
 		t.Fatalf("RPC URL=%q", cfg.RPCURL)
 	}
-	if !strings.Contains(cfg.MySQLDSN, "/predictionmarket_cn?") {
-		t.Fatalf("CN branch database was not selected: %q", cfg.MySQLDSN)
+	if !strings.Contains(cfg.MySQLDSN, "/predictionmarket_cn_amm?") {
+		t.Fatalf("CN-AMM branch database was not selected: %q", cfg.MySQLDSN)
+	}
+	if cfg.RedisDB != 1 || cfg.RedisKeyPrefix != "predictionmarket:cn-amm" {
+		t.Fatalf("CN-AMM Redis namespace was not selected: db=%d prefix=%q", cfg.RedisDB, cfg.RedisKeyPrefix)
 	}
 }
 
@@ -377,7 +380,7 @@ func TestRepositoryConfigurationArtifactsUseYAML(t *testing.T) {
 		if name == "README.md" {
 			for _, field := range []string{
 				"history_min_points", "history_max_points", "mysql.dsn",
-				"docker-compose.mysql.yml", "chainlink_rpc_urls",
+				"chainlink_rpc_urls",
 				"chainlink_xau_usd_feed", "chainlink_btc_usd_feed",
 				"chainlink_eth_usd_feed", "chainlink_sol_usd_feed", "chainlink_bnb_usd_feed",
 			} {
@@ -386,12 +389,5 @@ func TestRepositoryConfigurationArtifactsUseYAML(t *testing.T) {
 				}
 			}
 		}
-	}
-	compose, err := os.ReadFile(filepath.Join(root, "docker-compose.mysql.yml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(compose), "mysql:8") {
-		t.Fatal("docker-compose.mysql.yml does not use MySQL 8")
 	}
 }

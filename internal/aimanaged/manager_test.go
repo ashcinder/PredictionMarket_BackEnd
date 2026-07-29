@@ -322,6 +322,8 @@ func TestAIClientDecisionPromptIncludesResearchHistoryAndUntrustedDataBoundary(t
 		"博弈池 ID：9",
 		"当前金价：$2300.25",
 		"YES=0，NO=1",
+		`"exit_action":"sell_yes|sell_no|hold"`,
+		"后端只会在用户确实持有对应份额时执行卖出",
 		"模板说明",
 		"不要仅因历史点数较少而选择观望",
 		`"benchmark_symbol":"BTC"`,
@@ -426,6 +428,7 @@ type fakeManagedChain struct {
 	extraIndex int
 	extraErr   error
 	sendCount  int
+	tradeType  string
 	option     int
 	value      *big.Int
 	buyErr     error
@@ -458,8 +461,28 @@ func (f *fakeManagedChain) GetGameExtraData(context.Context, int, string) (*chai
 }
 func (f *fakeManagedChain) BuyShares(_ context.Context, _ int, option int, value *big.Int) (string, error) {
 	f.sendCount++
+	f.tradeType = "BUY"
 	f.option = option
 	f.value = new(big.Int).Set(value)
+	if f.onBuy != nil {
+		f.onBuy()
+	}
+	if f.buyErr != nil {
+		return "", f.buyErr
+	}
+	return "0xtest", nil
+}
+func (f *fakeManagedChain) QuoteSellShares(_ context.Context, _ int, _ int, shares *big.Int) (*big.Int, error) {
+	if shares == nil {
+		return nil, errors.New("missing shares")
+	}
+	return new(big.Int).Set(shares), nil
+}
+func (f *fakeManagedChain) SellShares(_ context.Context, _ int, option int, shares, _ *big.Int) (string, error) {
+	f.sendCount++
+	f.tradeType = "SELL"
+	f.option = option
+	f.value = new(big.Int).Set(shares)
 	if f.onBuy != nil {
 		f.onBuy()
 	}
@@ -754,6 +777,90 @@ func TestEngineSendsAndRecordsOneSimulatedTrade(t *testing.T) {
 	}
 }
 
+func TestEngineReducesOppositeHoldingBeforeBuying(t *testing.T) {
+	store, snapshot, user := newManagedTestEntry(t)
+	client := &fakeManagedChain{
+		wallet: user,
+		info: &chain.GameInfo{ID: 1, TotalPool: big.NewInt(10_000),
+			DeadlineRaw: time.Now().Add(time.Hour).UnixMilli()},
+		extra: &chain.GameExtraData{
+			VirtualReservesNOYES: []*big.Int{big.NewInt(4_000), big.NewInt(6_000)},
+			MySharesYESNO:        []*big.Int{big.NewInt(0), big.NewInt(1_000)},
+		},
+	}
+	engine := newTestEngine(store, client, &Decision{
+		Action: "buy_yes", Confidence: 0.91, EstimatedProb: 0.85,
+		Reason: "YES 被市场低估，应先降低相反方向敞口",
+	})
+
+	if err := engine.process(context.Background(), snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if client.sendCount != 1 || client.tradeType != "SELL" || client.option != 1 {
+		t.Fatalf("expected SELL NO rebalance, got count=%d type=%s option=%d",
+			client.sendCount, client.tradeType, client.option)
+	}
+	if client.value == nil || client.value.Sign() <= 0 || client.value.Cmp(big.NewInt(500)) > 0 {
+		t.Fatalf("sell size must be positive and capped at 50%% of holdings: %v", client.value)
+	}
+	audits := engine.audits.(*recordingDecisionRepository)
+	if len(audits.pending) != 1 || audits.pending[0].Action != "sell_no" {
+		t.Fatalf("expected auditable sell_no action, got %+v", audits.pending)
+	}
+}
+
+func TestEngineExecutesExplicitAIExitWithoutOpeningOppositePosition(t *testing.T) {
+	store, snapshot, user := newManagedTestEntry(t)
+	client := &fakeManagedChain{
+		wallet: user,
+		info: &chain.GameInfo{ID: 1, TotalPool: big.NewInt(10_000),
+			DeadlineRaw: time.Now().Add(time.Hour).UnixMilli()},
+		extra: &chain.GameExtraData{
+			VirtualReservesNOYES: []*big.Int{big.NewInt(4_000), big.NewInt(6_000)},
+			MySharesYESNO:        []*big.Int{big.NewInt(1_000), big.NewInt(0)},
+		},
+	}
+	engine := newTestEngine(store, client, &Decision{
+		Action: "hold", ExitAction: "sell_yes", ConditionOutcome: "no",
+		Confidence: 0.90, EstimatedProb: 0.10,
+		Reason: "YES 的市场价格显著高于模型概率，应降低已有 YES 风险",
+	})
+
+	if err := engine.process(context.Background(), snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if client.sendCount != 1 || client.tradeType != "SELL" || client.option != 0 {
+		t.Fatalf("expected explicit SELL YES, got count=%d type=%s option=%d",
+			client.sendCount, client.tradeType, client.option)
+	}
+	if client.value == nil || client.value.Sign() <= 0 || client.value.Cmp(big.NewInt(500)) > 0 {
+		t.Fatalf("explicit sell must reduce 10%%-50%% of held shares: %v", client.value)
+	}
+	audits := engine.audits.(*recordingDecisionRepository)
+	if len(audits.pending) != 1 || audits.pending[0].Action != "sell_yes" {
+		t.Fatalf("expected auditable explicit sell_yes action, got %+v", audits.pending)
+	}
+}
+
+func TestManagedSellFractionRespectsRiskCaps(t *testing.T) {
+	normal := computeManagedSellFraction(0.10, 0.60, 0.95, 0.05, 0.25, 0)
+	if normal <= 0.10 || normal > 0.50 {
+		t.Fatalf("unexpected normal sell fraction: %.4f", normal)
+	}
+	conflicting := computeManagedSellFraction(0.10, 0.60, 0.95, 0.05, 0.25, 2)
+	if conflicting > 0.15 {
+		t.Fatalf("conflicting evidence must cap sell fraction at 15%%: %.4f", conflicting)
+	}
+	volatile := computeManagedSellFraction(0.10, 0.60, 0.95, 0.05, 0.25, 4)
+	if volatile > 0.25 {
+		t.Fatalf("high volatility must cap sell fraction at 25%%: %.4f", volatile)
+	}
+	nearDeadline := computeManagedSellFraction(0.45, 0.55, 0.90, 0.05, 0.25, 8)
+	if nearDeadline < 0.25 || nearDeadline > 0.50 {
+		t.Fatalf("near-deadline supported exit must be at least 25%%: %.4f", nearDeadline)
+	}
+}
+
 func TestEngineMirrorsAITradeIntoFrontendTables(t *testing.T) {
 	store, snapshot, user := newManagedTestEntry(t)
 	client := &fakeManagedChain{
@@ -858,6 +965,18 @@ func TestDecisionMarketConsistencyGuardPreventsReversedTrade(t *testing.T) {
 	}, 0.80, 0.05)
 	if allowed.Action != "buy_no" {
 		t.Fatalf("expected consistent buy_no to pass, got %+v", allowed)
+	}
+
+	exitGuarded := enforceDecisionMarketConsistency(&Decision{
+		Action:           "hold",
+		ExitAction:       "sell_yes",
+		ConditionOutcome: "yes",
+		Confidence:       0.95,
+		EstimatedProb:    0.90,
+		Reason:           "错误地要求卖出 YES",
+	}, 0.40, 0.05)
+	if exitGuarded.ExitAction != "hold" {
+		t.Fatalf("expected inconsistent sell_yes to become hold, got %+v", exitGuarded)
 	}
 }
 

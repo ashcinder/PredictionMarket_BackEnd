@@ -8,9 +8,11 @@ import (
 )
 
 const (
-	RuntimeProfileName = "cn-supervisor"
+	RuntimeProfileName = "cn-amm-supervisor"
 	localSupervisorRPC = "http://127.0.0.1:42515"
-	localDatabaseName  = "predictionmarket_cn"
+	localDatabaseName  = "predictionmarket_cn_amm"
+	localRedisDB       = 1
+	localRedisPrefix   = "predictionmarket:cn-amm"
 )
 
 // applyBranchProfile keeps the CN market isolated while it shares the same
@@ -26,11 +28,15 @@ func applyBranchProfile(cfg *Config) error {
 	cfg.MySQLDSN = parsed.FormatDSN()
 	cfg.UseBrokerChain = false
 	cfg.RPCURL = localSupervisorRPC
+	cfg.RedisDB = localRedisDB
+	cfg.RedisKeyPrefix = localRedisPrefix
 
 	slog.Info("prediction market runtime profile",
 		"profile", RuntimeProfileName,
 		"chain", localSupervisorRPC,
 		"database", localDatabaseName,
+		"redis_db", localRedisDB,
+		"redis_prefix", localRedisPrefix,
 	)
 	return nil
 }

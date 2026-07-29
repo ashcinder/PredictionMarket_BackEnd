@@ -147,6 +147,7 @@ func isPublicCacheMutation(r *http.Request) bool {
 	}
 	path := r.URL.Path
 	return path == "/api/v1/gold/games/sync" ||
+		path == "/api/v1/gold/trades/sync" ||
 		strings.HasSuffix(path, "/chain-state/sync") ||
 		strings.HasSuffix(path, "/history")
 }

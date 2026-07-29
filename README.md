@@ -5,7 +5,7 @@
 ## 启动前配置
 
 1. 复制 `config.example.yaml` 为 `config.yaml`，填写钱包私钥、合约地址、MySQL 和需要启用的 AI 服务。
-2. 使用 `docker-compose.mysql.yml` 启动 MySQL 8，或在 `mysql.dsn` 中填写现有数据库连接。连接池由 `max_open_connections`、`max_idle_connections` 和 `connection_max_lifetime_seconds` 控制。
+2. 启动本机 MySQL 8，并在 `mysql.dsn` 中填写本地数据库连接。连接池由 `max_open_connections`、`max_idle_connections` 和 `connection_max_lifetime_seconds` 控制。
 3. AI 自动托管至少需要一个可用的投研模型账户；多 AI 裁决需要配置参与复核的模型以及最终裁定模型。API Key 无效、账户余额不足或 HTTP 402 都会使该轮保持失败或待重试，不会由本地 Supervisor 私钥代替 AI 服务鉴权。
 4. 自动托管历史参数使用 `history_min_points` 和 `history_max_points`。正式运行前应确认链、数据库、IPFS 和 AI 服务分别可达。
 
@@ -26,8 +26,8 @@ redis:
   enabled: true
   address: "127.0.0.1:6379"
   password: ""
-  db: 0
-  key_prefix: "predictionmarket:cn"
+  db: 1
+  key_prefix: "predictionmarket:cn-amm"
   operation_timeout_milliseconds: 300
   quote_ttl_seconds: 10
   public_data_ttl_seconds: 5
@@ -53,6 +53,28 @@ redis-cli ping
 
 `redis-cli ping` 应返回 `PONG`。Redis 不可用时，后端会记录警告并自动回退到
 原有数据源，不会阻止 MySQL、Supervisor 或 HTTP API 启动。
+
+CN-AMM 分支固定使用 MySQL 数据库 `predictionmarket_cn_amm`、Redis DB 1
+以及 `predictionmarket:cn-amm` 前缀。运行配置会强制应用这组隔离参数，避免
+误读原 CN/ENG 分支的数据。
+
+## AMM 买入与卖出
+
+当前合约支持在截止前买入或卖出 YES/NO 份额。卖出由链上
+`quoteSellShares` 使用与买入相同的恒定乘积约束确定报价，再由
+`sellShares(gameId, optionId, shareAmount, minAmountOut)` 执行。客户端默认
+使用 1% 最低到账保护；报价恶化超过该范围时交易回滚，不会静默接受差价。
+
+AI 自动托管使用“新增仓位 + 退出仓位”双信号：模型在同一次市场分析中同时
+返回 `action`（`buy_yes`、`buy_no` 或 `hold`）和 `exit_action`
+（`sell_yes`、`sell_no` 或 `hold`）。后端再结合每个用户的真实链上持仓，
+优先减持被模型判断为高估的已有仓位；没有对应持仓时才考虑新增目标方向。
+因此每个市场仍只调用一次 AI，不会随托管用户数量重复消耗 Token。
+
+卖出比例由概率偏差、置信度、Kelly 风险偏好和风险标记共同决定，每轮限制为
+对应持仓的 10%～50%。信息不足、信号冲突和高波动会降低减持上限，临近截止且
+证据充分时会提高退出优先级。最终执行仍需通过概率一致性、最低优势、置信度、
+冷却期、链上即时询价和 1% 滑点保护等确定性门控。
 
 ## Chainlink 结算信源
 

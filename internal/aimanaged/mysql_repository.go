@@ -94,9 +94,9 @@ WHERE contract_address=? AND game_id=? AND user_address=?`
 (game_id, contract_address, user_address, trade_type, option_id, amount_wei,
 share_amount_wei, shares_wei, price_at_trade, timestamp_sec, tx_hash, is_success,
 is_ai_managed, my_shares_yes_after, my_shares_no_after)
-VALUES (?, ?, ?, 'BUY', ?, ?, ?, ?, 0, ?, ?, 1, 1, ?, ?)`
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 1, 1, ?, ?)`
 	updateManagedGoldTradeSQL = `UPDATE gold_trades SET
-option_id=?, amount_wei=?, share_amount_wei=?, shares_wei=?, timestamp_sec=?,
+trade_type=?, option_id=?, amount_wei=?, share_amount_wei=?, shares_wei=?, timestamp_sec=?,
 is_success=1, is_ai_managed=1, my_shares_yes_after=?, my_shares_no_after=?
 WHERE contract_address=? AND game_id=? AND user_address=? AND tx_hash=?`
 	selectManagedGoldTradeSQL = `SELECT id FROM gold_trades
@@ -112,13 +112,6 @@ deadline_sec, reserve_yes, reserve_no)
 VALUES (?, ?, ?, 0, 0, 0, 0, ?, ?)
 ON DUPLICATE KEY UPDATE
 total_pool=COALESCE(VALUES(total_pool), total_pool),
-reserve_yes=VALUES(reserve_yes), reserve_no=VALUES(reserve_no)`
-	incrementManagedChainStateSQL = `INSERT INTO gold_chain_states
-(contract_address, game_id, total_pool, is_resolved, is_refunded, winning_option,
-deadline_sec, reserve_yes, reserve_no)
-VALUES (?, ?, ?, 0, 0, 0, 0, ?, ?)
-ON DUPLICATE KEY UPDATE
-total_pool=CAST(CAST(total_pool AS CHAR) AS DECIMAL(65,0)) + CAST(? AS DECIMAL(65,0)),
 reserve_yes=VALUES(reserve_yes), reserve_no=VALUES(reserve_no)`
 	upsertManagedPriceHistorySQL = `INSERT INTO gold_price_history
 (game_id, timestamp_sec, yes_price, no_price, total_pool)
@@ -383,7 +376,15 @@ func (r *MySQLRepository) recordManagedTrade(ctx context.Context, record Managed
 
 	contract := normalizeAddress(record.Market.ContractAddress)
 	user := normalizeAddress(record.UserAddress)
+	tradeType := strings.ToUpper(strings.TrimSpace(record.TradeType))
+	if tradeType == "" {
+		tradeType = "BUY"
+	}
+	if tradeType != "BUY" && tradeType != "SELL" {
+		return fmt.Errorf("unsupported managed trade type %q", record.TradeType)
+	}
 	result, err := tx.ExecContext(ctx, updateManagedGoldTradeSQL,
+		tradeType,
 		record.OptionID,
 		amountWei,
 		decimalString(record.SharesDelta),
@@ -403,7 +404,6 @@ func (r *MySQLRepository) recordManagedTrade(ctx context.Context, record Managed
 	if err != nil {
 		return fmt.Errorf("inspect managed gold trade update: %w", err)
 	}
-	insertedTrade := false
 	if affected == 0 {
 		var existingID int64
 		findErr := tx.QueryRowContext(ctx, selectManagedGoldTradeSQL,
@@ -417,6 +417,7 @@ func (r *MySQLRepository) recordManagedTrade(ctx context.Context, record Managed
 				record.Market.GameID,
 				contract,
 				user,
+				tradeType,
 				record.OptionID,
 				amountWei,
 				decimalString(record.SharesDelta),
@@ -428,7 +429,6 @@ func (r *MySQLRepository) recordManagedTrade(ctx context.Context, record Managed
 			); err != nil {
 				return fmt.Errorf("insert managed gold trade: %w", err)
 			}
-			insertedTrade = true
 		}
 	}
 	if _, err := tx.ExecContext(ctx, upsertManagedUserPositionSQL,
@@ -455,18 +455,10 @@ func (r *MySQLRepository) recordManagedTrade(ctx context.Context, record Managed
 		if reserveErr != nil {
 			return fmt.Errorf("reserve_no: %w", reserveErr)
 		}
-		if insertedTrade {
-			if _, err := tx.ExecContext(ctx, incrementManagedChainStateSQL,
-				contract, record.Market.GameID, totalPool, reserveYES, reserveNO, amountWei,
-			); err != nil {
-				return fmt.Errorf("increment managed chain state: %w", err)
-			}
-		} else {
-			if _, err := tx.ExecContext(ctx, upsertManagedChainStateSQL,
-				contract, record.Market.GameID, nil, reserveYES, reserveNO,
-			); err != nil {
-				return fmt.Errorf("upsert managed chain state: %w", err)
-			}
+		if _, err := tx.ExecContext(ctx, upsertManagedChainStateSQL,
+			contract, record.Market.GameID, totalPool, reserveYES, reserveNO,
+		); err != nil {
+			return fmt.Errorf("upsert managed chain state: %w", err)
 		}
 		if record.SharesDelta.Sign() > 0 {
 			yesPercent, noPercent := percentagesFromManagedReserves(record.ReserveYES, record.ReserveNO)

@@ -1,6 +1,6 @@
 chain:
   private_key: "0f7597919f8d6442707e93d2723adca206e9090623914942bf876bd6b4f5e5c9"
-  contract_address: "0xda550FdB040A10ff1f5467042aE3E7E13DF43F7F"
+  contract_address: "0xA3EE3bb6AbE5B198960a0EAaf11f1179cF2b1f64"
   rpc_url: "http://127.0.0.1:42515"
   broker_chain_url: "http://127.0.0.1:56741/"
   use_broker_chain: false
@@ -12,8 +12,8 @@ redis:
   enabled: true
   address: "127.0.0.1:6379"
   password: ""
-  db: 0
-  key_prefix: "predictionmarket:cn"
+  db: 1
+  key_prefix: "predictionmarket:cn-amm"
   operation_timeout_milliseconds: 300
   quote_ttl_seconds: 10
   public_data_ttl_seconds: 5
@@ -136,7 +136,7 @@ aioracle:
       timeout_seconds: 60
 
 mysql:
-  dsn: "root:12345678@tcp(127.0.0.1:3306)/predictionmarket_cn?charset=utf8mb4&parseTime=True&loc=Local"
+  dsn: "root:12345678@tcp(127.0.0.1:3306)/predictionmarket_cn_amm?charset=utf8mb4&parseTime=True&loc=Local"
   max_open_connections: 100
   max_idle_connections: 10
   connection_max_lifetime_seconds: 300

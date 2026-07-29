@@ -1,0 +1,74 @@
+chain:
+  private_key: "replace-with-wallet-private-key"
+  contract_address: "0xA3EE3bb6AbE5B198960a0EAaf11f1179cF2b1f64"
+  rpc_url: "http://127.0.0.1:42515"
+  broker_chain_url: "http://127.0.0.1:56741/"
+  use_broker_chain: false
+
+server:
+  http_listen: ":8081"
+
+mysql:
+  dsn: "root:replace-with-mysql-password@tcp(127.0.0.1:3306)/predictionmarket_cn_amm?charset=utf8mb4&parseTime=true&loc=Local"
+  max_open_connections: 100
+  max_idle_connections: 10
+  connection_max_lifetime_seconds: 300
+
+redis:
+  enabled: true
+  address: "127.0.0.1:6379"
+  password: ""
+  db: 1
+  key_prefix: "predictionmarket:cn-amm"
+  operation_timeout_milliseconds: 300
+  quote_ttl_seconds: 10
+  public_data_ttl_seconds: 5
+  research_ttl_seconds: 600
+
+ipfs:
+  gateway: "http://127.0.0.1:8081/api/v1/ipfs/"
+  fallback_gateways:
+    - "http://127.0.0.1:8083/ipfs/"
+
+oracle:
+  gold_api_url: "https://api.gold-api.com/price/XAU"
+  historical_base_url: "https://api.gold-api.com"
+  bitcoin_historical_base_url: "https://api.exchange.coinbase.com"
+  chainlink_rpc_urls:
+    - "https://1rpc.io/eth"
+    - "https://rpc.mevblocker.io"
+  chainlink_xau_usd_feed: "0x214eD9Da11D2fbe465a6fc601a91E62EbEc1a0D6"
+  chainlink_btc_usd_feed: "0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c"
+  chainlink_eth_usd_feed: "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419"
+  chainlink_sol_usd_feed: "0x4ffC43a60e009B551865A93d232E33Fce9f01507"
+  chainlink_bnb_usd_feed: "0x14e613AC84a31f709eadbdF89C6CC390fDc9540A"
+  chainlink_poll_interval_seconds: 60
+  chainlink_max_staleness_seconds: 43200
+  sample_interval_seconds: 10
+  sina_url: "https://hq.sinajs.cn/list=hf_XAU"
+  sina_referer: "https://finance.sina.com.cn"
+  user_agent: "PredictionMarket/1.0"
+  request_timeout_seconds: 10
+
+sentinel:
+  auto_resolve_enabled: true
+  poll_interval_seconds: 30
+  resolve_delay_seconds: 5
+
+sampler:
+  chain_sync_enabled: true
+  poll_interval_seconds: 60
+
+ai:
+  api_key: "replace-with-ai-api-key"
+  base_url: "https://api.deepseek.com/chat/completions"
+  model: "deepseek-chat"
+  poll_interval_seconds: 60
+  buy_amount_bkc: "1"
+  confidence_min: 0.70
+  history_min_points: 3
+  history_max_points: 256
+  kelly_fraction: 0.25
+  min_edge_percent: 5.0
+  max_position_per_market_bkc: "50"
+  adaptive_cooldown: true

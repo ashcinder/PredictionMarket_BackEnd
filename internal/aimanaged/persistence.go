@@ -111,6 +111,7 @@ type ManagedEntryRepository interface {
 type ManagedTradeRecord struct {
 	Market       MarketIdentity
 	UserAddress  string
+	TradeType    string
 	OptionID     int
 	AmountWei    *big.Int
 	SharesDelta  *big.Int

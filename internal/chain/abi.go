@@ -16,7 +16,9 @@ const contractABI = `[
 {"constant":true,"inputs":[{"name":"user","type":"address"}],"name":"getAllGamesExtraData","outputs":[{"name":"resNO","type":"uint256[]"},{"name":"resYES","type":"uint256[]"},{"name":"myYES","type":"uint256[]"},{"name":"myNO","type":"uint256[]"}],"payable":false,"stateMutability":"view","type":"function"},
 {"constant":true,"inputs":[{"name":"id","type":"uint256"}],"name":"getGameInfo","outputs":[{"name":"ipfsCID","type":"string"},{"name":"totalPool","type":"uint256"},{"name":"isResolved","type":"bool"},{"name":"winningOption","type":"uint8"},{"name":"deadlineSec","type":"uint256"},{"name":"isRefunded","type":"bool"}],"payable":false,"stateMutability":"view","type":"function"},
 {"constant":true,"inputs":[{"name":"id","type":"uint256"},{"name":"user","type":"address"}],"name":"getGameExtraData","outputs":[{"name":"virtualReserves","type":"uint256[]"},{"name":"myShares","type":"uint256[]"}],"payable":false,"stateMutability":"view","type":"function"},
-{"constant":false,"inputs":[{"name":"gameId","type":"uint256"},{"name":"optionId","type":"uint8"}],"name":"buyShares","outputs":[],"payable":true,"stateMutability":"payable","type":"function"}
+{"constant":true,"inputs":[{"name":"gameId","type":"uint256"},{"name":"optionId","type":"uint8"},{"name":"shareAmount","type":"uint256"}],"name":"quoteSellShares","outputs":[{"name":"amountOut","type":"uint256"}],"payable":false,"stateMutability":"view","type":"function"},
+{"constant":false,"inputs":[{"name":"gameId","type":"uint256"},{"name":"optionId","type":"uint8"}],"name":"buyShares","outputs":[],"payable":true,"stateMutability":"payable","type":"function"},
+{"constant":false,"inputs":[{"name":"gameId","type":"uint256"},{"name":"optionId","type":"uint8"},{"name":"shareAmount","type":"uint256"},{"name":"minAmountOut","type":"uint256"}],"name":"sellShares","outputs":[],"payable":false,"stateMutability":"nonpayable","type":"function"}
 ]`
 
 var parsedABI abi.ABI
@@ -169,6 +171,43 @@ func EncodeGetGameExtraData(gameID int, userAddress string) (string, error) {
 	return "0x" + hex.EncodeToString(packed), nil
 }
 
+func EncodeQuoteSellShares(gameID, optionID int, shareAmount *big.Int) (string, error) {
+	if gameID < 0 {
+		return "", fmt.Errorf("invalid game id: %d", gameID)
+	}
+	if optionID != 0 && optionID != 1 {
+		return "", fmt.Errorf("invalid option id: %d", optionID)
+	}
+	if shareAmount == nil || shareAmount.Sign() <= 0 {
+		return "", fmt.Errorf("share amount must be positive")
+	}
+	packed, err := parsedABI.Pack(
+		"quoteSellShares",
+		big.NewInt(int64(gameID)),
+		uint8(optionID),
+		shareAmount,
+	)
+	if err != nil {
+		return "", err
+	}
+	return "0x" + hex.EncodeToString(packed), nil
+}
+
+func DecodeQuoteSellShares(hexResult string) (*big.Int, error) {
+	results, err := parsedABI.Unpack("quoteSellShares", fromHex(hexResult))
+	if err != nil {
+		return nil, fmt.Errorf("failed to unpack quoteSellShares: %w", err)
+	}
+	if len(results) != 1 {
+		return nil, fmt.Errorf("unexpected quoteSellShares results: %d", len(results))
+	}
+	amountOut, ok := results[0].(*big.Int)
+	if !ok {
+		return nil, fmt.Errorf("amountOut is not *big.Int")
+	}
+	return amountOut, nil
+}
+
 // EncodeGetAllGamesExtraData encodes a call to getAllGamesExtraData(address user).
 // This returns reserves for ALL games in a single eth_call, avoiding N+1
 // per-game calls and dramatically reducing chain round-trips.
@@ -245,6 +284,32 @@ func EncodeBuyShares(gameID int, optionID int) (string, error) {
 		return "", fmt.Errorf("invalid option id: %d", optionID)
 	}
 	packed, err := parsedABI.Pack("buyShares", big.NewInt(int64(gameID)), uint8(optionID))
+	if err != nil {
+		return "", err
+	}
+	return "0x" + hex.EncodeToString(packed), nil
+}
+
+func EncodeSellShares(gameID, optionID int, shareAmount, minAmountOut *big.Int) (string, error) {
+	if gameID < 0 {
+		return "", fmt.Errorf("invalid game id: %d", gameID)
+	}
+	if optionID != 0 && optionID != 1 {
+		return "", fmt.Errorf("invalid option id: %d", optionID)
+	}
+	if shareAmount == nil || shareAmount.Sign() <= 0 {
+		return "", fmt.Errorf("share amount must be positive")
+	}
+	if minAmountOut == nil || minAmountOut.Sign() < 0 {
+		return "", fmt.Errorf("minimum amount out cannot be negative")
+	}
+	packed, err := parsedABI.Pack(
+		"sellShares",
+		big.NewInt(int64(gameID)),
+		uint8(optionID),
+		shareAmount,
+		minAmountOut,
+	)
 	if err != nil {
 		return "", err
 	}
