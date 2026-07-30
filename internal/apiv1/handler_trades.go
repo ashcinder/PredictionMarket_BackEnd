@@ -12,10 +12,12 @@ import (
 
 // validTradeTypes contains the allowed trade_type values.
 var validTradeTypes = map[string]bool{
-	"BUY":     true,
-	"SELL":    true,
-	"CLAIM":   true,
-	"RESOLVE": true,
+	"BUY":              true,
+	"SELL":             true,
+	"CLAIM":            true,
+	"RESOLVE":          true,
+	"LIQUIDITY_ADD":    true,
+	"LIQUIDITY_REMOVE": true,
 }
 
 // handleGetTrades handles GET /api/v1/gold/trades?game_id=X&user_address=Y
@@ -49,10 +51,13 @@ func (s *Server) handleGetTrades(w http.ResponseWriter, r *http.Request) {
 			OptionID:         r.OptionID,
 			AmountWei:        r.AmountWei,
 			ShareAmountWei:   r.ShareAmountWei,
+			ReturnedYesWei:   r.ReturnedYesWei,
+			ReturnedNoWei:    r.ReturnedNoWei,
 			MySharesYesAfter: r.MySharesYesAfter,
 			MySharesNoAfter:  r.MySharesNoAfter,
 			IsSuccess:        r.IsSuccess,
 			IsAiManaged:      r.IsAiManaged,
+			ExecutionSource:  r.ExecutionSource,
 			TxHash:           r.TxHash,
 			TimestampSec:     r.TimestampSec,
 			CreatedAt:        r.CreatedAt,
@@ -85,13 +90,18 @@ func (s *Server) handleSyncTrade(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid contract_address")
 		return
 	}
+	if !s.acceptsContractAddress(req.ContractAddr) {
+		writeJSONError(w, http.StatusConflict, "contract_address is not the active market contract")
+		return
+	}
 	if !common.IsHexAddress(req.UserAddress) {
 		writeJSONError(w, http.StatusBadRequest, "invalid user_address")
 		return
 	}
 	tradeType := strings.ToUpper(strings.TrimSpace(req.TradeType))
 	if !validTradeTypes[tradeType] {
-		writeJSONError(w, http.StatusBadRequest, "trade_type must be BUY, SELL, CLAIM, or RESOLVE")
+		writeJSONError(w, http.StatusBadRequest,
+			"trade_type must be BUY, SELL, CLAIM, RESOLVE, LIQUIDITY_ADD, or LIQUIDITY_REMOVE")
 		return
 	}
 
@@ -136,6 +146,8 @@ func (s *Server) handleSyncTrade(w http.ResponseWriter, r *http.Request) {
 		AmountWei:        parseBigIntStr(req.AmountWei),
 		SharesWei:        parseBigIntStr(firstNonEmpty(req.SharesWei, req.ShareAmountWei)),
 		ShareAmountWei:   req.ShareAmountWei,
+		ReturnedYesWei:   req.ReturnedYesWei,
+		ReturnedNoWei:    req.ReturnedNoWei,
 		MySharesYesAfter: req.MySharesYesAfter,
 		MySharesNoAfter:  req.MySharesNoAfter,
 		PriceAtTrade:     req.PriceAtTrade,
@@ -143,6 +155,7 @@ func (s *Server) handleSyncTrade(w http.ResponseWriter, r *http.Request) {
 		TxHash:           req.TxHash,
 		IsSuccess:        req.IsSuccess,
 		IsAiManaged:      req.IsAiManaged,
+		ExecutionSource:  normalizeExecutionSource(req.ExecutionSource, req.IsAiManaged),
 	}
 	if err := s.trades.RecordTrade(r.Context(), trade); err != nil {
 		slog.Warn("apiv1: record trade failed (non-fatal, continuing with state updates)", "game_id", req.GameID, "error", err)
@@ -159,12 +172,15 @@ func (s *Server) handleSyncTrade(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. Update user position cache from post-trade shares.
-	if req.MySharesYesAfter != "" || req.MySharesNoAfter != "" {
+	if req.MySharesYesAfter != "" || req.MySharesNoAfter != "" ||
+		req.MyLiquiditySharesAfter != "" || req.MyLiquidityFeesAfter != "" {
 		pos := &userPositionRow{
-			UserAddress: req.UserAddress,
-			GameID:      req.GameID,
-			MySharesYes: parseBigIntStr(req.MySharesYesAfter),
-			MySharesNo:  parseBigIntStr(req.MySharesNoAfter),
+			UserAddress:       req.UserAddress,
+			GameID:            req.GameID,
+			MySharesYes:       parseBigIntStr(req.MySharesYesAfter),
+			MySharesNo:        parseBigIntStr(req.MySharesNoAfter),
+			MyLiquidityShares: parseBigIntStr(req.MyLiquiditySharesAfter),
+			MyLiquidityFees:   parseBigIntStr(req.MyLiquidityFeesAfter),
 		}
 		if err := s.positions.UpsertUserPosition(r.Context(), pos); err != nil {
 			slog.Warn("apiv1: cascade update user position failed", "game_id", req.GameID, "user", req.UserAddress, "error", err)
@@ -173,4 +189,22 @@ func (s *Server) handleSyncTrade(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("apiv1: trade synced", "game_id", req.GameID, "type", tradeType)
 	writeJSON(w, http.StatusCreated, map[string]bool{"success": true})
+}
+
+func normalizeExecutionSource(source string, isAiManaged bool) string {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "manual":
+		return "manual"
+	case "ai":
+		return "ai"
+	case "grid":
+		return "grid"
+	case "martingale":
+		return "martingale"
+	default:
+		if isAiManaged {
+			return "ai"
+		}
+		return "manual"
+	}
 }

@@ -65,7 +65,10 @@ last_error=VALUES(last_error), status=VALUES(status)`
 	selectManagedEntriesSQL = `SELECT contract_address, game_id, user_address, key_nonce, key_ciphertext,
 enabled_at, last_trade_at, last_trade_option, last_trade_tx, last_error, last_decision_at, last_decision_text,
 strategy_buy_amount_bkc, strategy_confidence_min, strategy_min_edge_percent,
-strategy_kelly_fraction, strategy_adaptive_cooldown
+strategy_kelly_fraction, strategy_adaptive_cooldown, strategy_type,
+strategy_direction, strategy_grid_lower_percent, strategy_grid_upper_percent,
+strategy_grid_levels, strategy_martingale_trigger_percent,
+strategy_martingale_multiplier, strategy_martingale_max_rounds
 FROM ai_managed_entries`
 	selectCachedMarketSQL = "SELECT g.ipfs_cid, g.`desc`, g.`condition`, g.detailed_info, g.option_yes, g.option_no, " +
 		"COALESCE(NULLIF(cs.deadline_sec, 0), g.deadline_sec) AS deadline_sec, " +
@@ -76,8 +79,11 @@ FROM ai_managed_entries`
 (contract_address, game_id, user_address, key_nonce, key_ciphertext, enabled_at,
 last_trade_at, last_trade_option, last_trade_tx, last_error, last_decision_at, last_decision_text,
 strategy_buy_amount_bkc, strategy_confidence_min, strategy_min_edge_percent,
-strategy_kelly_fraction, strategy_adaptive_cooldown)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+strategy_kelly_fraction, strategy_adaptive_cooldown, strategy_type,
+strategy_direction, strategy_grid_lower_percent, strategy_grid_upper_percent,
+strategy_grid_levels, strategy_martingale_trigger_percent,
+strategy_martingale_multiplier, strategy_martingale_max_rounds)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE key_nonce=VALUES(key_nonce), key_ciphertext=VALUES(key_ciphertext),
 enabled_at=VALUES(enabled_at), last_trade_at=VALUES(last_trade_at),
 last_trade_option=VALUES(last_trade_option), last_trade_tx=VALUES(last_trade_tx),
@@ -87,17 +93,25 @@ strategy_buy_amount_bkc=VALUES(strategy_buy_amount_bkc),
 strategy_confidence_min=VALUES(strategy_confidence_min),
 strategy_min_edge_percent=VALUES(strategy_min_edge_percent),
 strategy_kelly_fraction=VALUES(strategy_kelly_fraction),
-strategy_adaptive_cooldown=VALUES(strategy_adaptive_cooldown)`
+strategy_adaptive_cooldown=VALUES(strategy_adaptive_cooldown),
+strategy_type=VALUES(strategy_type),
+strategy_direction=VALUES(strategy_direction),
+strategy_grid_lower_percent=VALUES(strategy_grid_lower_percent),
+strategy_grid_upper_percent=VALUES(strategy_grid_upper_percent),
+strategy_grid_levels=VALUES(strategy_grid_levels),
+strategy_martingale_trigger_percent=VALUES(strategy_martingale_trigger_percent),
+strategy_martingale_multiplier=VALUES(strategy_martingale_multiplier),
+strategy_martingale_max_rounds=VALUES(strategy_martingale_max_rounds)`
 	deleteManagedEntrySQL = `DELETE FROM ai_managed_entries
 WHERE contract_address=? AND game_id=? AND user_address=?`
 	insertManagedGoldTradeSQL = `INSERT INTO gold_trades
 (game_id, contract_address, user_address, trade_type, option_id, amount_wei,
 share_amount_wei, shares_wei, price_at_trade, timestamp_sec, tx_hash, is_success,
-is_ai_managed, my_shares_yes_after, my_shares_no_after)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 1, 1, ?, ?)`
+is_ai_managed, execution_source, my_shares_yes_after, my_shares_no_after)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 1, 1, ?, ?, ?)`
 	updateManagedGoldTradeSQL = `UPDATE gold_trades SET
 trade_type=?, option_id=?, amount_wei=?, share_amount_wei=?, shares_wei=?, timestamp_sec=?,
-is_success=1, is_ai_managed=1, my_shares_yes_after=?, my_shares_no_after=?
+is_success=1, is_ai_managed=1, execution_source=?, my_shares_yes_after=?, my_shares_no_after=?
 WHERE contract_address=? AND game_id=? AND user_address=? AND tx_hash=?`
 	selectManagedGoldTradeSQL = `SELECT id FROM gold_trades
 WHERE contract_address=? AND game_id=? AND user_address=? AND tx_hash=? LIMIT 1`
@@ -244,11 +258,16 @@ func (r *MySQLRepository) listManagedEntries(ctx context.Context) ([]PersistentM
 		var buyAmount sql.NullString
 		var confidenceMin, minEdgePercent, kellyFraction sql.NullFloat64
 		var adaptiveCooldown sql.NullBool
+		var strategyType, direction sql.NullString
+		var gridLower, gridUpper, martingaleTrigger, martingaleMultiplier sql.NullFloat64
+		var gridLevels, martingaleMaxRounds sql.NullInt64
 		if err := rows.Scan(
 			&contract, &gameID, &item.UserAddress, &item.KeyNonce, &item.KeyCiphertext,
 			&enabledAt, &lastTradeAt, &item.LastTradeOption, &lastTradeTx, &lastError,
 			&lastDecisionAt, &lastDecisionText, &buyAmount, &confidenceMin,
-			&minEdgePercent, &kellyFraction, &adaptiveCooldown,
+			&minEdgePercent, &kellyFraction, &adaptiveCooldown, &strategyType,
+			&direction, &gridLower, &gridUpper, &gridLevels,
+			&martingaleTrigger, &martingaleMultiplier, &martingaleMaxRounds,
 		); err != nil {
 			return nil, fmt.Errorf("scan ai-managed entry: %w", err)
 		}
@@ -267,11 +286,19 @@ func (r *MySQLRepository) listManagedEntries(ctx context.Context) ([]PersistentM
 		if buyAmount.Valid || confidenceMin.Valid || minEdgePercent.Valid ||
 			kellyFraction.Valid || adaptiveCooldown.Valid {
 			item.Strategy = &StrategySettings{
-				BuyAmountBKC:     buyAmount.String,
-				ConfidenceMin:    confidenceMin.Float64,
-				MinEdgePercent:   minEdgePercent.Float64,
-				KellyFraction:    kellyFraction.Float64,
-				AdaptiveCooldown: adaptiveCooldown.Bool,
+				BuyAmountBKC:             buyAmount.String,
+				ConfidenceMin:            confidenceMin.Float64,
+				MinEdgePercent:           minEdgePercent.Float64,
+				KellyFraction:            kellyFraction.Float64,
+				AdaptiveCooldown:         adaptiveCooldown.Bool,
+				StrategyType:             strategyType.String,
+				Direction:                direction.String,
+				GridLowerPercent:         gridLower.Float64,
+				GridUpperPercent:         gridUpper.Float64,
+				GridLevels:               int(gridLevels.Int64),
+				MartingaleTriggerPercent: martingaleTrigger.Float64,
+				MartingaleMultiplier:     martingaleMultiplier.Float64,
+				MartingaleMaxRounds:      int(martingaleMaxRounds.Int64),
 			}
 		}
 		out = append(out, item)
@@ -297,18 +324,31 @@ func (r *MySQLRepository) SaveManagedEntry(ctx context.Context, item PersistentM
 	contract := normalizeAddress(item.Market.ContractAddress)
 	user := common.HexToAddress(item.UserAddress).Hex()
 	var buyAmount, confidenceMin, minEdgePercent, kellyFraction, adaptiveCooldown interface{}
+	var strategyType, direction interface{}
+	var gridLower, gridUpper, gridLevels interface{}
+	var martingaleTrigger, martingaleMultiplier, martingaleMaxRounds interface{}
 	if item.Strategy != nil {
 		buyAmount = item.Strategy.BuyAmountBKC
 		confidenceMin = item.Strategy.ConfidenceMin
 		minEdgePercent = item.Strategy.MinEdgePercent
 		kellyFraction = item.Strategy.KellyFraction
 		adaptiveCooldown = item.Strategy.AdaptiveCooldown
+		strategyType = item.Strategy.StrategyType
+		direction = item.Strategy.Direction
+		gridLower = item.Strategy.GridLowerPercent
+		gridUpper = item.Strategy.GridUpperPercent
+		gridLevels = item.Strategy.GridLevels
+		martingaleTrigger = item.Strategy.MartingaleTriggerPercent
+		martingaleMultiplier = item.Strategy.MartingaleMultiplier
+		martingaleMaxRounds = item.Strategy.MartingaleMaxRounds
 	}
 	if _, err := r.db.ExecContext(ctx, upsertManagedEntrySQL,
 		contract, item.Market.GameID, user, item.KeyNonce, item.KeyCiphertext, item.EnabledAt.UTC(),
 		nullableTime(item.LastTradeAt), item.LastTradeOption, item.LastTradeTx, item.LastError,
 		nullableTime(item.LastDecisionAt), item.LastDecisionText, buyAmount, confidenceMin,
-		minEdgePercent, kellyFraction, adaptiveCooldown,
+		minEdgePercent, kellyFraction, adaptiveCooldown, strategyType, direction,
+		gridLower, gridUpper, gridLevels, martingaleTrigger, martingaleMultiplier,
+		martingaleMaxRounds,
 	); err != nil {
 		return fmt.Errorf("save ai-managed entry: %w", err)
 	}
@@ -383,6 +423,7 @@ func (r *MySQLRepository) recordManagedTrade(ctx context.Context, record Managed
 	if tradeType != "BUY" && tradeType != "SELL" {
 		return fmt.Errorf("unsupported managed trade type %q", record.TradeType)
 	}
+	executionSource := normalizeManagedExecutionSource(record.ExecutionSource)
 	result, err := tx.ExecContext(ctx, updateManagedGoldTradeSQL,
 		tradeType,
 		record.OptionID,
@@ -390,6 +431,7 @@ func (r *MySQLRepository) recordManagedTrade(ctx context.Context, record Managed
 		decimalString(record.SharesDelta),
 		sharesDelta,
 		record.TimestampSec,
+		executionSource,
 		decimalString(record.SharesYES),
 		decimalString(record.SharesNO),
 		contract,
@@ -424,6 +466,7 @@ func (r *MySQLRepository) recordManagedTrade(ctx context.Context, record Managed
 				sharesDelta,
 				record.TimestampSec,
 				record.TxHash,
+				executionSource,
 				decimalString(record.SharesYES),
 				decimalString(record.SharesNO),
 			); err != nil {
@@ -863,6 +906,17 @@ func validateManagedTrade(record ManagedTradeRecord) error {
 		return errors.New("amount_wei must be positive")
 	}
 	return nil
+}
+
+func normalizeManagedExecutionSource(source string) string {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "grid":
+		return "grid"
+	case "martingale":
+		return "martingale"
+	default:
+		return "ai"
+	}
 }
 
 func reserveBytes(value *big.Int) ([]byte, error) {

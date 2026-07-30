@@ -56,7 +56,7 @@ func (s *Server) handleGetPositions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. Fetch user position (non-fatal — defaults to zero shares).
-	var sharesYes, sharesNo string
+	var sharesYes, sharesNo, liquidityShares, liquidityFees string
 	pos, err := s.positions.GetUserPosition(r.Context(), userAddress, gameID)
 	if err != nil {
 		slog.Warn("apiv1: get positions - fetch user position failed", "game_id", gameID, "user", userAddress, "error", err)
@@ -64,9 +64,13 @@ func (s *Server) handleGetPositions(w http.ResponseWriter, r *http.Request) {
 	if pos != nil {
 		sharesYes = bigIntOrZero(pos.MySharesYes)
 		sharesNo = bigIntOrZero(pos.MySharesNo)
+		liquidityShares = bigIntOrZero(pos.MyLiquidityShares)
+		liquidityFees = bigIntOrZero(pos.MyLiquidityFees)
 	} else {
 		sharesYes = "0"
 		sharesNo = "0"
+		liquidityShares = "0"
+		liquidityFees = "0"
 	}
 
 	// 4. Fetch trade history (non-fatal — defaults to empty array).
@@ -88,21 +92,25 @@ func (s *Server) handleGetPositions(w http.ResponseWriter, r *http.Request) {
 
 	// 6. Assemble response.
 	dto := PositionDetailDTO{
-		GameID:        gameID,
-		Desc:          game.Desc,
-		Condition:     game.Condition,
-		AvatarURL:     game.AvatarURL,
-		OptionNames:   optionNames,
-		IsResolved:    state.IsResolved,
-		IsRefunded:    state.IsRefunded,
-		WinningOption: state.WinningOption,
-		DeadlineSec:   state.DeadlineSec,
-		TotalPool:     bigIntOrZero(state.TotalPool),
-		ReserveYes:    bigIntOrZero(state.ReserveYes),
-		ReserveNo:     bigIntOrZero(state.ReserveNo),
-		MySharesYes:   sharesYes,
-		MySharesNo:    sharesNo,
-		Trades:        trades,
+		GameID:               gameID,
+		Desc:                 game.Desc,
+		Condition:            game.Condition,
+		AvatarURL:            game.AvatarURL,
+		OptionNames:          optionNames,
+		IsResolved:           state.IsResolved,
+		IsRefunded:           state.IsRefunded,
+		WinningOption:        state.WinningOption,
+		DeadlineSec:          state.DeadlineSec,
+		TotalPool:            bigIntOrZero(state.TotalPool),
+		ReserveYes:           bigIntOrZero(state.ReserveYes),
+		ReserveNo:            bigIntOrZero(state.ReserveNo),
+		MySharesYes:          sharesYes,
+		MySharesNo:           sharesNo,
+		TotalLiquidityShares: bigIntOrZero(state.TotalLiquidityShares),
+		LiquidityFeePool:     bigIntOrZero(state.LiquidityFeePool),
+		MyLiquidityShares:    liquidityShares,
+		MyLiquidityFees:      liquidityFees,
+		Trades:               trades,
 	}
 
 	slog.Info("apiv1: get positions response", "game_id", gameID, "user", userAddress, "trades", len(trades))

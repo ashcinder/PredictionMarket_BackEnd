@@ -247,6 +247,36 @@ func TestGoldChainStateContractAddressIsAddedOnlyByMigrationNine(t *testing.T) {
 	}
 }
 
+func TestLiquidityTradeMigrationWidensTypeAndPersistsReturnedShares(t *testing.T) {
+	migrations, err := embeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migrationSQL string
+	for _, item := range migrations {
+		if item.Version == 26 {
+			migrationSQL = item.SQL
+			break
+		}
+	}
+	if !strings.Contains(migrationSQL, "trade_type VARCHAR(20)") {
+		t.Fatalf("migration 26 must fit LIQUIDITY_REMOVE: %q", migrationSQL)
+	}
+	if !strings.Contains(migrationSQL, "DROP CHECK chk_trades_type") {
+		t.Fatalf("migration 26 must remove the legacy four-type check: %q", migrationSQL)
+	}
+	if !strings.Contains(migrationSQL, "returned_yes_wei") ||
+		!strings.Contains(migrationSQL, "returned_no_wei") {
+		t.Fatalf("migration 26 must persist returned outcome shares: %q", migrationSQL)
+	}
+	ensureDDL := strings.Join(ensureTableDDLs, "\n")
+	if !strings.Contains(ensureDDL, "trade_type VARCHAR(20)") ||
+		!strings.Contains(ensureDDL, "returned_yes_wei") ||
+		!strings.Contains(ensureDDL, "returned_no_wei") {
+		t.Fatal("EnsureTables must match the liquidity trade migration")
+	}
+}
+
 func TestMigrationNineRecognizesOnlyKnownPartialMigrationErrors(t *testing.T) {
 	tests := []struct {
 		name      string

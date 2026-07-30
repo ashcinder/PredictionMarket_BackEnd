@@ -23,6 +23,7 @@ var dataTables = []string{
 	"gold_games",
 	"ai_managed_entries",
 	"ai_decisions",
+	"ai_settlement_audits",
 	"market_sync_state",
 	"market_history",
 	"oracle_price_samples",

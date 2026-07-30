@@ -3,11 +3,33 @@ package apiv1
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"PredictionMarket/internal/aimanaged"
 	"PredictionMarket/internal/ipfs"
 	"PredictionMarket/internal/oracle"
+
+	"github.com/ethereum/go-ethereum/common"
 )
+
+func (s *Server) activeContractAddress() string {
+	if !common.IsHexAddress(strings.TrimSpace(s.contractAddr)) {
+		return ""
+	}
+	return normalizeOptionalAddress(s.contractAddr)
+}
+
+// acceptsContractAddress prevents stale clients and retired contract
+// deployments from writing into the active market cache. Tests and legacy
+// embedders that do not configure a valid server contract remain unrestricted.
+func (s *Server) acceptsContractAddress(contractAddress string) bool {
+	active := s.activeContractAddress()
+	requested := normalizeOptionalAddress(contractAddress)
+	if requested == "" {
+		return false
+	}
+	return active == "" || strings.EqualFold(active, requested)
+}
 
 // chainClient is the subset of chain.Client used by the v1 API handlers.
 type chainClient interface {
@@ -137,4 +159,5 @@ func (s *Server) Register(mux *http.ServeMux) {
 	// AI-managed (delegates to existing aimanaged.Store)
 	mux.HandleFunc("GET /api/v1/gold/ai-managed", s.handleAIGet)
 	mux.HandleFunc("POST /api/v1/gold/ai-managed", s.handleAISet)
+	mux.HandleFunc("GET /api/v1/gold/strategies", s.handleStrategiesGet)
 }

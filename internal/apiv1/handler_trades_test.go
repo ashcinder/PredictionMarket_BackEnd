@@ -120,6 +120,8 @@ func TestGetTradesReturnsPurchaseTimeSharesAndPositionSnapshots(t *testing.T) {
 		OptionID:         0,
 		AmountWei:        "1000000000000000000",
 		ShareAmountWei:   "12500000000000000000",
+		ReturnedYesWei:   "250000000000000000",
+		ReturnedNoWei:    "0",
 		MySharesYesAfter: "12500000000000000000",
 		MySharesNoAfter:  "0",
 		IsSuccess:        true,
@@ -151,6 +153,8 @@ func TestGetTradesReturnsPurchaseTimeSharesAndPositionSnapshots(t *testing.T) {
 	}
 	got := response.Trades[0]
 	if got.ShareAmountWei != "12500000000000000000" ||
+		got.ReturnedYesWei != "250000000000000000" ||
+		got.ReturnedNoWei != "0" ||
 		got.MySharesYesAfter != "12500000000000000000" ||
 		got.MySharesNoAfter != "0" {
 		t.Fatalf("unexpected share fields: %+v", got)
@@ -177,6 +181,8 @@ func TestSyncTradeStoresPositionDetailFields(t *testing.T) {
 		"option_id":0,
 		"amount_wei":"100",
 		"share_amount_wei":"1250",
+		"returned_yes_wei":"25",
+		"returned_no_wei":"0",
 		"my_shares_yes_after":"1250",
 		"my_shares_no_after":"0",
 		"tx_hash":"0xabc",
@@ -193,7 +199,9 @@ func TestSyncTradeStoresPositionDetailFields(t *testing.T) {
 		t.Fatalf("expected one recorded trade, got %d", len(tradeMock.records))
 	}
 	got := tradeMock.records[0]
-	if got.ShareAmountWei != "1250" || got.MySharesYesAfter != "1250" || got.MySharesNoAfter != "0" {
+	if got.ShareAmountWei != "1250" || got.ReturnedYesWei != "25" ||
+		got.ReturnedNoWei != "0" || got.MySharesYesAfter != "1250" ||
+		got.MySharesNoAfter != "0" {
 		t.Fatalf("position detail fields not recorded: %+v", got)
 	}
 }

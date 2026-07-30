@@ -177,7 +177,7 @@ func TestMySQLRepositoryRecordsAIManagedNOTradeAndPositionAtomically(t *testing.
 	mock.ExpectExec("UPDATE gold_trades SET").
 		WithArgs(
 			"BUY", 1, []byte("1000"), "250", []byte("250"), int64(1782782000),
-			"10", "350", repositoryTestContract, 42, repositoryTestContract, "0xmanaged",
+			"ai", "10", "350", repositoryTestContract, 42, repositoryTestContract, "0xmanaged",
 		).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery("SELECT id FROM gold_trades").
@@ -187,7 +187,7 @@ func TestMySQLRepositoryRecordsAIManagedNOTradeAndPositionAtomically(t *testing.
 		WithArgs(
 			42, repositoryTestContract, repositoryTestContract, "BUY", 1,
 			[]byte("1000"), "250", []byte("250"), int64(1782782000),
-			"0xmanaged", "10", "350",
+			"0xmanaged", "ai", "10", "350",
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO gold_user_positions").
@@ -235,7 +235,7 @@ func TestMySQLRepositoryReconcilesManagedTradeWithoutIncrementingPoolAgain(t *te
 	mock.ExpectExec("UPDATE gold_trades SET").
 		WithArgs(
 			"BUY", 0, []byte("1000"), "500", []byte("500"), int64(1782782000),
-			"500", "0", repositoryTestContract, 42, repositoryTestContract, "0xmanaged",
+			"ai", "500", "0", repositoryTestContract, 42, repositoryTestContract, "0xmanaged",
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO gold_user_positions").

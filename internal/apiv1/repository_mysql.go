@@ -22,11 +22,11 @@ const (
 	selectAllGamesSQL = `SELECT game_id, contract_address, ipfs_cid, ` + "`desc`" + `, ` + "`condition`" + `,
 		avatar_url, detailed_info, option_yes, option_no, creator_address,
 		deadline_sec, created_at, updated_at
-		FROM gold_games ORDER BY game_id`
+		FROM gold_games WHERE contract_address = ? ORDER BY game_id`
 	selectGameByIDSQL = `SELECT game_id, contract_address, ipfs_cid, ` + "`desc`" + `, ` + "`condition`" + `,
 		avatar_url, detailed_info, option_yes, option_no, creator_address,
 		deadline_sec, created_at, updated_at
-		FROM gold_games WHERE game_id = ?`
+		FROM gold_games WHERE contract_address = ? AND game_id = ?`
 	upsertGameSQL = `INSERT INTO gold_games
 		(game_id, contract_address, ipfs_cid, ` + "`desc`" + `, ` + "`condition`" + `,
 		avatar_url, detailed_info, option_yes, option_no, creator_address,
@@ -54,20 +54,24 @@ const (
 
 	// gold_chain_states
 	selectChainStateSQL = `SELECT game_id, contract_address, total_pool, is_resolved, is_refunded,
-		winning_option, deadline_sec, reserve_yes, reserve_no, updated_at
+		winning_option, deadline_sec, reserve_yes, reserve_no, total_liquidity_shares,
+		liquidity_fee_pool, updated_at
 		FROM gold_chain_states WHERE contract_address = ? AND game_id = ?`
 	selectAllChainStatesSQL = `SELECT game_id, contract_address, total_pool, is_resolved, is_refunded,
-		winning_option, deadline_sec, reserve_yes, reserve_no, updated_at
+		winning_option, deadline_sec, reserve_yes, reserve_no, total_liquidity_shares,
+		liquidity_fee_pool, updated_at
 		FROM gold_chain_states WHERE contract_address = ? ORDER BY game_id`
 	upsertChainStateSQL = `INSERT INTO gold_chain_states
 		(contract_address, game_id, total_pool, is_resolved, is_refunded, winning_option, deadline_sec,
-		reserve_yes, reserve_no)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		reserve_yes, reserve_no, total_liquidity_shares, liquidity_fee_pool)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 		total_pool=VALUES(total_pool), is_resolved=VALUES(is_resolved),
 		is_refunded=VALUES(is_refunded), winning_option=VALUES(winning_option),
 		deadline_sec=VALUES(deadline_sec), reserve_yes=VALUES(reserve_yes),
-		reserve_no=VALUES(reserve_no)`
+		reserve_no=VALUES(reserve_no),
+		total_liquidity_shares=COALESCE(VALUES(total_liquidity_shares), total_liquidity_shares),
+		liquidity_fee_pool=COALESCE(VALUES(liquidity_fee_pool), liquidity_fee_pool)`
 	upsertChainStatePoolSQL = `INSERT INTO gold_chain_states
 		(contract_address, game_id, total_pool, is_resolved, is_refunded, winning_option, deadline_sec,
 		reserve_yes, reserve_no)
@@ -86,15 +90,20 @@ const (
 		WHERE contract_address = ? AND game_id = ?`
 
 	// gold_user_positions
-	selectUserPositionSQL = `SELECT user_address, game_id, my_shares_yes, my_shares_no, updated_at
+	selectUserPositionSQL = `SELECT user_address, game_id, my_shares_yes, my_shares_no,
+		my_liquidity_shares, my_liquidity_fees, updated_at
 		FROM gold_user_positions WHERE user_address = ? AND game_id = ?`
-	selectAllUserPositionsSQL = `SELECT user_address, game_id, my_shares_yes, my_shares_no, updated_at
+	selectAllUserPositionsSQL = `SELECT user_address, game_id, my_shares_yes, my_shares_no,
+		my_liquidity_shares, my_liquidity_fees, updated_at
 		FROM gold_user_positions WHERE user_address = ? ORDER BY game_id`
 	upsertUserPositionSQL = `INSERT INTO gold_user_positions
-		(user_address, game_id, my_shares_yes, my_shares_no)
-		VALUES (?, ?, ?, ?)
+		(user_address, game_id, my_shares_yes, my_shares_no, my_liquidity_shares, my_liquidity_fees)
+		VALUES (?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
-		my_shares_yes=VALUES(my_shares_yes), my_shares_no=VALUES(my_shares_no)`
+		my_shares_yes=COALESCE(VALUES(my_shares_yes), my_shares_yes),
+		my_shares_no=COALESCE(VALUES(my_shares_no), my_shares_no),
+		my_liquidity_shares=COALESCE(VALUES(my_liquidity_shares), my_liquidity_shares),
+		my_liquidity_fees=COALESCE(VALUES(my_liquidity_fees), my_liquidity_fees)`
 
 	// gold_price_history
 	selectPriceHistorySQL = `SELECT id, game_id, timestamp_sec, yes_price, no_price, total_pool
@@ -118,13 +127,15 @@ const (
 	// gold_trades
 	insertTradeSQL = `INSERT INTO gold_trades
 		(game_id, contract_address, user_address, trade_type, option_id, amount_wei,
-		share_amount_wei, shares_wei, price_at_trade, timestamp_sec, tx_hash, is_success,
-		is_ai_managed, my_shares_yes_after, my_shares_no_after)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		share_amount_wei, returned_yes_wei, returned_no_wei,
+		shares_wei, price_at_trade, timestamp_sec, tx_hash, is_success,
+		is_ai_managed, execution_source, my_shares_yes_after, my_shares_no_after)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	listTradesByGameAndUserSQL = `SELECT id, game_id, trade_type, option_id, amount_wei,
-		shares_wei, share_amount_wei, price_at_trade, tx_hash, timestamp_sec,
-		is_success, is_ai_managed, my_shares_yes_after, my_shares_no_after, created_at
+		shares_wei, share_amount_wei, returned_yes_wei, returned_no_wei,
+		price_at_trade, tx_hash, timestamp_sec,
+		is_success, is_ai_managed, execution_source, my_shares_yes_after, my_shares_no_after, created_at
 		FROM gold_trades WHERE game_id = ? AND user_address = ?
 		ORDER BY created_at DESC, id DESC`
 )
@@ -220,7 +231,7 @@ func (r *MySQLRepository) ListAllGames(ctx context.Context) ([]GameMetaDTO, erro
 func (r *MySQLRepository) listAllGames(ctx context.Context) ([]GameMetaDTO, error) {
 	ctx, cancel := context.WithTimeout(ctx, repoTimeout)
 	defer cancel()
-	rows, err := r.db.QueryContext(ctx, selectAllGamesSQL)
+	rows, err := r.db.QueryContext(ctx, selectAllGamesSQL, r.defaultContractAddress)
 	if err != nil {
 		return nil, fmt.Errorf("list all games: %w", err)
 	}
@@ -239,7 +250,7 @@ func (r *MySQLRepository) GetGameByID(ctx context.Context, gameID int) (*GameMet
 func (r *MySQLRepository) getGameByID(ctx context.Context, gameID int) (*GameMetaDTO, error) {
 	ctx, cancel := context.WithTimeout(ctx, repoTimeout)
 	defer cancel()
-	row := r.db.QueryRowContext(ctx, selectGameByIDSQL, gameID)
+	row := r.db.QueryRowContext(ctx, selectGameByIDSQL, r.defaultContractAddress, gameID)
 	var g GameMetaDTO
 	var desc, cond, avatar, detail, optYes, optNo, creator sql.NullString
 	if err := row.Scan(
@@ -412,12 +423,12 @@ func (r *MySQLRepository) getChainState(ctx context.Context, gameID int) (*chain
 	defer cancel()
 	row := r.db.QueryRowContext(ctx, selectChainStateSQL, r.defaultContractAddress, gameID)
 	var s chainStateRow
-	var totalPool, reserveYes, reserveNo []byte
+	var totalPool, reserveYes, reserveNo, totalLiquidityShares, liquidityFeePool []byte
 	var updatedAt sql.NullTime
 	if err := row.Scan(
 		&s.GameID, &s.ContractAddress, &totalPool, &s.IsResolved, &s.IsRefunded,
 		&s.WinningOption, &s.DeadlineSec,
-		&reserveYes, &reserveNo, &updatedAt,
+		&reserveYes, &reserveNo, &totalLiquidityShares, &liquidityFeePool, &updatedAt,
 	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -427,6 +438,8 @@ func (r *MySQLRepository) getChainState(ctx context.Context, gameID int) (*chain
 	s.TotalPool, _ = parseBigIntFromDB(totalPool)
 	s.ReserveYes, _ = parseBigIntFromDB(reserveYes)
 	s.ReserveNo, _ = parseBigIntFromDB(reserveNo)
+	s.TotalLiquidityShares, _ = parseBigIntFromDB(totalLiquidityShares)
+	s.LiquidityFeePool, _ = parseBigIntFromDB(liquidityFeePool)
 	if updatedAt.Valid {
 		s.UpdatedAt = updatedAt.Time.UTC().Format(time.RFC3339)
 	}
@@ -452,18 +465,20 @@ func (r *MySQLRepository) listAllChainStates(ctx context.Context) ([]chainStateR
 	var out []chainStateRow
 	for rows.Next() {
 		var s chainStateRow
-		var totalPool, reserveYes, reserveNo []byte
+		var totalPool, reserveYes, reserveNo, totalLiquidityShares, liquidityFeePool []byte
 		var updatedAt sql.NullTime
 		if err := rows.Scan(
 			&s.GameID, &s.ContractAddress, &totalPool, &s.IsResolved, &s.IsRefunded,
 			&s.WinningOption, &s.DeadlineSec,
-			&reserveYes, &reserveNo, &updatedAt,
+			&reserveYes, &reserveNo, &totalLiquidityShares, &liquidityFeePool, &updatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan chain state: %w", err)
 		}
 		s.TotalPool, _ = parseBigIntFromDB(totalPool)
 		s.ReserveYes, _ = parseBigIntFromDB(reserveYes)
 		s.ReserveNo, _ = parseBigIntFromDB(reserveNo)
+		s.TotalLiquidityShares, _ = parseBigIntFromDB(totalLiquidityShares)
+		s.LiquidityFeePool, _ = parseBigIntFromDB(liquidityFeePool)
 		if updatedAt.Valid {
 			s.UpdatedAt = updatedAt.Time.UTC().Format(time.RFC3339)
 		}
@@ -493,6 +508,8 @@ func (r *MySQLRepository) upsertChainState(ctx context.Context, state *chainStat
 		state.WinningOption, deadlineSec,
 		bigIntToDBBytes(state.ReserveYes),
 		bigIntToDBBytes(state.ReserveNo),
+		bigIntToDBBytes(state.TotalLiquidityShares),
+		bigIntToDBBytes(state.LiquidityFeePool),
 	)
 	if err != nil {
 		return fmt.Errorf("upsert chain state %d: %w", state.GameID, err)
@@ -583,9 +600,10 @@ func (r *MySQLRepository) getUserPosition(ctx context.Context, userAddress strin
 	row := r.db.QueryRowContext(ctx, selectUserPositionSQL,
 		normalizeAddress(userAddress), gameID)
 	var p userPositionRow
-	var sharesYes, sharesNo []byte
+	var sharesYes, sharesNo, liquidityShares, liquidityFees []byte
 	var updatedAt sql.NullTime
-	if err := row.Scan(&p.UserAddress, &p.GameID, &sharesYes, &sharesNo, &updatedAt); err != nil {
+	if err := row.Scan(&p.UserAddress, &p.GameID, &sharesYes, &sharesNo,
+		&liquidityShares, &liquidityFees, &updatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -593,6 +611,8 @@ func (r *MySQLRepository) getUserPosition(ctx context.Context, userAddress strin
 	}
 	p.MySharesYes, _ = parseBigIntFromDB(sharesYes)
 	p.MySharesNo, _ = parseBigIntFromDB(sharesNo)
+	p.MyLiquidityShares, _ = parseBigIntFromDB(liquidityShares)
+	p.MyLiquidityFees, _ = parseBigIntFromDB(liquidityFees)
 	if updatedAt.Valid {
 		p.UpdatedAt = updatedAt.Time.UTC().Format(time.RFC3339)
 	}
@@ -618,13 +638,16 @@ func (r *MySQLRepository) listUserPositions(ctx context.Context, userAddress str
 	var out []userPositionRow
 	for rows.Next() {
 		var p userPositionRow
-		var sharesYes, sharesNo []byte
+		var sharesYes, sharesNo, liquidityShares, liquidityFees []byte
 		var updatedAt sql.NullTime
-		if err := rows.Scan(&p.UserAddress, &p.GameID, &sharesYes, &sharesNo, &updatedAt); err != nil {
+		if err := rows.Scan(&p.UserAddress, &p.GameID, &sharesYes, &sharesNo,
+			&liquidityShares, &liquidityFees, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scan user position: %w", err)
 		}
 		p.MySharesYes, _ = parseBigIntFromDB(sharesYes)
 		p.MySharesNo, _ = parseBigIntFromDB(sharesNo)
+		p.MyLiquidityShares, _ = parseBigIntFromDB(liquidityShares)
+		p.MyLiquidityFees, _ = parseBigIntFromDB(liquidityFees)
 		if updatedAt.Valid {
 			p.UpdatedAt = updatedAt.Time.UTC().Format(time.RFC3339)
 		}
@@ -649,6 +672,8 @@ func (r *MySQLRepository) upsertUserPosition(ctx context.Context, pos *userPosit
 		pos.GameID,
 		bigIntToDBBytes(pos.MySharesYes),
 		bigIntToDBBytes(pos.MySharesNo),
+		bigIntToDBBytes(pos.MyLiquidityShares),
+		bigIntToDBBytes(pos.MyLiquidityFees),
 	)
 	if err != nil {
 		return fmt.Errorf("upsert user position %s/%d: %w", pos.UserAddress, pos.GameID, err)
@@ -806,12 +831,15 @@ func (r *MySQLRepository) recordTrade(ctx context.Context, trade *tradeRow) erro
 		trade.OptionID,
 		bigIntToDBBytes(trade.AmountWei),
 		trade.ShareAmountWei,
+		trade.ReturnedYesWei,
+		trade.ReturnedNoWei,
 		bigIntToDBBytes(trade.SharesWei),
 		trade.PriceAtTrade,
 		trade.TimestampSec,
 		trade.TxHash,
 		trade.IsSuccess,
 		trade.IsAiManaged,
+		normalizeExecutionSource(trade.ExecutionSource, trade.IsAiManaged),
 		trade.MySharesYesAfter,
 		trade.MySharesNoAfter,
 	)
@@ -845,20 +873,24 @@ func (r *MySQLRepository) listTradesByGameAndUser(ctx context.Context, gameID in
 		var t TradeRecordDTO
 		var amountWei, sharesWei []byte
 		var priceAtTrade sql.NullFloat64
-		var shareAmountWei, sharesYesAfter, sharesNoAfter sql.NullString
+		var shareAmountWei, returnedYesWei, returnedNoWei sql.NullString
+		var sharesYesAfter, sharesNoAfter sql.NullString
 		var createdAt time.Time
 		var scanGameID int
 		if err := rows.Scan(
 			&t.TradeID, &scanGameID, &t.TradeType, &t.OptionID,
-			&amountWei, &sharesWei, &shareAmountWei, &priceAtTrade,
+			&amountWei, &sharesWei, &shareAmountWei,
+			&returnedYesWei, &returnedNoWei, &priceAtTrade,
 			&t.TxHash, &t.TimestampSec, &t.IsSuccess, &t.IsAiManaged,
-			&sharesYesAfter, &sharesNoAfter, &createdAt,
+			&t.ExecutionSource, &sharesYesAfter, &sharesNoAfter, &createdAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan trade row: %w", err)
 		}
 		t.AmountWei = bigIntOrZero(parseBigIntStr(string(amountWei)))
 		t.SharesWei = bigIntOrZero(parseBigIntStr(string(sharesWei)))
 		t.ShareAmountWei = shareAmountWei.String
+		t.ReturnedYesWei = returnedYesWei.String
+		t.ReturnedNoWei = returnedNoWei.String
 		t.MySharesYesAfter = sharesYesAfter.String
 		t.MySharesNoAfter = sharesNoAfter.String
 		t.CreatedAt = createdAt.Format("2006-01-02 15:04:05")

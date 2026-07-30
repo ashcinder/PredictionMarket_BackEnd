@@ -58,34 +58,42 @@ type SyncGameResponse struct {
 // ChainStateDTO is the response shape for GET .../{id}/chain-state and
 // GET .../chain-states. It merges on-chain data with user position data.
 type ChainStateDTO struct {
-	GameID        int    `json:"game_id"`
-	ContractAddr  string `json:"contract_address,omitempty"`
-	TotalPool     string `json:"total_pool"`
-	IsResolved    bool   `json:"is_resolved"`
-	IsRefunded    bool   `json:"is_refunded"`
-	WinningOption int    `json:"winning_option"`
-	DeadlineSec   int64  `json:"deadline_sec"`
-	ReserveYes    string `json:"reserve_yes"`
-	ReserveNo     string `json:"reserve_no"`
-	MySharesYes   string `json:"my_shares_yes"`
-	MySharesNo    string `json:"my_shares_no"`
-	UpdatedAt     string `json:"updated_at"`
+	GameID               int    `json:"game_id"`
+	ContractAddr         string `json:"contract_address,omitempty"`
+	TotalPool            string `json:"total_pool"`
+	IsResolved           bool   `json:"is_resolved"`
+	IsRefunded           bool   `json:"is_refunded"`
+	WinningOption        int    `json:"winning_option"`
+	DeadlineSec          int64  `json:"deadline_sec"`
+	ReserveYes           string `json:"reserve_yes"`
+	ReserveNo            string `json:"reserve_no"`
+	MySharesYes          string `json:"my_shares_yes"`
+	MySharesNo           string `json:"my_shares_no"`
+	TotalLiquidityShares string `json:"total_liquidity_shares"`
+	LiquidityFeePool     string `json:"liquidity_fee_pool"`
+	MyLiquidityShares    string `json:"my_liquidity_shares"`
+	MyLiquidityFees      string `json:"my_liquidity_fees"`
+	UpdatedAt            string `json:"updated_at"`
 }
 
 // SyncChainStateRequest is the request body for
 // POST /api/v1/gold/games/{id}/chain-state/sync.
 type SyncChainStateRequest struct {
-	ContractAddr  string `json:"contract_address"`
-	TotalPool     string `json:"total_pool"`
-	IsResolved    bool   `json:"is_resolved"`
-	IsRefunded    bool   `json:"is_refunded"`
-	WinningOption int    `json:"winning_option"`
-	DeadlineSec   int64  `json:"deadline_sec"`
-	ReserveYes    string `json:"reserve_yes"`
-	ReserveNo     string `json:"reserve_no"`
-	MySharesYes   string `json:"my_shares_yes"`
-	MySharesNo    string `json:"my_shares_no"`
-	UserAddress   string `json:"user_address"`
+	ContractAddr         string `json:"contract_address"`
+	TotalPool            string `json:"total_pool"`
+	IsResolved           bool   `json:"is_resolved"`
+	IsRefunded           bool   `json:"is_refunded"`
+	WinningOption        int    `json:"winning_option"`
+	DeadlineSec          int64  `json:"deadline_sec"`
+	ReserveYes           string `json:"reserve_yes"`
+	ReserveNo            string `json:"reserve_no"`
+	MySharesYes          string `json:"my_shares_yes"`
+	MySharesNo           string `json:"my_shares_no"`
+	UserAddress          string `json:"user_address"`
+	TotalLiquidityShares string `json:"total_liquidity_shares"`
+	LiquidityFeePool     string `json:"liquidity_fee_pool"`
+	MyLiquidityShares    string `json:"my_liquidity_shares"`
+	MyLiquidityFees      string `json:"my_liquidity_fees"`
 }
 
 // PricePointDTO is the JSON shape for GET /api/v1/gold/games/{id}/history.
@@ -133,38 +141,49 @@ type SyncTradeRequest struct {
 	IsSuccess    bool   `json:"is_success"`
 	// Post-trade state fields (optional — when present, chain state and user
 	// positions are also upserted).
-	TotalPoolAfter   string `json:"total_pool_after"`
-	ReserveYesAfter  string `json:"reserve_yes_after"`
-	ReserveNoAfter   string `json:"reserve_no_after"`
-	MySharesYesAfter string `json:"my_shares_yes_after"`
-	MySharesNoAfter  string `json:"my_shares_no_after"`
+	TotalPoolAfter            string `json:"total_pool_after"`
+	ReserveYesAfter           string `json:"reserve_yes_after"`
+	ReserveNoAfter            string `json:"reserve_no_after"`
+	MySharesYesAfter          string `json:"my_shares_yes_after"`
+	MySharesNoAfter           string `json:"my_shares_no_after"`
+	TotalLiquiditySharesAfter string `json:"total_liquidity_shares_after"`
+	LiquidityFeePoolAfter     string `json:"liquidity_fee_pool_after"`
+	MyLiquiditySharesAfter    string `json:"my_liquidity_shares_after"`
+	MyLiquidityFeesAfter      string `json:"my_liquidity_fees_after"`
 	// Trade detail fields (optional — stored for the position detail API).
 	SharesWei    string  `json:"shares_wei"`
 	PriceAtTrade float64 `json:"price_at_trade"`
 	TimestampSec int64   `json:"timestamp_sec"`
 	// v1.1 new fields.
-	ShareAmountWei string `json:"share_amount_wei"`
-	IsAiManaged    bool   `json:"is_ai_managed"`
+	ShareAmountWei  string `json:"share_amount_wei"`
+	ReturnedYesWei  string `json:"returned_yes_wei"`
+	ReturnedNoWei   string `json:"returned_no_wei"`
+	IsAiManaged     bool   `json:"is_ai_managed"`
+	ExecutionSource string `json:"execution_source"`
 }
 
 // PositionDetailDTO is the response shape for
 // GET /api/v1/gold/games/{id}/positions?user_address=...
 type PositionDetailDTO struct {
-	GameID        int              `json:"game_id"`
-	Desc          string           `json:"desc"`
-	Condition     string           `json:"condition"`
-	AvatarURL     string           `json:"avatar_url"`
-	OptionNames   []string         `json:"option_names"`
-	IsResolved    bool             `json:"is_resolved"`
-	IsRefunded    bool             `json:"is_refunded"`
-	WinningOption int              `json:"winning_option"`
-	DeadlineSec   int64            `json:"deadline_sec"`
-	TotalPool     string           `json:"total_pool"`
-	ReserveYes    string           `json:"reserve_yes"`
-	ReserveNo     string           `json:"reserve_no"`
-	MySharesYes   string           `json:"my_shares_yes"`
-	MySharesNo    string           `json:"my_shares_no"`
-	Trades        []TradeRecordDTO `json:"trades"`
+	GameID               int              `json:"game_id"`
+	Desc                 string           `json:"desc"`
+	Condition            string           `json:"condition"`
+	AvatarURL            string           `json:"avatar_url"`
+	OptionNames          []string         `json:"option_names"`
+	IsResolved           bool             `json:"is_resolved"`
+	IsRefunded           bool             `json:"is_refunded"`
+	WinningOption        int              `json:"winning_option"`
+	DeadlineSec          int64            `json:"deadline_sec"`
+	TotalPool            string           `json:"total_pool"`
+	ReserveYes           string           `json:"reserve_yes"`
+	ReserveNo            string           `json:"reserve_no"`
+	MySharesYes          string           `json:"my_shares_yes"`
+	MySharesNo           string           `json:"my_shares_no"`
+	TotalLiquidityShares string           `json:"total_liquidity_shares"`
+	LiquidityFeePool     string           `json:"liquidity_fee_pool"`
+	MyLiquidityShares    string           `json:"my_liquidity_shares"`
+	MyLiquidityFees      string           `json:"my_liquidity_fees"`
+	Trades               []TradeRecordDTO `json:"trades"`
 }
 
 // TradeRecordDTO represents a single trade record in the position detail response.
@@ -176,6 +195,8 @@ type TradeRecordDTO struct {
 	AmountWei        string  `json:"amount_wei"`
 	SharesWei        string  `json:"shares_wei"`
 	ShareAmountWei   string  `json:"share_amount_wei,omitempty"`
+	ReturnedYesWei   string  `json:"returned_yes_wei,omitempty"`
+	ReturnedNoWei    string  `json:"returned_no_wei,omitempty"`
 	MySharesYesAfter string  `json:"my_shares_yes_after,omitempty"`
 	MySharesNoAfter  string  `json:"my_shares_no_after,omitempty"`
 	PriceAtTrade     float64 `json:"price_at_trade"`
@@ -184,6 +205,7 @@ type TradeRecordDTO struct {
 	CreatedAt        string  `json:"created_at,omitempty"`
 	IsSuccess        bool    `json:"is_success"`
 	IsAiManaged      bool    `json:"is_ai_managed"`
+	ExecutionSource  string  `json:"execution_source"`
 }
 
 // TradeHistoryItemDTO is the JSON shape returned by GET /api/v1/gold/trades.
@@ -192,8 +214,11 @@ type TradeHistoryItemDTO struct {
 	OptionID         int    `json:"option_id"`
 	AmountWei        string `json:"amount_wei"`
 	ShareAmountWei   string `json:"share_amount_wei"`
+	ReturnedYesWei   string `json:"returned_yes_wei"`
+	ReturnedNoWei    string `json:"returned_no_wei"`
 	IsSuccess        bool   `json:"is_success"`
 	IsAiManaged      bool   `json:"is_ai_managed"`
+	ExecutionSource  string `json:"execution_source"`
 	TxHash           string `json:"tx_hash"`
 	TimestampSec     int64  `json:"timestamp_sec"`
 	CreatedAt        string `json:"created_at"`
@@ -222,24 +247,28 @@ type gameRow struct {
 }
 
 type chainStateRow struct {
-	GameID          int
-	ContractAddress string
-	TotalPool       *big.Int
-	IsResolved      bool
-	IsRefunded      bool
-	WinningOption   int
-	DeadlineSec     int64
-	ReserveYes      *big.Int
-	ReserveNo       *big.Int
-	UpdatedAt       string
+	GameID               int
+	ContractAddress      string
+	TotalPool            *big.Int
+	IsResolved           bool
+	IsRefunded           bool
+	WinningOption        int
+	DeadlineSec          int64
+	ReserveYes           *big.Int
+	ReserveNo            *big.Int
+	TotalLiquidityShares *big.Int
+	LiquidityFeePool     *big.Int
+	UpdatedAt            string
 }
 
 type userPositionRow struct {
-	UserAddress string
-	GameID      int
-	MySharesYes *big.Int
-	MySharesNo  *big.Int
-	UpdatedAt   string
+	UserAddress       string
+	GameID            int
+	MySharesYes       *big.Int
+	MySharesNo        *big.Int
+	MyLiquidityShares *big.Int
+	MyLiquidityFees   *big.Int
+	UpdatedAt         string
 }
 
 type priceHistoryRow struct {
@@ -268,6 +297,8 @@ type tradeRow struct {
 	AmountWei        *big.Int
 	SharesWei        *big.Int
 	ShareAmountWei   string
+	ReturnedYesWei   string
+	ReturnedNoWei    string
 	MySharesYesAfter string
 	MySharesNoAfter  string
 	PriceAtTrade     float64
@@ -275,6 +306,7 @@ type tradeRow struct {
 	TxHash           string
 	IsSuccess        bool
 	IsAiManaged      bool
+	ExecutionSource  string
 	CreatedAt        string
 }
 

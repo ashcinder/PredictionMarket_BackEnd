@@ -47,6 +47,8 @@ func (s *Server) handleGetChainState(w http.ResponseWriter, r *http.Request) {
 		if pos != nil {
 			dto.MySharesYes = bigIntOrZero(pos.MySharesYes)
 			dto.MySharesNo = bigIntOrZero(pos.MySharesNo)
+			dto.MyLiquidityShares = bigIntOrZero(pos.MyLiquidityShares)
+			dto.MyLiquidityFees = bigIntOrZero(pos.MyLiquidityFees)
 		}
 	}
 
@@ -89,6 +91,8 @@ func (s *Server) handleListChainStates(w http.ResponseWriter, r *http.Request) {
 			if pos, ok := posMap[states[i].GameID]; ok {
 				dto.MySharesYes = bigIntOrZero(pos.MySharesYes)
 				dto.MySharesNo = bigIntOrZero(pos.MySharesNo)
+				dto.MyLiquidityShares = bigIntOrZero(pos.MyLiquidityShares)
+				dto.MyLiquidityFees = bigIntOrZero(pos.MyLiquidityFees)
 			}
 		}
 		dtos = append(dtos, dto)
@@ -117,17 +121,29 @@ func (s *Server) handleSyncChainState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	contractAddress := firstNonEmpty(req.ContractAddr, s.contractAddr)
+	if !common.IsHexAddress(contractAddress) {
+		writeJSONError(w, http.StatusBadRequest, "invalid contract_address")
+		return
+	}
+	if !s.acceptsContractAddress(contractAddress) {
+		writeJSONError(w, http.StatusConflict, "contract_address is not the active market contract")
+		return
+	}
+
 	row := &chainStateRow{
-		GameID:          gameID,
-		ContractAddress: firstNonEmpty(req.ContractAddr, s.contractAddr),
-		TotalPool:       parseBigIntStr(req.TotalPool),
-		IsResolved:      req.IsResolved,
-		IsRefunded:      req.IsRefunded,
-		WinningOption:   req.WinningOption,
-		DeadlineSec:     req.DeadlineSec,
-		ReserveYes:      parseBigIntStr(req.ReserveYes),
-		ReserveNo:       parseBigIntStr(req.ReserveNo),
-		UpdatedAt:       time.Now().UTC().Format(time.RFC3339),
+		GameID:               gameID,
+		ContractAddress:      contractAddress,
+		TotalPool:            parseBigIntStr(req.TotalPool),
+		IsResolved:           req.IsResolved,
+		IsRefunded:           req.IsRefunded,
+		WinningOption:        req.WinningOption,
+		DeadlineSec:          req.DeadlineSec,
+		ReserveYes:           parseBigIntStr(req.ReserveYes),
+		ReserveNo:            parseBigIntStr(req.ReserveNo),
+		TotalLiquidityShares: parseBigIntStr(req.TotalLiquidityShares),
+		LiquidityFeePool:     parseBigIntStr(req.LiquidityFeePool),
+		UpdatedAt:            time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := s.chainStates.UpsertChainState(r.Context(), row); err != nil {
 		slog.Warn("apiv1: sync chain state failed", "game_id", gameID, "error", err)
@@ -136,12 +152,16 @@ func (s *Server) handleSyncChainState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Also update user position if shares and user_address are provided.
-	if (req.MySharesYes != "" || req.MySharesNo != "") && common.IsHexAddress(req.UserAddress) {
+	if (req.MySharesYes != "" || req.MySharesNo != "" ||
+		req.MyLiquidityShares != "" || req.MyLiquidityFees != "") &&
+		common.IsHexAddress(req.UserAddress) {
 		pos := &userPositionRow{
-			UserAddress: req.UserAddress,
-			GameID:      gameID,
-			MySharesYes: parseBigIntStr(req.MySharesYes),
-			MySharesNo:  parseBigIntStr(req.MySharesNo),
+			UserAddress:       req.UserAddress,
+			GameID:            gameID,
+			MySharesYes:       parseBigIntStr(req.MySharesYes),
+			MySharesNo:        parseBigIntStr(req.MySharesNo),
+			MyLiquidityShares: parseBigIntStr(req.MyLiquidityShares),
+			MyLiquidityFees:   parseBigIntStr(req.MyLiquidityFees),
 		}
 		if err := s.positions.UpsertUserPosition(r.Context(), pos); err != nil {
 			slog.Warn("apiv1: sync chain state upsert position failed", "game_id", gameID, "user", req.UserAddress, "error", err)
@@ -155,17 +175,21 @@ func (s *Server) handleSyncChainState(w http.ResponseWriter, r *http.Request) {
 // buildChainStateDTO converts a chainStateRow into the response DTO.
 func (s *Server) buildChainStateDTO(state *chainStateRow) ChainStateDTO {
 	return ChainStateDTO{
-		GameID:        state.GameID,
-		ContractAddr:  state.ContractAddress,
-		TotalPool:     bigIntOrZero(state.TotalPool),
-		IsResolved:    state.IsResolved,
-		IsRefunded:    state.IsRefunded,
-		WinningOption: state.WinningOption,
-		DeadlineSec:   state.DeadlineSec,
-		ReserveYes:    bigIntOrZero(state.ReserveYes),
-		ReserveNo:     bigIntOrZero(state.ReserveNo),
-		MySharesYes:   "0",
-		MySharesNo:    "0",
-		UpdatedAt:     state.UpdatedAt,
+		GameID:               state.GameID,
+		ContractAddr:         state.ContractAddress,
+		TotalPool:            bigIntOrZero(state.TotalPool),
+		IsResolved:           state.IsResolved,
+		IsRefunded:           state.IsRefunded,
+		WinningOption:        state.WinningOption,
+		DeadlineSec:          state.DeadlineSec,
+		ReserveYes:           bigIntOrZero(state.ReserveYes),
+		ReserveNo:            bigIntOrZero(state.ReserveNo),
+		TotalLiquidityShares: bigIntOrZero(state.TotalLiquidityShares),
+		LiquidityFeePool:     bigIntOrZero(state.LiquidityFeePool),
+		MySharesYes:          "0",
+		MySharesNo:           "0",
+		MyLiquidityShares:    "0",
+		MyLiquidityFees:      "0",
+		UpdatedAt:            state.UpdatedAt,
 	}
 }

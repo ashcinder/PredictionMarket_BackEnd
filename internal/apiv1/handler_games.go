@@ -83,6 +83,10 @@ func (s *Server) handleSyncGame(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "invalid contract_address")
 		return
 	}
+	if !s.acceptsContractAddress(req.ContractAddress) {
+		writeJSONError(w, http.StatusConflict, "contract_address is not the active market contract")
+		return
+	}
 	var initialLiquidity *big.Int
 	if strings.TrimSpace(req.InitialLiquidity) != "" {
 		var ok bool

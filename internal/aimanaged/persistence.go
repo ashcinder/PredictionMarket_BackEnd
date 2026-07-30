@@ -24,11 +24,19 @@ type MarketIdentity struct {
 // StrategySettings contains per-user, per-market AI trading guardrails.
 // Nil settings on a managed entry mean that the server-wide defaults apply.
 type StrategySettings struct {
-	BuyAmountBKC     string  `json:"buy_amount_bkc"`
-	ConfidenceMin    float64 `json:"confidence_min"`
-	MinEdgePercent   float64 `json:"min_edge_percent"`
-	KellyFraction    float64 `json:"kelly_fraction"`
-	AdaptiveCooldown bool    `json:"adaptive_cooldown"`
+	StrategyType             string  `json:"strategy_type"`
+	Direction                string  `json:"direction,omitempty"`
+	BuyAmountBKC             string  `json:"buy_amount_bkc"`
+	ConfidenceMin            float64 `json:"confidence_min"`
+	MinEdgePercent           float64 `json:"min_edge_percent"`
+	KellyFraction            float64 `json:"kelly_fraction"`
+	AdaptiveCooldown         bool    `json:"adaptive_cooldown"`
+	GridLowerPercent         float64 `json:"grid_lower_percent,omitempty"`
+	GridUpperPercent         float64 `json:"grid_upper_percent,omitempty"`
+	GridLevels               int     `json:"grid_levels,omitempty"`
+	MartingaleTriggerPercent float64 `json:"martingale_trigger_percent,omitempty"`
+	MartingaleMultiplier     float64 `json:"martingale_multiplier,omitempty"`
+	MartingaleMaxRounds      int     `json:"martingale_max_rounds,omitempty"`
 }
 
 type HistoryObservation struct {
@@ -109,19 +117,20 @@ type ManagedEntryRepository interface {
 }
 
 type ManagedTradeRecord struct {
-	Market       MarketIdentity
-	UserAddress  string
-	TradeType    string
-	OptionID     int
-	AmountWei    *big.Int
-	SharesDelta  *big.Int
-	SharesYES    *big.Int
-	SharesNO     *big.Int
-	TotalPool    *big.Int
-	ReserveYES   *big.Int
-	ReserveNO    *big.Int
-	TxHash       string
-	TimestampSec int64
+	Market          MarketIdentity
+	UserAddress     string
+	ExecutionSource string
+	TradeType       string
+	OptionID        int
+	AmountWei       *big.Int
+	SharesDelta     *big.Int
+	SharesYES       *big.Int
+	SharesNO        *big.Int
+	TotalPool       *big.Int
+	ReserveYES      *big.Int
+	ReserveNO       *big.Int
+	TxHash          string
+	TimestampSec    int64
 }
 
 type ManagedTradeRepository interface {

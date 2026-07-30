@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"PredictionMarket/internal/aimanaged"
 
@@ -29,10 +30,23 @@ func (s *Server) handleAIGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	contractAddress := r.URL.Query().Get("contract_address")
-	enabled := s.aiStore.IsEnabled(gameID, userAddress)
-	if common.IsHexAddress(contractAddress) {
-		enabled = s.aiStore.IsEnabledForContract(gameID, userAddress, contractAddress)
+	if strings.TrimSpace(contractAddress) == "" {
+		contractAddress = s.activeContractAddress()
 	}
+	if contractAddress == "" {
+		response := map[string]interface{}{"enabled": s.aiStore.IsEnabled(gameID, userAddress)}
+		if strategy := s.aiStore.StrategyForContract(gameID, userAddress, ""); strategy != nil {
+			response["strategy"] = strategy
+		}
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
+	if !common.IsHexAddress(contractAddress) || !s.acceptsContractAddress(contractAddress) {
+		writeJSONError(w, http.StatusConflict, "contract_address is not the active market contract")
+		return
+	}
+	enabled := s.aiStore.IsEnabled(gameID, userAddress)
+	enabled = s.aiStore.IsEnabledForContract(gameID, userAddress, contractAddress)
 	response := map[string]interface{}{"enabled": enabled}
 	if strategy := s.aiStore.StrategyForContract(gameID, userAddress, contractAddress); strategy != nil {
 		response["strategy"] = strategy
@@ -58,11 +72,17 @@ func (s *Server) handleAISet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	contractAddress := req.ContractAddress
+	if strings.TrimSpace(contractAddress) == "" {
+		contractAddress = s.activeContractAddress()
+		req.ContractAddress = contractAddress
+	}
+	if !common.IsHexAddress(contractAddress) || !s.acceptsContractAddress(contractAddress) {
+		writeJSONError(w, http.StatusConflict, "contract_address is not the active market contract")
+		return
+	}
+
 	if req.Enabled {
-		if !common.IsHexAddress(req.ContractAddress) {
-			writeJSONError(w, http.StatusBadRequest, "invalid contract_address")
-			return
-		}
 		// Validate the private key matches the user address via the existing
 		// aimanaged Store.Enable method (which derives the wallet from the key).
 		// We cannot call Store.Enable directly from outside the package since
@@ -78,4 +98,19 @@ func (s *Server) handleAISet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+}
+
+func (s *Server) handleStrategiesGet(w http.ResponseWriter, r *http.Request) {
+	if setCORS(w, r, "GET,OPTIONS") {
+		return
+	}
+	logRequest(r)
+	userAddress := strings.TrimSpace(r.URL.Query().Get("user_address"))
+	if !common.IsHexAddress(userAddress) {
+		writeJSONError(w, http.StatusBadRequest, "invalid user_address")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"strategies": s.aiStore.StrategiesForUser(userAddress),
+	})
 }

@@ -9,13 +9,13 @@ CN 与 CN-AMM 共用本地 Supervisor 链节点和项目目录，但通过 Git �
 | 后端端口 | `8081` | `8081` |
 | 数据库 | `predictionmarket_cn` | `predictionmarket_cn_amm` |
 | Redis | 原分支配置 | DB 1 / `predictionmarket:cn-amm` |
-| Android 包名 | `com.example.brokerfi` | `com.example.brokerfi` |
-| 智能合约 | `0xda550FdB040A10ff1f5467042aE3E7E13DF43F7F` | `0xA3EE3bb6AbE5B198960a0EAaf11f1179cF2b1f64` |
+| Android 包名 | `com.example.brokerfi` | `com.example.brokerfi.cn` |
+| 智能合约 | `0xda550FdB040A10ff1f5467042aE3E7E13DF43F7F` | `0x2C26fF6eA7Ec23C09f64A62de5C060c0D00208D1` |
 
 ## 中文市场合约
 
-- 合约地址：`0xA3EE3bb6AbE5B198960a0EAaf11f1179cF2b1f64`
-- 部署交易：`0xc4406736bff4d188420207fdb45f8f5f69abe75e1a1d82edeab2af4ba38c87b2`
+- 合约地址：`0x2C26fF6eA7Ec23C09f64A62de5C060c0D00208D1`
+- 部署交易：`0xaea8e278567b0b31fc7d6d1f09295d82ca4d935afaf80e773395d94cae1985af`
 - 部署网络：本地 Supervisor EVM RPC
 
 ## 启动中文市场
@@ -35,6 +35,11 @@ CN 与 CN-AMM 共用本地 Supervisor 链节点和项目目录，但通过 Git �
 - 两套市场虽然连接同一个本地链节点，但合约地址不同，链上博弈池与交易互不混用。
 - `predictionmarket_cn_amm` 保留完整表结构，首次正式展示前所有业务表保持为空。
 - CN-AMM 合约支持截止前按恒定乘积约束卖出份额，客户端默认使用 1% 最低到账保护。
+- 创建者的初始流动性会铸造成首批 LP 份额；其他用户也可按当前储备比例
+  注入流动性，并按 LP 占比取回资产及累计的 1% 交易费。
+- 博弈池运行期间，创建者的首批 LP 份额保持锁定；开奖或退款后才可取回。
+- 运行中的池不得取回最后一份 LP，以免储备清空；结算后 LP 按占比领取
+  胜方储备与尚未领取的交易费。
 - AI 自动托管采用新增仓位与退出仓位双信号；后端根据用户实际持仓执行
   `BUY YES`、`BUY NO`、`SELL YES`、`SELL NO` 或 `HOLD`，并将卖出同步到
   MySQL 交易记录、Redis 公共缓存失效流程和 AI 决策审计。

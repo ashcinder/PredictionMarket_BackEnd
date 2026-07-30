@@ -13,6 +13,7 @@ import (
 	"math"
 	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -78,6 +79,17 @@ type EntrySnapshot struct {
 	Strategy        *StrategySettings
 	nonce           []byte
 	ciphertext      []byte
+}
+
+type StrategySummary struct {
+	GameID          int               `json:"game_id"`
+	UserAddress     string            `json:"user_address"`
+	ContractAddress string            `json:"contract_address"`
+	EnabledAt       time.Time         `json:"enabled_at"`
+	LastTradeAt     time.Time         `json:"last_trade_at,omitempty"`
+	LastTradeTx     string            `json:"last_trade_tx,omitempty"`
+	LastError       string            `json:"last_error,omitempty"`
+	Strategy        *StrategySettings `json:"strategy"`
 }
 
 type SetRequest struct {
@@ -571,6 +583,28 @@ func (s *Store) Entries() []EntrySnapshot {
 	return out
 }
 
+func (s *Store) StrategiesForUser(userAddress string) []StrategySummary {
+	if !common.IsHexAddress(userAddress) {
+		return nil
+	}
+	user := common.HexToAddress(userAddress).Hex()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]StrategySummary, 0)
+	for _, item := range s.entries {
+		if !strings.EqualFold(item.UserAddress, user) {
+			continue
+		}
+		out = append(out, StrategySummary{
+			GameID: item.GameID, UserAddress: item.UserAddress,
+			ContractAddress: item.ContractAddress, EnabledAt: item.EnabledAt,
+			LastTradeAt: item.LastTradeAt, LastTradeTx: item.LastTradeTx,
+			LastError: item.LastError, Strategy: cloneStrategy(item.Strategy),
+		})
+	}
+	return out
+}
+
 func (s *Store) DecryptPrivateKey(snapshot EntrySnapshot) (string, error) {
 	plain, err := s.aead.Open(nil, snapshot.nonce, snapshot.ciphertext, nil)
 	if err != nil {
@@ -902,6 +936,30 @@ func (e *Engine) processMarket(ctx context.Context, snapshots []EntrySnapshot) e
 			pre.YesTrendStrength, pre.VolatilityRecent,
 		),
 	)
+	var aiSnapshots []EntrySnapshot
+	for _, snapshot := range snapshots {
+		strategy := e.effectiveStrategy(snapshot)
+		if strategy.StrategyType == "ai" {
+			aiSnapshots = append(aiSnapshots, snapshot)
+			continue
+		}
+		customSnapshot, customDecision := buildConfiguredStrategyDecision(
+			snapshot, strategy, pre.MarketProbYES)
+		if err := e.applyDecision(
+			ctx, customSnapshot, market, current.Time, len(history),
+			customDecision, pre.MarketProbYES, info.TotalPool, nil, now,
+		); err != nil {
+			e.store.RecordError(snapshot.GameID, snapshot.UserAddress, err)
+			slog.Warn("configured strategy execution failed",
+				"strategy_type", strategy.StrategyType,
+				"game_id", snapshot.GameID, "user", snapshot.UserAddress,
+				"error", err)
+		}
+	}
+	if len(aiSnapshots) == 0 {
+		return nil
+	}
+
 	decision, err := e.decisions.Decide(ctx, info, extra, meta, quote, &ResearchContext{
 		Current:          currentPoint,
 		History:          researchHistory,
@@ -934,9 +992,9 @@ func (e *Engine) processMarket(ctx context.Context, snapshots []EntrySnapshot) e
 		"risk_flags", decision.RiskFlags,
 		"logic_summary", decision.Reason,
 	)
-	for _, snapshot := range snapshots {
+	for _, snapshot := range aiSnapshots {
 		var userExtra *chain.GameExtraData
-		if len(snapshots) == 1 {
+		if len(aiSnapshots) == 1 && len(snapshots) == 1 {
 			userExtra = extra
 		}
 		if err := e.applyDecision(ctx, snapshot, market, current.Time, len(history), decision, pre.MarketProbYES, info.TotalPool, userExtra, now); err != nil {
@@ -1565,19 +1623,20 @@ func (e *Engine) persistManagedTradeSnapshot(ctx context.Context, snapshot Entry
 		}
 	}
 	record := ManagedTradeRecord{
-		Market:       market,
-		UserAddress:  snapshot.UserAddress,
-		TradeType:    strings.ToUpper(tradeType),
-		OptionID:     option,
-		AmountWei:    cloneBigInt(amountWei),
-		SharesDelta:  sharesDelta,
-		SharesYES:    sharesYES,
-		SharesNO:     sharesNO,
-		TotalPool:    totalPool,
-		ReserveYES:   reserveYES,
-		ReserveNO:    reserveNO,
-		TxHash:       txHash,
-		TimestampSec: now.Unix(),
+		Market:          market,
+		UserAddress:     snapshot.UserAddress,
+		ExecutionSource: e.effectiveStrategy(snapshot).StrategyType,
+		TradeType:       strings.ToUpper(tradeType),
+		OptionID:        option,
+		AmountWei:       cloneBigInt(amountWei),
+		SharesDelta:     sharesDelta,
+		SharesYES:       sharesYES,
+		SharesNO:        sharesNO,
+		TotalPool:       totalPool,
+		ReserveYES:      reserveYES,
+		ReserveNO:       reserveNO,
+		TxHash:          txHash,
+		TimestampSec:    now.Unix(),
 	}
 	dbCtx, dbCancel := context.WithTimeout(context.WithoutCancel(ctx), postTradeDBTimeout)
 	defer dbCancel()
@@ -1816,6 +1875,8 @@ func computeManagedSellFraction(
 
 func (e *Engine) effectiveStrategy(snapshot EntrySnapshot) StrategySettings {
 	strategy := StrategySettings{
+		StrategyType:     "ai",
+		Direction:        "yes",
 		BuyAmountBKC:     e.cfg.AIBuyAmountBKC,
 		ConfidenceMin:    e.cfg.AIConfidenceMin,
 		MinEdgePercent:   e.cfg.AIMinEdgePercent,
@@ -1837,7 +1898,112 @@ func (e *Engine) effectiveStrategy(snapshot EntrySnapshot) StrategySettings {
 	if strategy.KellyFraction <= 0 {
 		strategy.KellyFraction = 0.25
 	}
+	if strings.TrimSpace(strategy.StrategyType) == "" {
+		strategy.StrategyType = "ai"
+	}
+	if strings.TrimSpace(strategy.Direction) == "" {
+		strategy.Direction = "yes"
+	}
 	return strategy
+}
+
+func buildConfiguredStrategyDecision(
+	snapshot EntrySnapshot,
+	strategy StrategySettings,
+	marketProbYES float64,
+) (EntrySnapshot, *Decision) {
+	selectedProb := clamp01(marketProbYES)
+	if strategy.Direction == "no" {
+		selectedProb = 1 - selectedProb
+	}
+	selectedPercent := selectedProb * 100
+	action := "hold"
+	reason := "当前概率尚未触发已配置的策略条件"
+
+	switch strategy.StrategyType {
+	case "grid":
+		step := (strategy.GridUpperPercent - strategy.GridLowerPercent) /
+			float64(strategy.GridLevels)
+		mid := (strategy.GridLowerPercent + strategy.GridUpperPercent) / 2
+		switch {
+		case selectedPercent < strategy.GridLowerPercent ||
+			selectedPercent > strategy.GridUpperPercent:
+			reason = "当前方向概率位于网格区间之外，保持观望"
+		case selectedPercent <= mid-step/2:
+			action = "buy_" + strategy.Direction
+			reason = fmt.Sprintf(
+				"当前方向概率 %.2f%% 落入网格低位，按 %d 格配置分批买入",
+				selectedPercent, strategy.GridLevels)
+		case selectedPercent >= mid+step/2:
+			action = "sell_" + strategy.Direction
+			reason = fmt.Sprintf(
+				"当前方向概率 %.2f%% 落入网格高位，按配置分批止盈",
+				selectedPercent)
+		default:
+			reason = "当前方向概率位于网格中性带，等待下一次跨格"
+		}
+	case "martingale":
+		trigger := strategy.MartingaleTriggerPercent
+		switch {
+		case selectedPercent <= trigger:
+			action = "buy_" + strategy.Direction
+			distance := math.Max(0, trigger-selectedPercent)
+			band := math.Max(1, trigger/float64(strategy.MartingaleMaxRounds))
+			round := int(distance / band)
+			if round >= strategy.MartingaleMaxRounds {
+				round = strategy.MartingaleMaxRounds - 1
+			}
+			base, _ := strconv.ParseFloat(strategy.BuyAmountBKC, 64)
+			scaled := math.Min(1000, base*math.Pow(strategy.MartingaleMultiplier, float64(round)))
+			copy := strategy
+			copy.BuyAmountBKC = strconv.FormatFloat(scaled, 'f', 6, 64)
+			snapshot.Strategy = &copy
+			reason = fmt.Sprintf(
+				"当前方向概率 %.2f%% 低于 %.2f%% 补仓线，执行第 %d 档递增仓位",
+				selectedPercent, trigger, round+1)
+		case selectedPercent >= trigger+strategy.MinEdgePercent:
+			action = "sell_" + strategy.Direction
+			reason = fmt.Sprintf(
+				"当前方向概率 %.2f%% 已回到止盈区，按风控比例减仓",
+				selectedPercent)
+		default:
+			reason = "当前方向概率尚未达到补仓或止盈条件"
+		}
+	}
+	return snapshot, deterministicDecision(
+		action, reason, marketProbYES, strategy.MinEdgePercent/100)
+}
+
+func deterministicDecision(action, reason string, marketProbYES, minEdge float64) *Decision {
+	if minEdge <= 0 {
+		minEdge = 0.05
+	}
+	estimated := clamp01(marketProbYES)
+	decision := &Decision{
+		Action: "hold", ExitAction: "hold", Confidence: 0.99,
+		EstimatedProb: estimated, Reason: reason,
+		ProviderName: "configured", ModelID: "deterministic-strategy",
+	}
+	switch action {
+	case "buy_yes":
+		decision.Action = action
+		decision.EstimatedProb = clamp01(marketProbYES + minEdge + 0.001)
+	case "buy_no":
+		decision.Action = action
+		decision.EstimatedProb = clamp01(marketProbYES - minEdge - 0.001)
+	case "sell_yes":
+		decision.ExitAction = action
+		decision.EstimatedProb = clamp01(marketProbYES - minEdge - 0.001)
+	case "sell_no":
+		decision.ExitAction = action
+		decision.EstimatedProb = clamp01(marketProbYES + minEdge + 0.001)
+	}
+	if decision.EstimatedProb >= 0.5 {
+		decision.ConditionOutcome = "yes"
+	} else {
+		decision.ConditionOutcome = "no"
+	}
+	return decision
 }
 
 func (e *Engine) currentTime() time.Time {
@@ -2387,6 +2553,22 @@ func validateStrategy(value *StrategySettings) (*StrategySettings, error) {
 		return nil, nil
 	}
 	strategy := cloneStrategy(value)
+	strategy.StrategyType = strings.ToLower(strings.TrimSpace(strategy.StrategyType))
+	if strategy.StrategyType == "" {
+		strategy.StrategyType = "ai"
+	}
+	switch strategy.StrategyType {
+	case "ai", "grid", "martingale":
+	default:
+		return nil, errors.New("strategy.strategy_type must be ai, grid, or martingale")
+	}
+	strategy.Direction = strings.ToLower(strings.TrimSpace(strategy.Direction))
+	if strategy.Direction == "" {
+		strategy.Direction = "yes"
+	}
+	if strategy.Direction != "yes" && strategy.Direction != "no" {
+		return nil, errors.New("strategy.direction must be yes or no")
+	}
 	strategy.BuyAmountBKC = strings.TrimSpace(strategy.BuyAmountBKC)
 	buyAmountWei, err := parseBKCToWei(strategy.BuyAmountBKC)
 	if err != nil {
@@ -2404,6 +2586,27 @@ func validateStrategy(value *StrategySettings) (*StrategySettings, error) {
 	}
 	if math.IsNaN(strategy.KellyFraction) || strategy.KellyFraction < 0.05 || strategy.KellyFraction > 1 {
 		return nil, errors.New("strategy.kelly_fraction must be between 0.05 and 1.00")
+	}
+	if strategy.StrategyType == "grid" {
+		if strategy.GridLowerPercent <= 0 || strategy.GridLowerPercent >= 100 ||
+			strategy.GridUpperPercent <= strategy.GridLowerPercent ||
+			strategy.GridUpperPercent >= 100 {
+			return nil, errors.New("grid probability range must be within 0-100 and lower than upper")
+		}
+		if strategy.GridLevels < 2 || strategy.GridLevels > 50 {
+			return nil, errors.New("strategy.grid_levels must be between 2 and 50")
+		}
+	}
+	if strategy.StrategyType == "martingale" {
+		if strategy.MartingaleTriggerPercent <= 1 || strategy.MartingaleTriggerPercent >= 99 {
+			return nil, errors.New("strategy.martingale_trigger_percent must be between 1 and 99")
+		}
+		if strategy.MartingaleMultiplier < 1 || strategy.MartingaleMultiplier > 5 {
+			return nil, errors.New("strategy.martingale_multiplier must be between 1 and 5")
+		}
+		if strategy.MartingaleMaxRounds < 1 || strategy.MartingaleMaxRounds > 10 {
+			return nil, errors.New("strategy.martingale_max_rounds must be between 1 and 10")
+		}
 	}
 	return strategy, nil
 }
